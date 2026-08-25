@@ -90,7 +90,7 @@ The stills are the expensive part; the videos are not. The intended pattern is:
 
 You end up with a permanent hourly, daily and weekly record at a fraction of a percent of the raw
 storage. If you want the raw stills archived too, sync them off the box before pruning catches
-them — see [Operations](Operations).
+them — see [Operations](Operations.md).
 
 ## Watching it in practice
 

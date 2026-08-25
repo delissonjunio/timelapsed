@@ -109,11 +109,19 @@ git tag -a v1.1.0 -m "..."
 git push origin main --tags
 ```
 
-The wiki is a separate git repository. To edit it locally:
+## Documentation
+
+Documentation lives in `docs/` and is versioned alongside the code, so a change and its
+documentation land in the same commit and can be reviewed together.
+
+GitHub's built-in wiki is not used: wikis are unavailable on private repositories on the free plan.
+`docs/` renders on GitHub, works offline in a clone, and shows up in diffs — which is arguably the
+better arrangement anyway. If the repository is ever made public, or the account moves to GitHub
+Pro, the pages can be pushed to the wiki as-is:
 
 ```bash
 git clone git@github.com:delissonjunio/timelapsed.wiki.git
+cp docs/*.md timelapsed.wiki/    # then rename README.md to Home.md
 ```
 
-`docs/` in the main repo and the wiki hold the same content — `docs/` is what you get with the
-clone, the wiki is what is nice to browse. Keep them in sync when changing either.
+Wiki links would need the `.md` suffixes stripped; `docs/` links need them present.

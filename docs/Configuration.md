@@ -29,7 +29,7 @@ memory multiplier.
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning). |
+| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning.md). |
 | `resolution.width` | yes | — | Requested snapshot width. |
 | `resolution.height` | yes | — | Requested snapshot height. |
 
@@ -81,7 +81,7 @@ forever — is the sensible default. Stills are the thing that will fill your di
 
 The viewer has **no authentication**. Bind it to `0.0.0.0` only when Tailscale is providing the
 access control, or bind to `127.0.0.1` and put a proxy in front. Never port-forward it from your
-router. See [Viewing Timelapses](Viewing-Timelapses).
+router. See [Viewing Timelapses](Viewing-Timelapses.md).
 
 ## `[general]`
 

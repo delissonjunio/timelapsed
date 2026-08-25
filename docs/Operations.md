@@ -134,7 +134,7 @@ sudo bash deploy/install.sh    # idempotent; restarts both services
 
 `install.sh` preserves an existing `/etc/timelapsed.ini` and will not overwrite it. When new
 settings are added they get defaults, so an old config keeps working — check
-[Configuration](Configuration) after an upgrade to see whether anything new is worth setting.
+[Configuration](Configuration.md) after an upgrade to see whether anything new is worth setting.
 
 ## Backups
 

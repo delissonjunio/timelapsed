@@ -69,6 +69,8 @@ frames before the render can use them. Timelapsed warns loudly at startup if you
 
 ## Documentation
 
+The full documentation lives in [`docs/`](docs/README.md) and is versioned with the code.
+
 | Page | What's in it |
 | --- | --- |
 | [Architecture](docs/Architecture.md) | Process model, storage layout, why each decision was made |

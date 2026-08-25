@@ -124,4 +124,4 @@ Video paths are resolved and then checked to still be inside the library root, s
 returns 404.
 
 **There is no authentication.** The viewer is designed to sit behind Tailscale, where the network
-itself is the access control. Do not port-forward it. See [Viewing Timelapses](Viewing-Timelapses).
+itself is the access control. Do not port-forward it. See [Viewing Timelapses](Viewing-Timelapses.md).

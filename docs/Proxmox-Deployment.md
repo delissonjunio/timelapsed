@@ -8,7 +8,7 @@ End-to-end: create a VM on Proxmox VE, install Timelapsed, publish the viewer ov
 | --- | --- | --- |
 | vCPU | 2–4 | ffmpeg is the only real load, and it is bursty. 2 is enough for 3 channels; go to 4 if renders take longer than the gap between them. |
 | RAM | 2 GB | The daemon is a few hundred MB. ffmpeg with `-preset veryfast` at 1080p stays well under 1 GB. |
-| Disk | 100 GB | Three channels, 10-second interval, 8-day retention. See [Storage Planning](Storage-Planning). |
+| Disk | 100 GB | Three channels, 10-second interval, 8-day retention. See [Storage Planning](Storage-Planning.md). |
 
 The renders are what make CPU matter. If you enable `weekly` on many channels, the Monday-morning
 renders all land at once — hence `Nice=10` and `CPUWeight=50` in the unit file, so they lose the
@@ -86,7 +86,7 @@ sudoedit /etc/timelapsed.ini
 ```
 
 Set at minimum `url`, `username`, `password`, `channels`, and `interval_seconds`. Everything else
-has a working default. See [Configuration](Configuration).
+has a working default. See [Configuration](Configuration.md).
 
 Check the NVR is reachable from the guest before starting anything:
 
@@ -170,7 +170,7 @@ sudo -n vzdump 302 --storage local --mode snapshot --exclude-path /var/lib/timel
 
 What actually needs backing up is `/etc/timelapsed.ini` (small, and holds the password) and, if you
 care about the history, `/var/lib/timelapsed/*/timelapse/` — the rendered videos. See
-[Operations](Operations).
+[Operations](Operations.md).
 
 ## Firewall
 

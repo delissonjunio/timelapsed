@@ -9,13 +9,13 @@ listing, you can debug it.
 
 ## Start here
 
-* **[Architecture](Architecture)** — what runs, in what process, writing what where
-* **[Configuration](Configuration)** — every setting and how they interact
-* **[Storage Planning](Storage-Planning)** — the one decision that matters most
-* **[Proxmox Deployment](Proxmox-Deployment)** — from `qm create` to a running service
-* **[Viewing Timelapses](Viewing-Timelapses)** — the viewer, Tailscale Serve, Jellyfin
-* **[Operations](Operations)** — logs, failure modes, upgrades, backups
-* **[Development](Development)** — tests and project layout
+* **[Architecture](Architecture.md)** — what runs, in what process, writing what where
+* **[Configuration](Configuration.md)** — every setting and how they interact
+* **[Storage Planning](Storage-Planning.md)** — the one decision that matters most
+* **[Proxmox Deployment](Proxmox-Deployment.md)** — from `qm create` to a running service
+* **[Viewing Timelapses](Viewing-Timelapses.md)** — the viewer, Tailscale Serve, Jellyfin
+* **[Operations](Operations.md)** — logs, failure modes, upgrades, backups
+* **[Development](Development.md)** — tests and project layout
 
 ## The two things that trip people up
 
@@ -26,7 +26,7 @@ you don't.
 
 **2. The capture interval drives disk usage, not video length.** Video length is fixed by
 `duration_seconds` — surplus frames get sampled out. What the interval actually controls is how
-much disk you burn and how smooth the *hourly* video is. See [Storage Planning](Storage-Planning).
+much disk you burn and how smooth the *hourly* video is. See [Storage Planning](Storage-Planning.md).
 
 ## Requirements
 
