@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# Installs timelapsed on a Debian/Ubuntu host (tested on Ubuntu 24.04).
+# Run as root ON THE GUEST, not on the Proxmox host:
+#
+#   sudo bash deploy/install.sh
+#
+# Idempotent: safe to re-run to upgrade an existing install.
+
+set -euo pipefail
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/timelapsed}
+LIBRARY_DIR=${LIBRARY_DIR:-/var/lib/timelapsed}
+CONFIG_PATH=${CONFIG_PATH:-/etc/timelapsed.ini}
+SERVICE_USER=${SERVICE_USER:-timelapsed}
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+if [[ $EUID -ne 0 ]]; then
+    echo "error: run this as root (sudo bash deploy/install.sh)" >&2
+    exit 1
+fi
+
+echo "==> Installing system packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq python3 python3-venv python3-pip ffmpeg
+
+echo "==> Creating service user ${SERVICE_USER}"
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    useradd --system --home-dir "${INSTALL_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}"
+fi
+
+echo "==> Installing application to ${INSTALL_DIR}"
+mkdir -p "${INSTALL_DIR}"
+cp -r "${REPO_DIR}/timelapsed" "${REPO_DIR}/pyproject.toml" "${INSTALL_DIR}/"
+[[ -f "${REPO_DIR}/README.md" ]] && cp "${REPO_DIR}/README.md" "${INSTALL_DIR}/"
+
+python3 -m venv "${INSTALL_DIR}/.venv"
+"${INSTALL_DIR}/.venv/bin/pip" install --quiet --upgrade pip
+"${INSTALL_DIR}/.venv/bin/pip" install --quiet requests backoff rich python-dateutil
+
+echo "==> Preparing library directory ${LIBRARY_DIR}"
+mkdir -p "${LIBRARY_DIR}"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${LIBRARY_DIR}" "${INSTALL_DIR}"
+
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+    echo "==> Installing config template to ${CONFIG_PATH}"
+    cp "${REPO_DIR}/timelapsed.ini.example" "${CONFIG_PATH}"
+    sed -i "s|^root = .*|root = ${LIBRARY_DIR}|" "${CONFIG_PATH}"
+    CONFIG_IS_NEW=1
+else
+    echo "==> Keeping existing config at ${CONFIG_PATH}"
+    CONFIG_IS_NEW=0
+fi
+
+# The config holds the NVR password: readable by the service user, nobody else.
+chown root:"${SERVICE_USER}" "${CONFIG_PATH}"
+chmod 640 "${CONFIG_PATH}"
+
+echo "==> Installing systemd units"
+cp "${REPO_DIR}/deploy/timelapsed.service" "${REPO_DIR}/deploy/timelapsed-web.service" /etc/systemd/system/
+systemctl daemon-reload
+
+if [[ ${CONFIG_IS_NEW} -eq 1 ]]; then
+    cat <<MESSAGE
+
+Installed, but NOT started: ${CONFIG_PATH} still has placeholder values.
+
+  1. Edit it:      sudoedit ${CONFIG_PATH}
+  2. Start it:     sudo systemctl enable --now timelapsed timelapsed-web
+  3. Watch it:     journalctl -u timelapsed -f
+
+MESSAGE
+else
+    systemctl enable --now timelapsed timelapsed-web
+    systemctl restart timelapsed timelapsed-web
+    echo
+    echo "Upgraded and restarted. Check: systemctl status timelapsed"
+fi

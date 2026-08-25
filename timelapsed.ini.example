@@ -1,0 +1,51 @@
+# Timelapsed configuration.
+#
+# Copy to one of these locations; later paths override earlier ones per key:
+#   /etc/timelapsed.ini      (system-wide, used by the systemd units)
+#   ~/.timelapsed.ini        (per user)
+#   ./timelapsed.ini         (working directory)
+#
+# This file contains an NVR password. chmod 600 it and never commit it.
+
+[nvr]
+# Base URL of the NVR. No trailing path; ISAPI paths are appended automatically.
+url = http://192.168.1.10
+username = admin
+password = CHANGE_ME
+# NVR channel numbers, comma separated. Channel 1 maps to ISAPI channel 101.
+channels = 1,2,3
+
+[capture]
+# How long to wait between snapshots, per channel.
+interval_seconds = 5
+resolution.width = 1920
+resolution.height = 1080
+
+[timelapse]
+# Target length of a rendered video, in seconds. Surplus frames are sampled out,
+# so this holds regardless of how many images the window contains.
+duration_seconds = 60
+# Playback frame rate of the rendered video.
+output_fps = 30
+# Refuse to render anything shorter than this many frames.
+min_frames = 60
+# Which timelapses to produce. Any of: hourly, daily, weekly.
+cadences = hourly,daily,weekly
+
+[image_capture_library]
+# Where images and videos are written. Needs a lot of room; see docs/Storage-Planning.md.
+root = /var/lib/timelapsed
+# Delete captured stills older than this. 0 keeps them forever, which will fill the disk.
+# Must be GREATER than the longest cadence window: weekly renders need 7 days of stills.
+image_retention_days = 8
+# Delete rendered videos older than this. 0 keeps them forever (they are small).
+timelapse_retention_days = 0
+
+[web]
+# The built-in viewer. Bind to 0.0.0.0 and put Tailscale Serve in front of it,
+# or bind to 127.0.0.1 if something else is proxying. There is no authentication.
+host = 0.0.0.0
+port = 8080
+
+[general]
+logging_level = INFO

@@ -1,0 +1,39 @@
+[Unit]
+Description=Timelapsed NVR capture daemon
+Documentation=https://github.com/delissonjunio/timelapsed/wiki
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timelapsed
+Group=timelapsed
+ExecStart=/opt/timelapsed/.venv/bin/python -m timelapsed
+Restart=always
+RestartSec=10
+
+# The capture loop is the only thing that should be writing here.
+StateDirectory=timelapsed
+WorkingDirectory=/opt/timelapsed
+
+# ffmpeg is CPU-hungry; keep it from starving the rest of the guest.
+Nice=10
+CPUWeight=50
+IOWeight=50
+
+# Hardening. The daemon needs the library path, its config, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/timelapsed
+
+[Install]
+WantedBy=multi-user.target
