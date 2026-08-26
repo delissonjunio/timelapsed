@@ -56,11 +56,13 @@ out shorter — it is never padded or slowed down.
 | `root` | yes | — | Where images and videos are written. `~` is expanded. |
 | `image_retention_days` | no | `8` | Delete stills older than this. `0` means keep forever. |
 | `timelapse_retention_days` | no | — | Baseline video retention for every cadence. `0` means keep forever. |
-| `timelapse_retention_days.<cadence>` | no | `hourly` 14, `daily` 0, `weekly` 0 | Per-cadence override. Wins over the baseline. |
+| `timelapse_retention_days.<cadence>` | no | `hourly` 7, `daily` 90, `weekly` 0 | Per-cadence override. Wins over the baseline. |
 
-Hourly videos are the only ones that meaningfully consume disk — 24 per channel per day against
-one daily and one weekly. Expiring them while keeping daily and weekly forever is the intended
-shape, and is what the defaults do.
+Timelapse footage compresses badly — consecutive frames are minutes apart, so a full 1,800-frame
+60-second video runs around 140 MB. That makes *daily* the expensive cadence and makes a single
+retention for all three wrong: keep everything and the disk fills, expire everything and the
+archive goes with it. Expire hourly after a week, bound daily, keep weekly forever. See
+[Storage Planning](Storage-Planning.md).
 
 **`image_retention_days` must be strictly greater than your longest cadence window.** With `weekly`
 enabled, that means at least 8. If it isn't, pruning deletes the stills before the weekly render
@@ -123,8 +125,8 @@ cadences = hourly,daily,weekly
 [image_capture_library]
 root = /var/lib/timelapsed
 image_retention_days = 8
-timelapse_retention_days.hourly = 14
-timelapse_retention_days.daily = 0
+timelapse_retention_days.hourly = 7
+timelapse_retention_days.daily = 90
 timelapse_retention_days.weekly = 0
 
 [web]

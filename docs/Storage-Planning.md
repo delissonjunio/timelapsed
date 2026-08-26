@@ -24,21 +24,30 @@ disk usage becomes painful.
 
 ## The numbers
 
-Assuming ~300 KB per 1080p JPEG (measure yours; 200–400 KB is the usual range):
+Measured on the DS-7616NXI-K1 at `192.168.18.89`, 1080p main streams average **231 KB** per JPEG
+across its six live channels (150–300 KB depending on scene detail). Measure your own before
+committing to a disk size — see the command below.
 
-| Interval | Images/day/channel | Disk/day/channel | 3 channels, 8 days | Hourly video length |
+Per channel, at 231 KB:
+
+| Interval | Images/day | Disk/day | 8-day retention | Hourly video length |
 | --- | --- | --- | --- | --- |
-| 2s | 43,200 | 12.4 GB | **297 GB** | 60s (full) |
-| 5s | 17,280 | 4.9 GB | **119 GB** | 24s |
-| **10s** | 8,640 | 2.5 GB | **59 GB** | 12s |
-| 15s | 5,760 | 1.6 GB | **40 GB** | 8s |
-| 30s | 2,880 | 0.8 GB | **20 GB** | 4s |
-| 60s | 1,440 | 0.4 GB | **10 GB** | 2s |
+| 2s | 43,200 | 9.5 GB | 76 GB | 60s (full) |
+| 5s | 17,280 | 3.8 GB | 30 GB | 24s |
+| **10s** | 8,640 | 1.9 GB | **15 GB** | 12s |
+| 15s | 5,760 | 1.3 GB | 10 GB | 8s |
+| 30s | 2,880 | 0.6 GB | 5 GB | 4s |
+| 60s | 1,440 | 0.3 GB | 2.5 GB | 2s |
+
+Multiply the retention column by your channel count. The deployed guest runs **six** channels at
+10 seconds, so its steady-state still library is **~96 GB** — which is why its disk is 200 GB and
+not the 100 GB that three channels would have needed.
 
 Daily and weekly videos are the full 60 seconds at every row in this table.
 
-**Recommended starting point: 10 seconds.** A 12-second hourly clip is genuinely watchable, daily
-and weekly are full length, and 59 GB is a comfortable disk for three cameras.
+**Recommended starting point: 10 seconds.** A 12-second hourly clip is genuinely watchable and
+daily and weekly are full length. Beyond about six cameras the stills start to dominate the guest,
+and 15 seconds buys back a third of the disk for a barely noticeable loss in the hourly clip.
 
 Measure your actual average with:
 
@@ -54,11 +63,24 @@ steady state ≈ channels × (86400 ÷ interval) × avg_image_size × image_rete
 
 Then add headroom for:
 
-* **Rendered videos** — individually small, but hourly ones are numerous. A 60-second 1080p
-  timelapse at CRF 23 is roughly 5–15 MB. Three channels produce 72 hourly videos a day against
-  3 daily and 3 weekly, so hourly is ~99% of the video bytes: **on the order of 100 GB per year**
-  if kept forever. The default `timelapse_retention_days.hourly = 14` caps that at about **15 GB**
-  while daily and weekly are kept indefinitely.
+* **Rendered videos** — bigger than intuition suggests. Timelapse footage is close to worst case
+  for inter-frame compression: consecutive frames are seconds or minutes apart, so almost nothing
+  is shared between them. Measured at CRF 23 on this NVR's 1080p stills, encoded output runs about
+  **80 KB per frame**, so a full 1,800-frame 60-second video is on the order of **140 MB**, not the
+  5–15 MB a normal 60-second clip would be.
+
+  That makes *daily* the expensive cadence, not hourly: six channels producing one 1,800-frame
+  daily video each is ~840 MB a day, or **300 GB a year** if kept forever. Hourly clips are shorter
+  (a 10-second interval only yields 360 frames an hour) and cost ~2 GB a day across six channels.
+
+  Hence the per-cadence retention: expire hourly after a week, cap daily at a quarter, keep weekly
+  forever. Weekly is the archive and costs ~44 GB a year at six channels.
+
+  These are estimates from a short sample. Check the real figures after the first full day:
+
+  ```bash
+  sudo du -sh /var/lib/timelapsed/*/timelapse
+  ```
 * **Render scratch space** — renders hardlink rather than copy where the filesystem allows it, so
   staging is usually free. Across a filesystem boundary it falls back to real copies, needing up to
   `target_frames × avg_image_size` (~500 MB) temporarily. `PrivateTmp=true` in the unit puts this
@@ -67,7 +89,13 @@ Then add headroom for:
   check `df -i` as well as `df -h`; running out of inodes looks exactly like a full disk.
 
 For three cameras at a 10-second interval with 8-day retention, a **100 GB** disk is comfortable.
-At the 5-second interval, budget **200 GB**.
+For six, budget **200 GB**. LVM-thin disks only consume what is written and resize online, so start
+at the figure your math gives and grow it once you have a week of real data:
+
+```bash
+sudo -n qm disk resize 302 scsi0 300G          # on the Proxmox host
+sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1   # in the guest
+```
 
 ## Retention and cadences interact
 
@@ -87,8 +115,9 @@ startup, but the render still silently produces nothing. This is the most common
 The stills are the expensive part; the videos are not. The intended pattern is:
 
 * `image_retention_days = 8` — just enough to feed a weekly render
-* `timelapse_retention_days.hourly = 14` — hourly clips are for "what happened this morning", not for the archive
-* `timelapse_retention_days.daily = 0` and `.weekly = 0` — keep the archive forever
+* `timelapse_retention_days.hourly = 7` — hourly clips answer "what happened this morning", not "what happened in March"
+* `timelapse_retention_days.daily = 90` — a quarter of day-by-day history, the expensive cadence kept bounded
+* `timelapse_retention_days.weekly = 0` — the weekly archive, kept forever, at ~44 GB a year for six channels
 
 You end up with a permanent hourly, daily and weekly record at a fraction of a percent of the raw
 storage. If you want the raw stills archived too, sync them off the box before pruning catches

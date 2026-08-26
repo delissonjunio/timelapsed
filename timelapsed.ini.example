@@ -38,12 +38,12 @@ root = /var/lib/timelapsed
 # Delete captured stills older than this. 0 keeps them forever, which will fill the disk.
 # Must be GREATER than the longest cadence window: weekly renders need 7 days of stills.
 image_retention_days = 8
-# Delete rendered videos older than this. 0 keeps them forever.
-# Per-cadence overrides win over the baseline. Hourly videos arrive 24x a day per
-# channel and are the only ones that meaningfully consume disk, so they expire;
-# daily and weekly are the archive and are kept.
-timelapse_retention_days.hourly = 14
-timelapse_retention_days.daily = 0
+# Delete rendered videos older than this. 0 keeps them forever, and per-cadence
+# overrides win over the baseline. Timelapse footage compresses badly (frames are
+# minutes apart), so a full 60-second render is ~140 MB and daily is the cadence
+# that actually eats disk. Bound hourly and daily; keep weekly as the archive.
+timelapse_retention_days.hourly = 7
+timelapse_retention_days.daily = 90
 timelapse_retention_days.weekly = 0
 
 [web]

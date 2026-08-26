@@ -178,6 +178,6 @@ def test_timelapse_retention_defaults_are_per_cadence(tmp_path: Path):
 
     config = get_config((str(path),))
 
-    assert config.retention_for("hourly") == timedelta(days=14)
-    assert config.retention_for("daily") is None
+    assert config.retention_for("hourly") == timedelta(days=7)
+    assert config.retention_for("daily") == timedelta(days=90)
     assert config.retention_for("weekly") is None

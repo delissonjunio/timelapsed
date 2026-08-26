@@ -9,9 +9,10 @@ CONFIG_PATHS = ("/etc/timelapsed.ini", "~/.timelapsed.ini", "./timelapsed.ini")
 
 DEFAULT_CADENCES = "hourly,daily,weekly"
 DEFAULT_IMAGE_RETENTION_DAYS = 8
-# Videos are cheap to keep but hourly ones arrive 24x a day per channel, so they
-# get a short default. 0 means keep forever.
-DEFAULT_TIMELAPSE_RETENTION_DAYS = {"hourly": 14, "daily": 0, "weekly": 0}
+# Timelapse footage compresses badly, so a full 60-second render is ~140 MB and
+# daily is the expensive cadence. Bound hourly and daily, keep weekly forever.
+# 0 means keep forever.
+DEFAULT_TIMELAPSE_RETENTION_DAYS = {"hourly": 7, "daily": 90, "weekly": 0}
 
 logger = logging.getLogger(__name__)
 

@@ -126,15 +126,50 @@ config.
 
 ## Upgrades
 
+The checkout at `/opt/timelapsed` **is** the install — there is no copy to get out of sync — so an
+upgrade is a pull and a restart:
+
 ```bash
-cd ~/timelapsed
-git pull
-sudo bash deploy/install.sh    # idempotent; restarts both services
+/opt/timelapsed/deploy/update.sh
 ```
 
-`install.sh` preserves an existing `/etc/timelapsed.ini` and will not overwrite it. When new
-settings are added they get defaults, so an old config keeps working — check
+It pulls fast-forward-only, and when the commit actually changed it refreshes dependencies and
+reinstalls the systemd units before restarting both services and printing their status. By hand:
+
+```bash
+cd /opt/timelapsed && git pull && sudo systemctl restart timelapsed timelapsed-web
+```
+
+The checkout is owned by you rather than the service user, so `git pull` needs no `sudo`; only the
+restart does. The guest authenticates to the private repo with a read-only deploy key in
+`~/.ssh/id_ed25519`, so a pull works unattended and cannot push.
+
+If a release changes packaging rather than just code, `sudo bash deploy/install.sh` is still the
+full path and is idempotent.
+
+`/etc/timelapsed.ini` lives outside the checkout, so it is never touched by a pull or an install.
+New settings get defaults, so an old config keeps working — skim
 [Configuration](Configuration.md) after an upgrade to see whether anything new is worth setting.
+
+### The daily viewer restart
+
+`timelapsed-web-restart.timer` bounces `timelapsed-web` at 04:00 (±15 minutes) every day, so a slow
+leak or a wedged socket in the long-lived stdlib HTTP server never accumulates. It runs
+`systemctl try-restart`, so it does nothing when the viewer is deliberately stopped.
+
+```bash
+systemctl list-timers timelapsed-web-restart.timer
+journalctl -u timelapsed-web-restart -n 20
+```
+
+The capture daemon is deliberately **not** on this timer: restarting it drops the in-memory cadence
+state, and a restart near an hour boundary would skip that hour's render.
+
+To turn the bounce off:
+
+```bash
+sudo systemctl disable --now timelapsed-web-restart.timer
+```
 
 ## Backups
 
