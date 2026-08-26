@@ -95,13 +95,20 @@ def test_catalogue_refuses_path_traversal(stocked_library):
 
 # --- HTTP ------------------------------------------------------------------
 
-def test_index_renders_and_lists_every_video(base_url):
+def embedded_payload(body: bytes) -> list[dict]:
+    """The catalogue the page ships with, which is what the timeline draws from."""
+    marker = b'<script type="application/json" id="payload">'
+    start = body.index(marker) + len(marker)
+    return json.loads(body[start:body.index(b"</script>", start)].replace(b"<\\/", b"</"))
+
+
+def test_index_renders_and_embeds_every_video(base_url):
     status, headers, body = get(base_url + "/")
 
     assert status == 200
     assert headers["Content-Type"].startswith("text/html")
     assert b"Timelapsed" in body
-    assert body.count(b"<video") == 4
+    assert len(embedded_payload(body)) == 4
 
 
 def test_index_filters_by_channel_and_cadence(base_url):
@@ -109,9 +116,38 @@ def test_index_filters_by_channel_and_cadence(base_url):
     _, _, channel_one = get(base_url + "/?channel=1")
     _, _, weekly = get(base_url + "/?cadence=weekly")
 
-    assert all_videos.count(b"<video") == 4
-    assert channel_one.count(b"<video") == 3
-    assert weekly.count(b"<video") == 1
+    assert len(embedded_payload(all_videos)) == 4
+    assert len(embedded_payload(channel_one)) == 3
+    assert {e["cadence"] for e in embedded_payload(weekly)} == {"weekly"}
+
+
+def test_index_lays_out_a_lane_per_cadence(base_url):
+    _, _, body = get(base_url + "/")
+
+    # The whole point of the timeline: overlapping cadences get their own row.
+    for cadence in (b"hourly", b"daily", b"weekly"):
+        assert b'"' + cadence + b'"' in body
+    assert b'const CADENCES = ["weekly", "daily", "hourly"]' in body
+
+
+def test_a_crafted_filename_stays_data_in_the_embedded_payload(base_url, stocked_library):
+    # Everything before the first underscore is read back as the cadence name, so
+    # a file on disk controls a string the page renders. A path cannot contain a
+    # slash, so it cannot close the script block, but it can still carry markup.
+    hostile = '<img src=x onerror=alert(1)>_20260101_000000_UTC-20260101_010000_UTC'
+    (stocked_library.root_path / "1" / "timelapse" / f"{hostile}.mp4").write_bytes(b"x")
+
+    _, _, body = get(base_url + "/")
+    payload = embedded_payload(body)
+
+    assert any(entry["cadence"] == "<img src=x onerror=alert(1)>" for entry in payload)
+
+    # Every occurrence is confined to the JSON block, never live markup. It shows
+    # up twice there: once as the cadence, once inside the video URL.
+    block_start = body.index(b'id="payload"')
+    block_end = body.index(b"</script>", block_start)
+    assert body.count(b"<img src=x") == 2
+    assert body[block_start:block_end].count(b"<img src=x") == 2
 
 
 def test_index_is_valid_when_nothing_has_rendered(config, tmp_path):
@@ -128,7 +164,8 @@ def test_index_is_valid_when_nothing_has_rendered(config, tmp_path):
         thread.join(timeout=5)
 
     assert status == 200
-    assert b"No timelapses rendered yet" in body
+    assert embedded_payload(body) == []
+    assert b"Nothing rendered for this camera yet" in body
 
 
 def test_api_returns_json(base_url):
