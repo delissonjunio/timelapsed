@@ -11,6 +11,9 @@ import logging
 import mimetypes
 import re
 import signal
+import subprocess
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -27,6 +30,66 @@ logger = logging.getLogger(__name__)
 
 RANGE_HEADER = re.compile(r"bytes=(\d*)-(\d*)")
 STREAM_CHUNK_SIZE = 256 * 1024
+
+THUMBNAIL_WIDTH = 384
+THUMBNAIL_QUALITY = "6"  # ffmpeg -q:v, 2 best to 31 worst
+THUMBNAIL_CACHE_SIZE = 64
+
+
+class ThumbnailCache:
+    """Downscaled camera stills, keyed by source path and mtime.
+
+    The sidebar polls these every 30 seconds across every camera, and a 1080p
+    still is ~230 KB, so serving them raw would be over a megabyte a refresh for
+    a 170-pixel-wide box. ffmpeg is already a hard dependency for rendering, so
+    it does the scaling; the cache means it runs once per new still rather than
+    once per request.
+    """
+
+    def __init__(self, maximum_entries: int = THUMBNAIL_CACHE_SIZE):
+        self._entries: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+        self._maximum_entries = maximum_entries
+        self._lock = threading.Lock()
+
+    def get(self, source: Path) -> bytes | None:
+        try:
+            key = (str(source), source.stat().st_mtime_ns)
+        except OSError:
+            return None
+
+        with self._lock:
+            if key in self._entries:
+                self._entries.move_to_end(key)
+                return self._entries[key]
+
+        thumbnail = self._render(source)
+        if thumbnail is None:
+            return None
+
+        with self._lock:
+            self._entries[key] = thumbnail
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._maximum_entries:
+                self._entries.popitem(last=False)
+        return thumbnail
+
+    @staticmethod
+    def _render(source: Path) -> bytes | None:
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-loglevel", "error", "-i", str(source),
+                    # min() so a still smaller than the tile is never upscaled
+                    # into a file bigger than the original.
+                    "-vf", f"scale='min({THUMBNAIL_WIDTH},iw)':-2",
+                    "-q:v", THUMBNAIL_QUALITY, "-f", "image2", "-vcodec", "mjpeg", "pipe:1",
+                ],
+                capture_output=True, timeout=15, check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning("Could not build a thumbnail for %s: %s", source, error)
+            return None
+        return result.stdout or None
 
 
 @dataclass(frozen=True)
@@ -91,6 +154,21 @@ class TimelapseCatalogue:
         found.sort(key=lambda entry: entry.starts, reverse=True)
         return found
 
+    def latest_still(self, channel_id: str) -> Path | None:
+        """The most recent captured image for a channel, or None if it has none."""
+        if channel_id not in self.channels_with_images():
+            return None
+        entries = self.library._timestamped_paths(channel_id, "image")
+        return entries[-1][1] if entries else None
+
+    def channels_with_images(self) -> list[str]:
+        if not self.root_path.is_dir():
+            return []
+        return sorted(
+            entry.name for entry in self.root_path.iterdir()
+            if entry.is_dir() and (entry / "image").is_dir()
+        )
+
     def resolve_video(self, channel_id: str, filename: str) -> Path | None:
         """Resolve a video path, refusing anything that escapes the library root."""
         base = (self.root_path / channel_id / "timelapse").resolve()
@@ -124,7 +202,7 @@ html, body { height:100%; }
 body {
   margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
   font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  display:grid; grid-template-rows:auto minmax(0,1fr) auto; grid-template-columns:190px minmax(0,1fr);
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto; grid-template-columns:210px minmax(0,1fr);
 }
 header {
   grid-column:1/-1; display:flex; align-items:center; gap:.75rem;
@@ -138,16 +216,23 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 #channels { background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:.5rem; }
 #channels h2 { font-size:.65rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin:.4rem .5rem .5rem; }
 .cam {
-  display:flex; align-items:center; gap:.5rem; width:100%; text-align:left; cursor:pointer;
-  background:none; border:1px solid transparent; border-radius:8px; padding:.5rem .6rem;
-  color:var(--fg); font:inherit; font-size:.85rem;
+  display:block; width:100%; text-align:left; cursor:pointer; margin-bottom:.45rem;
+  background:none; border:1px solid var(--line); border-radius:9px; padding:0; overflow:hidden;
+  color:var(--fg); font:inherit; font-size:.8rem;
 }
-.cam:hover { background:var(--panel-2); }
-.cam[aria-pressed="true"] { background:var(--panel-2); border-color:var(--accent); }
+.cam:hover { border-color:#3a4459; }
+.cam[aria-pressed="true"] { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.cam .thumb { display:block; aspect-ratio:16/9; background:#05070b; position:relative; }
+.cam .thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.cam .thumb.blank::after {
+  content:"no signal"; position:absolute; inset:0; display:flex; align-items:center;
+  justify-content:center; font-size:.6rem; letter-spacing:.1em; text-transform:uppercase; color:#3d4557;
+}
+.cam .row { display:flex; align-items:center; gap:.45rem; padding:.4rem .55rem; background:var(--panel-2); }
 .cam .led { width:6px; height:6px; border-radius:50%; background:var(--muted); flex:none; }
 .cam[aria-pressed="true"] .led { background:var(--accent); box-shadow:0 0 6px var(--accent); }
 .cam .n { flex:1; }
-.cam .c { color:var(--muted); font-size:.75rem; font-variant-numeric:tabular-nums; }
+.cam .c { color:var(--muted); font-size:.72rem; font-variant-numeric:tabular-nums; }
 
 #stage { display:flex; flex-direction:column; min-height:0; padding:1rem; gap:.75rem; }
 #screen { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; background:#000;
@@ -200,7 +285,7 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
   #channels { grid-column:1; border-right:none; border-bottom:1px solid var(--line);
               display:flex; gap:.4rem; overflow-x:auto; padding:.5rem; }
   #channels h2 { display:none; }
-  .cam { width:auto; flex:none; }
+  .cam { width:132px; flex:none; margin-bottom:0; }
   #stage { grid-column:1; }
   #timeline { grid-column:1; }
 }
@@ -246,7 +331,7 @@ const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const RANGES = [["6h", 6 * HOUR], ["24h", DAY], ["7d", 7 * DAY], ["30d", 30 * DAY], ["All", 0]];
 const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY];
 
-const channels = [...new Set(ENTRIES.map(e => e.channel))].sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+const channels = JSON.parse(document.getElementById("channels-payload").textContent);
 const params = new URLSearchParams(location.search);
 
 const state = {
@@ -268,6 +353,8 @@ function el(tag, className, text) {
 // filename on disk can never inject a CSS value.
 const cadenceColour = name => CADENCES.includes(name) ? "var(--" + name + ")" : "var(--muted)";
 const forChannel = () => ENTRIES.filter(e => e.channel === state.channel);
+// Cache-busted rather than cached: the still behind it changes every capture.
+const thumbUrl = id => "/thumb/" + encodeURIComponent(id) + ".jpg?t=" + Date.now();
 const visible = () => forChannel().filter(e => state.show[e.cadence]);
 
 function fmtSize(bytes) {
@@ -308,9 +395,23 @@ function drawChannels() {
     const b = document.createElement("button");
     b.className = "cam";
     b.setAttribute("aria-pressed", String(id === state.channel));
+    b.dataset.channel = id;
+
+    const thumb = el("span", "thumb blank");
+    const img = document.createElement("img");
+    img.alt = "";
+    img.decoding = "async";
+    img.onload = () => thumb.classList.remove("blank");
+    img.onerror = () => { img.remove(); thumb.classList.add("blank"); };
+    img.src = thumbUrl(id);
+    thumb.appendChild(img);
+
     // textContent throughout: channel ids and cadence names come from filenames
     // on disk, so they are never interpolated into markup.
-    b.append(el("span", "led"), el("span", "n", "Camera " + id), el("span", "c", String(n)));
+    const row = el("span", "row");
+    row.append(el("span", "led"), el("span", "n", "Camera " + id), el("span", "c", String(n)));
+
+    b.append(thumb, row);
     b.onclick = () => { state.channel = id; state.selected = null; setView(state.end - state.start || DAY); drawAll(); };
     box.appendChild(b);
   }
@@ -503,6 +604,16 @@ addEventListener("keydown", ev => {
 
 function drawAll() { drawChannels(); drawTimeline(); drawNowPlaying(); }
 
+// Keep the wall of cameras roughly live without redrawing anything else.
+const THUMB_REFRESH = 30e3;
+setInterval(() => {
+  if (document.hidden) return;
+  for (const card of document.querySelectorAll(".cam")) {
+    const img = card.querySelector("img");
+    if (img) img.src = thumbUrl(card.dataset.channel);
+  }
+}, THUMB_REFRESH);
+
 drawControls();
 setView(DAY);
 drawAll();
@@ -522,13 +633,28 @@ def render_index(catalogue: TimelapseCatalogue, channel_id: str | None, cadence:
     and no loading state. The page filters and lays out client-side.
     """
     entries = catalogue.entries(channel_id, cadence)
-    payload = json.dumps([entry.as_dict() for entry in entries], separators=(",", ":"))
-    # </script> inside a script block would close it early; nothing else in JSON can escape.
-    payload = payload.replace("</", "<\\/")
+
+    # The union, so a camera that is capturing but has not rendered anything yet
+    # still gets a tile instead of vanishing from the wall.
+    channels = sorted(
+        set(catalogue.channels()) | set(catalogue.channels_with_images()),
+        key=lambda name: (len(name), name),
+    )
+
+    def block(element_id: str, value: object) -> str:
+        payload = json.dumps(value, separators=(",", ":"))
+        # </script> inside a script block would close it early. A filename cannot
+        # contain a slash, so this is belt and braces, but the payload is
+        # disk-derived and this is the one sequence that could escape.
+        payload = payload.replace("</", "<\\/")
+        return f'<script type="application/json" id="{element_id}">{payload}</script>'
 
     page = PAGE_TEMPLATE.replace(
-        '<script>\nconst ENTRIES',
-        f'<script type="application/json" id="payload">{payload}</script>\n<script>\nconst ENTRIES',
+        "<script>\nconst ENTRIES",
+        block("payload", [entry.as_dict() for entry in entries])
+        + "\n"
+        + block("channels-payload", channels)
+        + "\n<script>\nconst ENTRIES",
     )
     return page.encode()
 
@@ -537,8 +663,9 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
     server_version = "timelapsed"
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, catalogue: TimelapseCatalogue, **kwargs):
+    def __init__(self, *args, catalogue: TimelapseCatalogue, thumbnails: ThumbnailCache, **kwargs):
         self.catalogue = catalogue
+        self.thumbnails = thumbnails
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -561,6 +688,8 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                 self._send_bytes(body, "application/json")
             elif path.startswith("/video/"):
                 self._serve_video(path)
+            elif path.startswith("/thumb/"):
+                self._serve_thumbnail(path)
             elif path == "/healthz":
                 self._send_bytes(b"ok\n", "text/plain")
             else:
@@ -572,12 +701,31 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
             logger.exception("Error handling %s", self.path)
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal error")
 
-    def _send_bytes(self, body: bytes, content_type: str) -> None:
+    def _send_bytes(self, body: bytes, content_type: str, cache_control: str | None = None) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_thumbnail(self, path: str) -> None:
+        """The latest still for a camera, downscaled, for the sidebar."""
+        channel_id = path.removeprefix("/thumb/").removesuffix(".jpg")
+        # Channel ids are directory names; anything with a separator is not one.
+        if not channel_id or "/" in channel_id or channel_id in (".", ".."):
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        source = self.catalogue.latest_still(channel_id)
+        thumbnail = self.thumbnails.get(source) if source else None
+        if thumbnail is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "No still available")
+            return
+
+        # The sidebar cache-busts with a query parameter, so never cache these.
+        self._send_bytes(thumbnail, "image/jpeg", cache_control="no-store")
 
     def _serve_video(self, path: str) -> None:
         parts = path.removeprefix("/video/").split("/", 1)
@@ -637,7 +785,9 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
 
 def build_server(config: Config) -> ThreadingHTTPServer:
     catalogue = TimelapseCatalogue(config.image_capture_library_root)
-    handler = partial(TimelapseRequestHandler, catalogue=catalogue)
+    # One cache for the whole server: ThreadingHTTPServer builds a handler per
+    # request, so per-handler state would never survive to be reused.
+    handler = partial(TimelapseRequestHandler, catalogue=catalogue, thumbnails=ThumbnailCache())
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 
 

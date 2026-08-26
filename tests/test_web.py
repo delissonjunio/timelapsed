@@ -1,5 +1,6 @@
 """Exercises the viewer over real HTTP against a live server on a random port."""
 import json
+import struct
 import threading
 import urllib.error
 import urllib.request
@@ -8,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from timelapsed.web import TimelapseCatalogue, build_server
-from tests.conftest import BASE_TIME
+from timelapsed.image_capture_library import _parse_image_filename
+from timelapsed.web import THUMBNAIL_WIDTH, TimelapseCatalogue, build_server
+from tests.conftest import BASE_TIME, requires_ffmpeg
 
 VIDEO_BODY = b"".join(bytes([index % 256]) for index in range(4096))
 
@@ -243,3 +245,100 @@ def test_path_traversal_over_http_is_refused(base_url):
         get(base_url + "/video/1/%2e%2e%2f%2e%2e%2fetc%2fpasswd")
 
     assert raised.value.code == 404
+
+
+# --- camera thumbnails -----------------------------------------------------
+
+@pytest.fixture
+def library_with_stills(stocked_library, jpeg_bytes):
+    """Channel 1 has stills, channel 2 has none, channel 3 has stills but no renders."""
+    for channel_id in ("1", "3"):
+        for minutes_ago in (5, 3, 1):
+            stocked_library.store_image(
+                channel_id, "jpg", jpeg_bytes, BASE_TIME - timedelta(minutes=minutes_ago)
+            )
+    return stocked_library
+
+
+@pytest.fixture
+def stills_url(library_with_stills, config):
+    server = build_server(config)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://{server.server_address[0]}:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_catalogue_finds_the_newest_still(library_with_stills):
+    catalogue = TimelapseCatalogue(library_with_stills.root_path)
+
+    latest = catalogue.latest_still("1")
+
+    assert latest is not None
+    assert _parse_image_filename(latest.stem) == BASE_TIME - timedelta(minutes=1)
+    assert catalogue.latest_still("2") is None
+    assert catalogue.latest_still("nope") is None
+
+
+def jpeg_width(data: bytes) -> int:
+    """Width from the first JPEG start-of-frame marker."""
+    index = 2
+    while index < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        if marker in (0xC0, 0xC1, 0xC2):
+            return struct.unpack(">H", data[index + 7:index + 9])[0]
+        index += 2 + struct.unpack(">H", data[index + 2:index + 4])[0]
+    raise ValueError("no start-of-frame marker")
+
+
+@requires_ffmpeg
+def test_thumbnail_is_served_and_bounded_to_the_tile_width(stills_url, jpeg_bytes):
+    status, headers, body = get(stills_url + "/thumb/1.jpg")
+
+    assert status == 200
+    assert headers["Content-Type"] == "image/jpeg"
+    assert headers["Cache-Control"] == "no-store"
+    assert body.startswith(b"\xff\xd8")  # JPEG SOI
+    assert jpeg_width(body) <= THUMBNAIL_WIDTH
+    # Never upscaled past the source, so a small still does not grow.
+    assert jpeg_width(body) <= jpeg_width(jpeg_bytes)
+
+
+@requires_ffmpeg
+def test_thumbnails_are_cached_between_requests(stills_url):
+    first = get(stills_url + "/thumb/1.jpg")[2]
+    second = get(stills_url + "/thumb/1.jpg?t=123")[2]
+
+    assert first == second  # byte identical, so it was not re-encoded
+
+
+def test_a_camera_with_no_stills_has_no_thumbnail(stills_url):
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        get(stills_url + "/thumb/2.jpg")
+
+    assert raised.value.code == 404
+
+
+def test_thumbnail_paths_cannot_escape_the_library(stills_url):
+    for hostile in ("/thumb/..%2f..%2fetc%2fpasswd", "/thumb/...jpg", "/thumb/.jpg"):
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            get(stills_url + hostile)
+        assert raised.value.code == 404
+
+
+def test_the_camera_wall_includes_cameras_that_have_not_rendered_yet(stills_url):
+    _, _, body = get(stills_url + "/")
+
+    marker = b'<script type="application/json" id="channels-payload">'
+    start = body.index(marker) + len(marker)
+    channels = json.loads(body[start:body.index(b"</script>", start)])
+
+    # 1 and 2 have renders, 3 only has stills, and all three get a tile.
+    assert channels == ["1", "2", "3"]
