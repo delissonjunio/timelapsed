@@ -29,7 +29,27 @@ memory multiplier.
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning.md). |
+| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning.md).
+
+### The free-space floor
+
+Retention bounds how **old** files get, not how many **bytes** they occupy, so it cannot on its own
+promise the disk stays writable: add two cameras, point them at a more detailed scene, or let a
+video archive grow for a year and the steady state moves without any setting changing.
+
+`min_free_disk_gb` is the backstop. Every capture cycle checks free space — a `statvfs`, so it costs
+nothing — and when it falls below the floor the daemon deletes past retention until the floor is met
+again. It sacrifices in order of what cannot be recovered:
+
+1. **Stills past every render window** — free to drop; every render that could have used them has run
+2. **Hourly videos** — the most disposable history
+3. **Stills an upcoming render needs** — degrades a future video rather than destroying a finished one
+4. **Daily videos**
+5. **Weekly videos** — the archive, taken only when nothing else is left
+
+Each channel worker checks, but the deleting is serialised behind a lock file so six workers cannot
+race each other into over-deleting. When the floor still cannot be met after exhausting everything,
+it logs an error saying so — that means the configuration genuinely does not fit the disk. |
 | `resolution.width` | yes | — | Requested snapshot width. |
 | `resolution.height` | yes | — | Requested snapshot height. |
 
@@ -57,12 +77,33 @@ out shorter — it is never padded or slowed down.
 | `image_retention_days` | no | `8` | Delete stills older than this. `0` means keep forever. |
 | `timelapse_retention_days` | no | — | Baseline video retention for every cadence. `0` means keep forever. |
 | `timelapse_retention_days.<cadence>` | no | `hourly` 7, `daily` 90, `weekly` 0 | Per-cadence override. Wins over the baseline. |
+| `min_free_disk_gb` | no | `5` | Hard floor on free space. Below it, files are deleted past retention until it is met. `0` disables. |
 
 Timelapse footage compresses badly — consecutive frames are minutes apart, so a full 1,800-frame
 60-second video runs around 140 MB. That makes *daily* the expensive cadence and makes a single
 retention for all three wrong: keep everything and the disk fills, expire everything and the
 archive goes with it. Expire hourly after a week, bound daily, keep weekly forever. See
 [Storage Planning](Storage-Planning.md).
+
+### The free-space floor
+
+Retention bounds how **old** files get, not how many **bytes** they occupy, so it cannot on its own
+promise the disk stays writable: add two cameras, point them at a more detailed scene, or let a
+video archive grow for a year and the steady state moves without any setting changing.
+
+`min_free_disk_gb` is the backstop. Every capture cycle checks free space — a `statvfs`, so it costs
+nothing — and when it falls below the floor the daemon deletes past retention until the floor is met
+again. It sacrifices in order of what cannot be recovered:
+
+1. **Stills past every render window** — free to drop; every render that could have used them has run
+2. **Hourly videos** — the most disposable history
+3. **Stills an upcoming render needs** — degrades a future video rather than destroying a finished one
+4. **Daily videos**
+5. **Weekly videos** — the archive, taken only when nothing else is left
+
+Each channel worker checks, but the deleting is serialised behind a lock file so six workers cannot
+race each other into over-deleting. When the floor still cannot be met after exhausting everything,
+it logs an error saying so — that means the configuration genuinely does not fit the disk.
 
 **`image_retention_days` must be strictly greater than your longest cadence window.** With `weekly`
 enabled, that means at least 8. If it isn't, pruning deletes the stills before the weekly render

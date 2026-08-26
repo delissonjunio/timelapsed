@@ -66,6 +66,7 @@ def config(tmp_path: Path) -> Config:
         image_capture_library_root=tmp_path / "capture",
         image_retention=timedelta(days=7),
         timelapse_retention={"hourly": None, "daily": None, "weekly": None},
+        minimum_free_bytes=5_000_000_000,
         web_host="127.0.0.1",
         web_port=0,
         logging_level=logging.INFO,

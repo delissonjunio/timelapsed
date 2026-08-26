@@ -151,6 +151,13 @@ def capture_continuously(channel_id: str, capture_agent: NVRCaptureAgent, librar
                         channel_id, "timelapse", config.retention_for(cadence.name), now,
                         cadence_name=cadence.name,
                     )
+
+            # Checked every cycle, not every prune: a disk that fills between
+            # hourly prunes would otherwise lose an hour of captures. The check
+            # itself is a statvfs, and the expensive part only runs below the floor.
+            library.reclaim(
+                config.channels, config.minimum_free_bytes, config.longest_cadence_window, now,
+            )
         except Exception:
             logger.exception("Timelapse scheduling failed for channel %s, continuing", channel_id)
 

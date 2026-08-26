@@ -94,6 +94,23 @@ sudo chown -R timelapsed:timelapsed /var/lib/timelapsed
 Pruning runs once an hour per channel, not on every cycle, so give it an hour before concluding it
 is broken.
 
+If free space drops below `min_free_disk_gb` you will see the backstop working:
+
+```
+Only 3.9 GB free, below the 5.0 GB floor; reclaiming 1.1 GB past retention
+Reclaimed 4820 stills past every render window (1.2 GB so far)
+```
+
+That is the system defending itself, not a failure — but it means retention is too generous for this
+disk, so shorten it or grow the disk rather than leaving the floor to do the work every hour. This
+is an error, and does need action:
+
+```
+Reclaimed only 0.2 GB of the 1.1 GB needed: nothing left to delete.
+```
+
+It means the library has been emptied down to the weekly archive and still does not fit.
+
 ### Renders are slow or the VM is pegged
 
 `ffmpeg` is the only heavy thing here. Check what a render actually costs:

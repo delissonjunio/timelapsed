@@ -13,6 +13,8 @@ DEFAULT_IMAGE_RETENTION_DAYS = 8
 # daily is the expensive cadence. Bound hourly and daily, keep weekly forever.
 # 0 means keep forever.
 DEFAULT_TIMELAPSE_RETENTION_DAYS = {"hourly": 7, "daily": 90, "weekly": 0}
+# Enough headroom for render scratch space, the journal and an apt upgrade.
+DEFAULT_MINIMUM_FREE_DISK_GB = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,12 @@ def validate_config(config: Config) -> list[str]:
             f"image_retention_days to at least {longest_window.days + 1}."
         )
 
+    if config.minimum_free_bytes <= 0:
+        warnings.append(
+            "min_free_disk_gb is 0, so nothing stops the library from filling the disk if "
+            "retention turns out to be too generous for this channel count. Set it to a few GB."
+        )
+
     frames_per_window = longest_window.total_seconds() / config.capture_interval.total_seconds()
     if frames_per_window < config.timelapse_min_frames:
         warnings.append(
@@ -116,6 +124,11 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
             parser, "image_capture_library", "image_retention_days", fallback=DEFAULT_IMAGE_RETENTION_DAYS
         ),
         timelapse_retention=_parse_timelapse_retention(parser, cadences),
+        minimum_free_bytes=int(
+            max(0.0, parser.getfloat(
+                "image_capture_library", "min_free_disk_gb", fallback=DEFAULT_MINIMUM_FREE_DISK_GB
+            )) * 1_000_000_000
+        ),
 
         web_host=parser.get("web", "host", fallback="0.0.0.0"),
         web_port=parser.getint("web", "port", fallback=8080),

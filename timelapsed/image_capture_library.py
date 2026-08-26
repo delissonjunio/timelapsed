@@ -1,5 +1,8 @@
+import errno
+import fcntl
 import glob
 import logging
+import os
 import shutil
 from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
@@ -11,6 +14,8 @@ logger = logging.getLogger(__name__)
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%Z"
 
 TargetName = Literal["image", "timelapse"]
+
+RECLAIM_LOCK_NAME = ".reclaim.lock"
 
 
 def _generate_timelapse_filename(cadence_name: str, recording_starts: datetime, recording_finishes: datetime) -> str:
@@ -191,3 +196,118 @@ class ImageCaptureLibrary:
                 deleted, cadence_name or target_name, str(retention), channel_id,
             )
         return deleted
+
+    def free_bytes(self) -> int:
+        """Bytes still available on the filesystem holding the library."""
+        self.root_path.mkdir(parents=True, exist_ok=True)
+        return shutil.disk_usage(self.root_path).free
+
+    def _sorted_across_channels(
+        self, channel_ids: Sequence[str], target_name: TargetName, cadence_name: str | None = None
+    ) -> list[tuple[datetime, Path]]:
+        entries: list[tuple[datetime, Path]] = []
+        for channel_id in channel_ids:
+            for timestamp, path in self._timestamped_paths(channel_id, target_name):
+                if cadence_name is not None and parse_timelapse_filename(path.stem)[0] != cadence_name:
+                    continue
+                entries.append((timestamp, path))
+        entries.sort(key=lambda entry: entry[0])
+        return entries
+
+    def _reclaim_tiers(
+        self, channel_ids: Sequence[str], protected_window: timedelta, now: datetime
+    ) -> list[tuple[str, list[tuple[datetime, Path]]]]:
+        """What to sacrifice under disk pressure, least valuable first.
+
+        The ordering is about what cannot be recovered. Stills older than the
+        longest cadence window are free to drop: every render that could have
+        used them has already run. Hourly clips are the most disposable history.
+        Only then are stills a render still needs taken, because losing those
+        degrades an upcoming video rather than destroying a finished one. Daily
+        and weekly videos are the archive and go last.
+        """
+        stills = self._sorted_across_channels(channel_ids, "image")
+        cutoff = now - protected_window
+        return [
+            ("stills past every render window", [e for e in stills if e[0] < cutoff]),
+            ("hourly videos", self._sorted_across_channels(channel_ids, "timelapse", "hourly")),
+            ("stills an upcoming render needs", [e for e in stills if e[0] >= cutoff]),
+            ("daily videos", self._sorted_across_channels(channel_ids, "timelapse", "daily")),
+            ("weekly videos", self._sorted_across_channels(channel_ids, "timelapse", "weekly")),
+        ]
+
+    def reclaim(
+        self,
+        channel_ids: Sequence[str],
+        minimum_free_bytes: int,
+        protected_window: timedelta,
+        now: datetime,
+    ) -> int:
+        """Delete past the configured retention until the free-space floor is met.
+
+        Retention alone cannot promise a floor: it bounds age, not bytes, so a
+        larger camera count, a bigger image, or a longer video archive silently
+        moves the steady state. This is the backstop that keeps the daemon
+        writing when that happens. Returns the number of bytes reclaimed.
+
+        Every channel worker calls this, so the work is serialised behind a lock
+        file: whichever process gets there does the reclaiming and the rest skip
+        the cycle rather than racing each other into over-deleting.
+        """
+        if minimum_free_bytes <= 0:
+            return 0
+
+        free = self.free_bytes()
+        if free >= minimum_free_bytes:
+            return 0
+
+        lock_path = self.root_path / RECLAIM_LOCK_NAME
+        lock_file = os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o644)
+        try:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in (errno.EACCES, errno.EAGAIN):
+                    return 0  # Another worker is already reclaiming.
+                raise
+
+            # Re-read: the holder of the lock may have already fixed this.
+            free = self.free_bytes()
+            if free >= minimum_free_bytes:
+                return 0
+
+            needed = minimum_free_bytes - free
+            logger.warning(
+                "Only %.1f GB free, below the %.1f GB floor; reclaiming %.1f GB past retention",
+                free / 1e9, minimum_free_bytes / 1e9, needed / 1e9,
+            )
+
+            reclaimed = 0
+            for tier_name, candidates in self._reclaim_tiers(channel_ids, protected_window, now):
+                if reclaimed >= needed:
+                    break
+                deleted = 0
+                for _, path in candidates:
+                    if reclaimed >= needed:
+                        break
+                    try:
+                        size = path.stat().st_size
+                        path.unlink()
+                    except OSError:
+                        continue  # Vanished under us, or not ours to delete.
+                    reclaimed += size
+                    deleted += 1
+                if deleted:
+                    logger.warning(
+                        "Reclaimed %d %s (%.1f GB so far)", deleted, tier_name, reclaimed / 1e9
+                    )
+
+            if reclaimed < needed:
+                logger.error(
+                    "Reclaimed only %.1f GB of the %.1f GB needed: nothing left to delete. "
+                    "The library cannot fit this configuration; shorten retention or grow the disk.",
+                    reclaimed / 1e9, needed / 1e9,
+                )
+            return reclaimed
+        finally:
+            os.close(lock_file)

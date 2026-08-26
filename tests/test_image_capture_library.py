@@ -1,9 +1,14 @@
+import fcntl
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import timelapsed.image_capture_library as icl_module
 from timelapsed.image_capture_library import (
+    RECLAIM_LOCK_NAME,
     ImageCaptureLibrary,
     _generate_image_filename,
     _parse_image_filename,
@@ -180,3 +185,80 @@ def test_prune_by_cadence_leaves_other_cadences_alone(library, tmp_path: Path):
     assert deleted == 6
     assert sum(1 for stem in survivors if stem.startswith("weekly_")) == 10
     assert sum(1 for stem in survivors if stem.startswith("hourly_")) == 4
+
+
+@pytest.fixture
+def stocked_library(library, tmp_path: Path):
+    """A library holding both stills and every cadence of video, across two channels."""
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 1000)
+    for channel_id in ("1", "2"):
+        for age_days in range(12):
+            taken_at = BASE_TIME - timedelta(days=age_days)
+            library.store_image(channel_id, "jpg", b"i" * 1000, taken_at)
+            for cadence in ("hourly", "daily", "weekly"):
+                library.store_timelapse(channel_id, source, cadence, taken_at, taken_at + timedelta(hours=1))
+    return library
+
+
+def _surviving(library, channel_id, target, cadence=None):
+    entries = library._timestamped_paths(channel_id, target)
+    if cadence:
+        entries = [e for e in entries if e[1].stem.startswith(f"{cadence}_")]
+    return [timestamp for timestamp, _ in entries]
+
+
+def test_reclaim_does_nothing_while_free_space_is_above_the_floor(stocked_library, monkeypatch):
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=100, total=0, used=0))
+
+    assert stocked_library.reclaim(["1", "2"], minimum_free_bytes=50, protected_window=timedelta(days=7), now=BASE_TIME) == 0
+    assert len(_surviving(stocked_library, "1", "image")) == 12
+
+
+def test_reclaim_is_disabled_by_a_zero_floor(stocked_library, monkeypatch):
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    assert stocked_library.reclaim(["1", "2"], 0, timedelta(days=7), BASE_TIME) == 0
+    assert len(_surviving(stocked_library, "1", "image")) == 12
+
+
+def test_reclaim_takes_expendable_stills_before_any_video(stocked_library, monkeypatch):
+    # 8 stills per channel sit past the 7-day window; 3000 bytes is fewer than those 16 files.
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    reclaimed = stocked_library.reclaim(["1", "2"], 3000, timedelta(days=7), BASE_TIME)
+
+    assert reclaimed >= 3000
+    assert len(_surviving(stocked_library, "1", "timelapse")) == 36  # every video untouched
+    survivors = _surviving(stocked_library, "1", "image") + _surviving(stocked_library, "2", "image")
+    assert len(survivors) == 24 - 3  # oldest first, globally across channels
+    assert min(survivors) > BASE_TIME - timedelta(days=11)
+
+
+def test_reclaim_walks_the_ladder_and_spares_the_weekly_archive(stocked_library, monkeypatch):
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    # 24 stills and 72 videos of 1000 bytes each: 80,000 exhausts everything but
+    # part of the weekly archive, which the ladder reaches last.
+    reclaimed = stocked_library.reclaim(["1", "2"], 80_000, timedelta(days=7), BASE_TIME)
+
+    assert reclaimed > 0
+    for channel_id in ("1", "2"):
+        assert _surviving(stocked_library, channel_id, "image") == []
+        assert _surviving(stocked_library, channel_id, "timelapse", "hourly") == []
+        assert _surviving(stocked_library, channel_id, "timelapse", "daily") == []
+        assert len(_surviving(stocked_library, channel_id, "timelapse", "weekly")) < 12
+
+
+def test_reclaim_skips_when_another_worker_holds_the_lock(stocked_library, monkeypatch):
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    held = os.open(stocked_library.root_path / RECLAIM_LOCK_NAME, os.O_CREAT | os.O_WRONLY, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        assert stocked_library.reclaim(["1", "2"], 80_000, timedelta(days=7), BASE_TIME) == 0
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+
+    assert len(_surviving(stocked_library, "1", "image")) == 12

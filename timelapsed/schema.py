@@ -65,6 +65,9 @@ class Config:
     # Keyed by cadence name: hourly videos are numerous and disposable, weekly
     # ones are the archive, so they do not share a retention.
     timelapse_retention: dict[str, timedelta | None]
+    # Hard floor on free space. Retention bounds age, not bytes, so this is what
+    # actually keeps the daemon writing when the steady state moves. 0 disables.
+    minimum_free_bytes: int
 
     web_host: str
     web_port: int

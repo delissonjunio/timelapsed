@@ -148,6 +148,12 @@ def test_validate_warns_when_capture_interval_is_too_slow(config):
     assert any("below min_frames" in warning for warning in validate_config(config))
 
 
+def test_validate_warns_when_the_disk_floor_is_disabled(config):
+    config.minimum_free_bytes = 0
+
+    assert any("min_free_disk_gb" in warning for warning in validate_config(config))
+
+
 def test_validate_is_quiet_for_a_sane_config(config):
     config.image_retention = timedelta(days=8)
 

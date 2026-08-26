@@ -45,6 +45,13 @@ image_retention_days = 8
 timelapse_retention_days.hourly = 7
 timelapse_retention_days.daily = 90
 timelapse_retention_days.weekly = 0
+# Hard floor on free space, in GB. Retention bounds how OLD files get, not how
+# many BYTES they take, so it cannot promise the disk stays writable if the
+# channel count, image size or video archive grows. Drop below this floor and
+# the daemon deletes past retention until it is met again, sacrificing in this
+# order: stills no render still needs, hourly videos, stills an upcoming render
+# needs, daily videos, and weekly videos last. 0 disables the floor entirely.
+min_free_disk_gb = 5
 
 [web]
 # The built-in viewer. Bind to 0.0.0.0 and put Tailscale Serve in front of it,

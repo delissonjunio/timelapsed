@@ -97,6 +97,17 @@ sudo -n qm disk resize 302 scsi0 300G          # on the Proxmox host
 sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1   # in the guest
 ```
 
+## The floor beneath all of this
+
+Every figure above is an estimate, and estimates drift: a camera gets added, a scene gets busier,
+an archive grows for a year. `min_free_disk_gb` (default **5**) is what makes that survivable —
+below it, the daemon deletes past retention until the floor is met, sacrificing stills no render
+still needs first and the weekly archive last. See
+[Configuration](Configuration.md) for the full ladder.
+
+Treat the floor as a backstop, not a plan. If it fires regularly, retention is too generous for the
+disk: shorten it or grow the disk.
+
 ## Retention and cadences interact
 
 `image_retention_days` **must be greater than your longest cadence window**:
