@@ -387,24 +387,19 @@ function clampView() {
   if (span < 15 * MIN) { const mid = (state.start + state.end) / 2; state.start = mid - 7.5 * MIN; state.end = mid + 7.5 * MIN; }
 }
 
-function drawChannels() {
+// Built once. Selecting a camera only flips aria-pressed, because rebuilding the
+// wall would hand every tile a fresh <img> and blank the whole thing while six
+// thumbnails refetched.
+function buildChannels() {
   const box = $("channels");
-  box.querySelectorAll(".cam").forEach(n => n.remove());
   for (const id of channels) {
     const n = ENTRIES.filter(e => e.channel === id).length;
     const b = document.createElement("button");
     b.className = "cam";
-    b.setAttribute("aria-pressed", String(id === state.channel));
     b.dataset.channel = id;
 
     const thumb = el("span", "thumb blank");
-    const img = document.createElement("img");
-    img.alt = "";
-    img.decoding = "async";
-    img.onload = () => thumb.classList.remove("blank");
-    img.onerror = () => { img.remove(); thumb.classList.add("blank"); };
-    img.src = thumbUrl(id);
-    thumb.appendChild(img);
+    thumb.appendChild(newThumbImage(id, () => thumb.classList.remove("blank")));
 
     // textContent throughout: channel ids and cadence names come from filenames
     // on disk, so they are never interpolated into markup.
@@ -412,8 +407,39 @@ function drawChannels() {
     row.append(el("span", "led"), el("span", "n", "Camera " + id), el("span", "c", String(n)));
 
     b.append(thumb, row);
-    b.onclick = () => { state.channel = id; state.selected = null; setView(state.end - state.start || DAY); drawAll(); };
+    b.onclick = () => {
+      if (state.channel === id) return;
+      state.channel = id;
+      state.selected = null;
+      setView(state.end - state.start || DAY);
+      syncChannels();
+      drawTimeline();
+      drawNowPlaying();
+    };
     box.appendChild(b);
+  }
+  syncChannels();
+}
+
+// onReady fires once the image has decoded, which is when it is safe to put it
+// on the page. src is assigned last so no handler is attached after the load.
+function newThumbImage(id, onReady) {
+  const img = document.createElement("img");
+  img.alt = "";
+  img.decoding = "async";
+  img.onload = () => onReady(img);
+  img.onerror = () => {
+    const parent = img.parentNode;
+    img.remove();
+    if (parent) parent.classList.add("blank");
+  };
+  img.src = thumbUrl(id);
+  return img;
+}
+
+function syncChannels() {
+  for (const card of document.querySelectorAll(".cam")) {
+    card.setAttribute("aria-pressed", String(card.dataset.channel === state.channel));
   }
 }
 
@@ -602,21 +628,28 @@ addEventListener("keydown", ev => {
   else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
 });
 
-function drawAll() { drawChannels(); drawTimeline(); drawNowPlaying(); }
-
-// Keep the wall of cameras roughly live without redrawing anything else.
+// Keep the wall roughly live. The replacement is decoded off-screen and only
+// swapped in once it has loaded, so a tile never flashes empty mid-refresh.
 const THUMB_REFRESH = 30e3;
 setInterval(() => {
   if (document.hidden) return;
   for (const card of document.querySelectorAll(".cam")) {
-    const img = card.querySelector("img");
-    if (img) img.src = thumbUrl(card.dataset.channel);
+    const thumb = card.querySelector(".thumb");
+    if (!thumb) continue;
+    newThumbImage(card.dataset.channel, next => {
+      const current = thumb.querySelector("img");
+      thumb.classList.remove("blank");
+      if (current) current.replaceWith(next);
+      else thumb.appendChild(next);
+    });
   }
 }, THUMB_REFRESH);
 
 drawControls();
+buildChannels();
 setView(DAY);
-drawAll();
+drawTimeline();
+drawNowPlaying();
 const latest = visible().sort((a, b) => b.s - a.s)[0];
 if (latest) select(latest);
 </script>
