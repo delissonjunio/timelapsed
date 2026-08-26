@@ -1,0 +1,14 @@
+[Unit]
+Description=Restart the timelapsed web viewer daily
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.md
+
+[Timer]
+# Small, long-lived stdlib HTTP server. A daily bounce keeps any slow leak or
+# wedged socket from mattering, at the cost of one dropped video seek at 04:00.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=timelapsed-web-restart.service
+
+[Install]
+WantedBy=timers.target

@@ -38,8 +38,13 @@ root = /var/lib/timelapsed
 # Delete captured stills older than this. 0 keeps them forever, which will fill the disk.
 # Must be GREATER than the longest cadence window: weekly renders need 7 days of stills.
 image_retention_days = 8
-# Delete rendered videos older than this. 0 keeps them forever (they are small).
-timelapse_retention_days = 0
+# Delete rendered videos older than this. 0 keeps them forever.
+# Per-cadence overrides win over the baseline. Hourly videos arrive 24x a day per
+# channel and are the only ones that meaningfully consume disk, so they expire;
+# daily and weekly are the archive and are kept.
+timelapse_retention_days.hourly = 14
+timelapse_retention_days.daily = 0
+timelapse_retention_days.weekly = 0
 
 [web]
 # The built-in viewer. Bind to 0.0.0.0 and put Tailscale Serve in front of it,

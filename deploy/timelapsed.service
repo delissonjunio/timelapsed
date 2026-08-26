@@ -1,6 +1,6 @@
 [Unit]
 Description=Timelapsed NVR capture daemon
-Documentation=https://github.com/delissonjunio/timelapsed/wiki
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.md
 After=network-online.target
 Wants=network-online.target
 

@@ -54,10 +54,11 @@ steady state ≈ channels × (86400 ÷ interval) × avg_image_size × image_rete
 
 Then add headroom for:
 
-* **Rendered videos** — small, but they accumulate forever at the default `timelapse_retention_days = 0`.
-  A 60-second 1080p timelapse at CRF 23 is roughly 5–15 MB. Three channels producing hourly, daily
-  and weekly videos is about 28 videos a day, so **on the order of 100 GB per year**. Set
-  `timelapse_retention_days = 365` if that matters.
+* **Rendered videos** — individually small, but hourly ones are numerous. A 60-second 1080p
+  timelapse at CRF 23 is roughly 5–15 MB. Three channels produce 72 hourly videos a day against
+  3 daily and 3 weekly, so hourly is ~99% of the video bytes: **on the order of 100 GB per year**
+  if kept forever. The default `timelapse_retention_days.hourly = 14` caps that at about **15 GB**
+  while daily and weekly are kept indefinitely.
 * **Render scratch space** — renders hardlink rather than copy where the filesystem allows it, so
   staging is usually free. Across a filesystem boundary it falls back to real copies, needing up to
   `target_frames × avg_image_size` (~500 MB) temporarily. `PrivateTmp=true` in the unit puts this
@@ -86,7 +87,8 @@ startup, but the render still silently produces nothing. This is the most common
 The stills are the expensive part; the videos are not. The intended pattern is:
 
 * `image_retention_days = 8` — just enough to feed a weekly render
-* `timelapse_retention_days = 0` — keep every video forever
+* `timelapse_retention_days.hourly = 14` — hourly clips are for "what happened this morning", not for the archive
+* `timelapse_retention_days.daily = 0` and `.weekly = 0` — keep the archive forever
 
 You end up with a permanent hourly, daily and weekly record at a fraction of a percent of the raw
 storage. If you want the raw stills archived too, sync them off the box before pruning catches

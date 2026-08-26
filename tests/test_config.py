@@ -78,7 +78,7 @@ def test_parses_every_setting(tmp_path: Path):
     assert config.web_port == 8080
     assert config.image_capture_library_root == tmp_path / "library"
     assert config.image_retention == timedelta(days=14)
-    assert config.timelapse_retention is None  # 0 days means keep forever
+    assert config.retention_for("weekly") is None  # 0 days means keep forever
     assert config.logging_level == logging.DEBUG
 
 
@@ -91,7 +91,7 @@ def test_optional_settings_fall_back_to_defaults(tmp_path: Path):
     assert config.timelapse_min_frames == 60
     assert config.image_retention == timedelta(days=8)  # one day clear of the weekly window
     assert [c.name for c in config.timelapse_cadences] == ["hourly", "daily", "weekly"]
-    assert config.timelapse_retention is None
+    assert config.retention_for("weekly") is None
     assert config.logging_level == logging.INFO
 
 
@@ -152,3 +152,32 @@ def test_validate_is_quiet_for_a_sane_config(config):
     config.image_retention = timedelta(days=8)
 
     assert validate_config(config) == []
+
+
+def test_per_cadence_timelapse_retention_overrides_the_baseline(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG.replace(
+            "root = /var/lib/timelapsed",
+            "root = /var/lib/timelapsed\n"
+            "timelapse_retention_days = 30\n"
+            "timelapse_retention_days.hourly = 2\n"
+            "timelapse_retention_days.weekly = 0",
+        ),
+    )
+
+    config = get_config((str(path),))
+
+    assert config.retention_for("hourly") == timedelta(days=2)
+    assert config.retention_for("daily") == timedelta(days=30)  # inherits the baseline
+    assert config.retention_for("weekly") is None  # 0 wins over the baseline
+
+
+def test_timelapse_retention_defaults_are_per_cadence(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", MINIMAL_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.retention_for("hourly") == timedelta(days=14)
+    assert config.retention_for("daily") is None
+    assert config.retention_for("weekly") is None

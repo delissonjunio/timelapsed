@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart the timelapsed web viewer
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.md
+# Nothing to restart if the viewer is not supposed to be running.
+After=timelapsed-web.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart timelapsed-web.service

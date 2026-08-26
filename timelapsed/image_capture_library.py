@@ -151,12 +151,22 @@ class ImageCaptureLibrary:
             if start <= timestamp <= end
         ]
 
-    def prune(self, channel_id: str, target_name: TargetName, retention: timedelta | None, now: datetime) -> int:
+    def prune(
+        self,
+        channel_id: str,
+        target_name: TargetName,
+        retention: timedelta | None,
+        now: datetime,
+        cadence_name: str | None = None,
+    ) -> int:
         """Delete files for a channel older than retention. Returns the number deleted.
 
         A retention of None means keep forever. Nothing captures storage growth
         automatically, so this is the only thing standing between a 5 second
         capture interval and a full disk.
+
+        `cadence_name` narrows a timelapse prune to one cadence, so hourly videos
+        can expire quickly while weekly ones are kept indefinitely.
         """
         if retention is None:
             return 0
@@ -167,6 +177,8 @@ class ImageCaptureLibrary:
             if timestamp >= cutoff:
                 # Entries are sorted oldest first, so nothing after this is stale.
                 break
+            if cadence_name is not None and parse_timelapse_filename(path.stem)[0] != cadence_name:
+                continue
             try:
                 path.unlink()
                 deleted += 1
@@ -176,6 +188,6 @@ class ImageCaptureLibrary:
         if deleted:
             logger.info(
                 "Pruned %d %s file(s) older than %s for channel %s",
-                deleted, target_name, str(retention), channel_id,
+                deleted, cadence_name or target_name, str(retention), channel_id,
             )
         return deleted

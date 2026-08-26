@@ -164,3 +164,19 @@ def test_prune_targets_timelapses_independently(library, populate_images, tmp_pa
 
     assert deleted == 2
     assert len(library.retrieve_images_within("1", BASE_TIME - timedelta(days=365), BASE_TIME)) == 5
+
+
+def test_prune_by_cadence_leaves_other_cadences_alone(library, tmp_path: Path):
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"video")
+    for age in range(10):
+        starts = BASE_TIME - timedelta(days=age)
+        for cadence in ("hourly", "weekly"):
+            library.store_timelapse("1", source, cadence, starts, starts + timedelta(hours=1))
+
+    deleted = library.prune("1", "timelapse", timedelta(days=3), BASE_TIME, cadence_name="hourly")
+
+    survivors = sorted(p.stem for p in (library.root_path / "1" / "timelapse").iterdir())
+    assert deleted == 6
+    assert sum(1 for stem in survivors if stem.startswith("weekly_")) == 10
+    assert sum(1 for stem in survivors if stem.startswith("hourly_")) == 4

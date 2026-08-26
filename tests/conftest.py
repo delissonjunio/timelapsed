@@ -65,7 +65,7 @@ def config(tmp_path: Path) -> Config:
         timelapse_cadences=[CADENCES["hourly"], CADENCES["daily"], CADENCES["weekly"]],
         image_capture_library_root=tmp_path / "capture",
         image_retention=timedelta(days=7),
-        timelapse_retention=None,
+        timelapse_retention={"hourly": None, "daily": None, "weekly": None},
         web_host="127.0.0.1",
         web_port=0,
         logging_level=logging.INFO,

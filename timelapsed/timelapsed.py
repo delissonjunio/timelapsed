@@ -146,7 +146,11 @@ def capture_continuously(channel_id: str, capture_agent: NVRCaptureAgent, librar
             if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:
                 last_pruned_at = now
                 library.prune(channel_id, "image", config.image_retention, now)
-                library.prune(channel_id, "timelapse", config.timelapse_retention, now)
+                for cadence in config.timelapse_cadences:
+                    library.prune(
+                        channel_id, "timelapse", config.retention_for(cadence.name), now,
+                        cadence_name=cadence.name,
+                    )
         except Exception:
             logger.exception("Timelapse scheduling failed for channel %s, continuing", channel_id)
 

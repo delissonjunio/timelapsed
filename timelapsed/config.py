@@ -9,6 +9,9 @@ CONFIG_PATHS = ("/etc/timelapsed.ini", "~/.timelapsed.ini", "./timelapsed.ini")
 
 DEFAULT_CADENCES = "hourly,daily,weekly"
 DEFAULT_IMAGE_RETENTION_DAYS = 8
+# Videos are cheap to keep but hourly ones arrive 24x a day per channel, so they
+# get a short default. 0 means keep forever.
+DEFAULT_TIMELAPSE_RETENTION_DAYS = {"hourly": 14, "daily": 0, "weekly": 0}
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,26 @@ def _optional_days(parser: configparser.ConfigParser, section: str, option: str,
     """Read a retention setting in days. 0 (or negative) means keep forever."""
     days = parser.getint(section, option, fallback=fallback)
     return timedelta(days=days) if days > 0 else None
+
+
+def _parse_timelapse_retention(
+    parser: configparser.ConfigParser, cadences: list[Cadence]
+) -> dict[str, timedelta | None]:
+    """Per-cadence video retention.
+
+    `timelapse_retention_days` sets the baseline for every cadence;
+    `timelapse_retention_days.<cadence>` overrides one of them. Absent both, each
+    cadence falls back to its own built-in default.
+    """
+    section = "image_capture_library"
+    baseline = parser.getint(section, "timelapse_retention_days", fallback=None)
+
+    retention: dict[str, timedelta | None] = {}
+    for cadence in cadences:
+        fallback = baseline if baseline is not None else DEFAULT_TIMELAPSE_RETENTION_DAYS.get(cadence.name, 0)
+        days = parser.getint(section, f"timelapse_retention_days.{cadence.name}", fallback=fallback)
+        retention[cadence.name] = timedelta(days=days) if days > 0 else None
+    return retention
 
 
 def _parse_cadences(raw: str) -> list[Cadence]:
@@ -68,6 +91,8 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
             "No timelapsed config found. Looked in: " + ", ".join(str(p) for p in read_paths)
         )
 
+    cadences = _parse_cadences(parser.get("timelapse", "cadences", fallback=DEFAULT_CADENCES))
+
     return Config(
         nvr_url=parser["nvr"]["url"].rstrip("/"),
         nvr_username=parser["nvr"]["username"],
@@ -83,15 +108,13 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         timelapse_video_duration=timedelta(seconds=parser.getint("timelapse", "duration_seconds")),
         timelapse_output_fps=parser.getint("timelapse", "output_fps", fallback=30),
         timelapse_min_frames=parser.getint("timelapse", "min_frames", fallback=60),
-        timelapse_cadences=_parse_cadences(parser.get("timelapse", "cadences", fallback=DEFAULT_CADENCES)),
+        timelapse_cadences=cadences,
 
         image_capture_library_root=Path(parser["image_capture_library"]["root"]).expanduser(),
         image_retention=_optional_days(
             parser, "image_capture_library", "image_retention_days", fallback=DEFAULT_IMAGE_RETENTION_DAYS
         ),
-        timelapse_retention=_optional_days(
-            parser, "image_capture_library", "timelapse_retention_days", fallback=0
-        ),
+        timelapse_retention=_parse_timelapse_retention(parser, cadences),
 
         web_host=parser.get("web", "host", fallback="0.0.0.0"),
         web_port=parser.getint("web", "port", fallback=8080),

@@ -62,7 +62,9 @@ class Config:
 
     image_capture_library_root: Path
     image_retention: timedelta | None
-    timelapse_retention: timedelta | None
+    # Keyed by cadence name: hourly videos are numerous and disposable, weekly
+    # ones are the archive, so they do not share a retention.
+    timelapse_retention: dict[str, timedelta | None]
 
     web_host: str
     web_port: int
@@ -73,3 +75,7 @@ class Config:
     def longest_cadence_window(self) -> timedelta:
         """The furthest back any enabled render reaches, and so the minimum useful retention."""
         return max((cadence.window for cadence in self.timelapse_cadences), default=timedelta(0))
+
+    def retention_for(self, cadence_name: str) -> timedelta | None:
+        """How long to keep this cadence's videos. None means forever."""
+        return self.timelapse_retention.get(cadence_name)

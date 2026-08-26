@@ -55,7 +55,12 @@ out shorter — it is never padded or slowed down.
 | --- | --- | --- | --- |
 | `root` | yes | — | Where images and videos are written. `~` is expanded. |
 | `image_retention_days` | no | `8` | Delete stills older than this. `0` means keep forever. |
-| `timelapse_retention_days` | no | `0` | Delete videos older than this. `0` means keep forever. |
+| `timelapse_retention_days` | no | — | Baseline video retention for every cadence. `0` means keep forever. |
+| `timelapse_retention_days.<cadence>` | no | `hourly` 14, `daily` 0, `weekly` 0 | Per-cadence override. Wins over the baseline. |
+
+Hourly videos are the only ones that meaningfully consume disk — 24 per channel per day against
+one daily and one weekly. Expiring them while keeping daily and weekly forever is the intended
+shape, and is what the defaults do.
 
 **`image_retention_days` must be strictly greater than your longest cadence window.** With `weekly`
 enabled, that means at least 8. If it isn't, pruning deletes the stills before the weekly render
@@ -118,7 +123,9 @@ cadences = hourly,daily,weekly
 [image_capture_library]
 root = /var/lib/timelapsed
 image_retention_days = 8
-timelapse_retention_days = 0
+timelapse_retention_days.hourly = 14
+timelapse_retention_days.daily = 0
+timelapse_retention_days.weekly = 0
 
 [web]
 host = 0.0.0.0
