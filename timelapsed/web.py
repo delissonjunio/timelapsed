@@ -107,7 +107,11 @@ PAGE_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0d12">
 <title>Timelapsed</title>
+<!-- Three lanes narrowing from weekly to hourly, with the now marker: the
+     timeline itself, legible at 16px. Inlined so the page stays one request. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzEyMTUxZCIvPjxyZWN0IHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgcng9IjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzI0MmEzNyIvPjxyZWN0IHg9IjYiIHk9IjgiIHdpZHRoPSIyMCIgaGVpZ2h0PSI0IiByeD0iMiIgZmlsbD0iIzM0ZDM5OSIvPjxyZWN0IHg9IjYiIHk9IjE0IiB3aWR0aD0iMTMiIGhlaWdodD0iNCIgcng9IjIiIGZpbGw9IiNhNzhiZmEiLz48cmVjdCB4PSI2IiB5PSIyMCIgd2lkdGg9IjciIGhlaWdodD0iNCIgcng9IjIiIGZpbGw9IiM1YjlkZmYiLz48cmVjdCB4PSIyNyIgeT0iNiIgd2lkdGg9IjEiIGhlaWdodD0iMjAiIGZpbGw9IiNmZjZiNmIiLz48L3N2Zz4=">
 <style>
 :root {
   color-scheme: dark;
@@ -148,7 +152,9 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 #stage { display:flex; flex-direction:column; min-height:0; padding:1rem; gap:.75rem; }
 #screen { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; background:#000;
           border:1px solid var(--line); border-radius:10px; overflow:hidden; position:relative; }
-#screen video { max-width:100%; max-height:100%; display:block; }
+/* A <video> is 300x150 until metadata loads, and max-width alone never grows it
+     back up; object-fit keeps the aspect ratio while it fills the screen. */
+#screen video { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
 #placeholder { color:var(--muted); font-size:.85rem; text-align:center; padding:2rem; }
 #nowplaying { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); min-height:1.5rem; }
 #nowplaying .tag { text-transform:uppercase; letter-spacing:.07em; font-size:.65rem; font-weight:700;
@@ -417,7 +423,9 @@ function select(entry) {
   const screen = $("screen");
   screen.innerHTML = "";
   const v = document.createElement("video");
-  v.controls = true; v.autoplay = true; v.loop = true; v.playsInline = true; v.preload = "auto";
+  // Timelapses have no audio track, and muted is what lets autoplay through.
+  v.controls = true; v.autoplay = true; v.loop = true; v.muted = true;
+  v.playsInline = true; v.preload = "auto";
   v.src = entry.url;
   screen.appendChild(v);
   drawNowPlaying();
