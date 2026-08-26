@@ -75,9 +75,15 @@ chown root:"${SERVICE_USER}" "${CONFIG_PATH}"
 chmod 640 "${CONFIG_PATH}"
 
 echo "==> Installing systemd units"
-cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
+cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/tailscale-local-subnet-route.service "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now timelapsed-web-restart.timer
+
+# Only relevant where Tailscale is providing the route to the NVR.
+if systemctl list-unit-files tailscaled.service >/dev/null 2>&1 && \
+   systemctl is-enabled tailscaled.service >/dev/null 2>&1; then
+    systemctl enable --now tailscale-local-subnet-route.service
+fi
 
 if [[ ${CONFIG_IS_NEW} -eq 1 ]]; then
     cat <<MESSAGE

@@ -23,7 +23,7 @@ else
     echo "==> Refreshing dependencies"
     sudo "${INSTALL_DIR}/.venv/bin/pip" install --quiet requests backoff rich python-dateutil
     echo "==> Reinstalling systemd units"
-    sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
+    sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/
     sudo systemctl daemon-reload
 fi

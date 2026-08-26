@@ -1,0 +1,23 @@
+[Unit]
+Description=Keep the local LAN off the Tailscale route table
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.md
+# --accept-routes is what lets this host reach the NVR through a subnet router,
+# but a peer elsewhere on the tailnet also advertises THIS host's own LAN. That
+# route lands in table 52, which policy rule 5270 consults before the main
+# table, so replies to LAN neighbours (the Proxmox host included) go up the
+# tunnel and the host falls off its own network.
+#
+# The added rule sits after tailscaled's fwmark rules and before its table-52
+# rule, sending anything bound for the local subnet back to the main table.
+After=tailscaled.service
+Requires=tailscaled.service
+PartOf=tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/timelapsed/deploy/tailscale-local-subnet-route.sh add
+ExecStop=/opt/timelapsed/deploy/tailscale-local-subnet-route.sh del
+
+[Install]
+WantedBy=multi-user.target
