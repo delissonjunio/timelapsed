@@ -25,9 +25,15 @@ IOWeight=50
 # keeps that to one at a time, and this is the belt to that braces -- a runaway
 # render is reclaimed and then killed inside this cgroup, instead of the kernel
 # picking whichever process on the guest happens to look expensive.
+#
+# The numbers are sized against a 2 GB guest: roughly 550 MB of anonymous memory
+# with a render in flight, and room above it for the page cache a render churns
+# through. Set MemoryHigh too close to that and the cgroup spends the whole
+# render being throttled while the kernel reclaims the frames it is still
+# reading. Raise both alongside max_concurrent_renders, never on their own.
 MemoryAccounting=true
-MemoryHigh=768M
-MemoryMax=1G
+MemoryHigh=1G
+MemoryMax=1400M
 
 # Hardening. The daemon needs the library path, its config, and nothing else.
 NoNewPrivileges=true
