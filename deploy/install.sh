@@ -76,7 +76,9 @@ python3 -m venv "${INSTALL_DIR}/.venv"
 "${INSTALL_DIR}/.venv/bin/pip" install --quiet -e "${INSTALL_DIR}"
 
 echo "==> Preparing library directory ${LIBRARY_DIR}"
-mkdir -p "${LIBRARY_DIR}"
+# index/ is created even when recognition is off: the viewer unit mounts it
+# read-write for SQLite's WAL sidecars, and an empty directory costs nothing.
+mkdir -p "${LIBRARY_DIR}" "${LIBRARY_DIR}/index"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${LIBRARY_DIR}"
 
 # The code is owned by a human so `git pull` needs no sudo; the service user only

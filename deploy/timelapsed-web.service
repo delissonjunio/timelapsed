@@ -31,7 +31,12 @@ ReadOnlyPaths=/var/lib/timelapsed
 # and -wal sidecars even for a read-only connection, so a purely read-only mount
 # here makes every recognition query fail with "attempt to write a readonly
 # database". The viewer's only real write is naming an identity.
-ReadWritePaths=/var/lib/timelapsed/index
+#
+# The leading '-' matters: recognition is optional, so this directory often does
+# not exist. Without it systemd cannot build the namespace and the viewer dies
+# with 226/NAMESPACE -- taking down timelapse playback over a feature that was
+# never switched on.
+ReadWritePaths=-/var/lib/timelapsed/index
 
 [Install]
 WantedBy=multi-user.target

@@ -21,7 +21,14 @@ if [[ "${BEFORE}" == "${AFTER}" ]]; then
 else
     echo "==> ${BEFORE:0:8} -> ${AFTER:0:8}"
     echo "==> Refreshing dependencies"
-    sudo "${INSTALL_DIR}/.venv/bin/pip" install --quiet -e "${INSTALL_DIR}"
+    # Not --quiet: this step once exited 0 having installed nothing, and the
+    # first sign of it was the analyzer failing to import onnxruntime long
+    # afterwards. Let it be noisy, and check the result rather than the exit code.
+    sudo "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
+    if ! sudo "${INSTALL_DIR}/.venv/bin/python" -c "import timelapsed" 2>/dev/null; then
+        echo "ERROR: pip reported success but timelapsed is not importable in ${INSTALL_DIR}/.venv" >&2
+        exit 1
+    fi
     echo "==> Reinstalling systemd units"
     sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/
