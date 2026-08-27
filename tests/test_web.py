@@ -144,6 +144,77 @@ def test_every_registered_cadence_has_a_lane_colour(base_url):
         assert f"--{cadence}:".encode() in body
 
 
+def test_sightings_do_not_share_a_colour_with_a_cadence(base_url):
+    """People and vehicles sit on the same timeline as the clips.
+
+    They used to be painted with --hourly and --daily, so a person mark and an
+    hourly clip were the same blue two lanes apart.
+    """
+    _, _, body = get(base_url + "/")
+
+    for kind in (b"person", b"vehicle"):
+        assert b"--" + kind + b":" in body
+
+    palette = {}
+    for name in [c.encode() for c in CADENCES] + [b"person", b"vehicle"]:
+        start = body.index(b"--" + name + b":") + len(name) + 3
+        palette[name] = body[start:body.index(b";", start)].strip()
+    assert len(set(palette.values())) == len(palette), palette
+
+
+def test_the_page_is_told_the_rate_each_cadence_renders_at(base_url, config):
+    """Frame stepping needs the real rate.
+
+    An MP4 carries no frame rate a media element will report, and the rate is a
+    per-cadence setting, so the server has to say.
+    """
+    _, _, body = get(base_url + "/")
+
+    marker = b'<script type="application/json" id="fps-payload">'
+    start = body.index(marker) + len(marker)
+    rates = json.loads(body[start:body.index(b"</script>", start)])
+
+    assert set(rates) == set(CADENCES)
+    for cadence in CADENCES:
+        assert rates[cadence] == config.output_fps_for(cadence)
+
+
+def test_the_player_ships_its_own_transport(base_url):
+    """The native control bar is gone, so what replaced it has to be there.
+
+    Full screen in particular: it was the one thing the native controls gave
+    away for free, and losing it silently would be a straight regression.
+    """
+    _, _, body = get(base_url + "/")
+
+    assert b'id="transport"' in body
+    # The overlay for a refused autoplay. A picture sitting silently paused is
+    # the failure this player was written to fix.
+    assert b'id="tapplay"' in body
+    # It must only go up on an actual refusal. Selecting a clip assigns .src
+    # while the previous play() is still settling, which rejects it with
+    # AbortError -- and catching that as a refusal put the overlay over a video
+    # that was playing underneath it.
+    assert b"NotAllowedError" in body
+    # ...and it has to actually disappear when told to. `hidden` is only the UA
+    # rule [hidden] { display:none }, which any author `display` outranks, so
+    # both elements styled with one need the attribute honoured explicitly.
+    # Without this the overlay sat permanently on top of the picture while the
+    # video played underneath, and every check of node.hidden said it was fine.
+    assert b"#tapplay[hidden], #transport[hidden] { display:none; }" in body
+    assert b"requestFullscreen" in body
+    # Ten-second skips, and the double-tap zones that do the same jump.
+    assert b"SKIP_SECONDS = 10" in body
+    assert b"DOUBLE_TAP_MS" in body
+    # The playhead node is built by the tick, so what the page carries is its
+    # style rule and the id the tick stamps on it.
+    assert b"#playhead {" in body
+    assert b'playheadEl.id = "playhead"' in body
+    # One <video>, built once and kept. Rebuilding it per selection is what
+    # restarted playback from zero.
+    assert b"screen.innerHTML" not in body
+
+
 def test_a_crafted_filename_stays_data_in_the_embedded_payload(base_url, stocked_library):
     # Everything before the first underscore is read back as the cadence name, so
     # a file on disk controls a string the page renders. A path cannot contain a

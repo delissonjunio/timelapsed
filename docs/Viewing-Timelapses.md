@@ -38,13 +38,63 @@ want for a build that has been running for months.
 The page is mobile-first and works in Safari on iOS, which is fussier than most browsers: it needs
 `Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled.
 
-There is one `<video>` on the page at a time — the timeline picks which clip it holds — and it uses
-`preload="metadata"`. These clips are dense: 1800 frames compressed into 60 seconds runs to tens of
-megabytes, and `preload="auto"` starts pulling from byte zero the moment a clip is selected. That
-download is wasted whenever the viewer is opened on a specific moment (`?at=`), because the seek
-cannot be applied until the header arrives and playback then restarts elsewhere. Fetching metadata
-alone gets the header quickly — it is at the front, thanks to `-movflags +faststart` — so the seek
-lands first and buffering begins at the moment actually being watched.
+## The player
+
+There is one `<video>` on the page and it is built once, at load. Selecting a clip swaps its `.src`;
+nothing is torn down. That matters because the timeline hands the player *moments*, not files: a
+click on a sighting inside the clip already on screen has to move the picture without restarting it.
+
+A timelapse is a linear compression of its window, so wall-clock time and position in the video are
+the same coordinate at two scales. Everything the player and the timeline agree about goes through
+that one conversion, in both directions:
+
+| You do this | It means |
+| --- | --- |
+| Click a clip | Play from the moment you clicked, not from the clip's first frame |
+| Click a sighting | Play from that sighting, in the shortest clip that covers it |
+| Drag the selected clip | Scrub it. Dragging anywhere else still pans the timeline |
+| Double-tap the left or right of the picture | Jump ten seconds back or forward, same as the `↺ 10` / `10 ↻` buttons |
+| Watch it play | A playhead tracks across every lane, and sightings light up as it passes through them |
+
+The transport bar under the picture states **what time is on screen**. Nothing in the picture says
+so, and on a weekly clip a second of video is nearly three hours of the world. It also carries
+play/pause, ten-second skips, frame stepping, 0.5×–4× (half speed is the only way to watch a
+weekly), and full screen. Space plays and pauses, `,` and `.` step a frame, the arrow keys move a
+clip at a time.
+
+The ten-second skip is ten seconds **of the video**, not of the world — on a weekly render that is
+most of a day. The reason to reach for it is "I missed something, back it up", and that distance is
+measured in what you were just watching; the clock in the bar says what it came to in world time.
+
+Double-tapping the outer third of the picture does the same jump, left for back and right for
+forward, the way a phone video player does. A single tap in the middle plays and pauses. That means
+a tap on the picture has to wait out the double-tap window before it commits to a toggle, so it
+feels a beat slower than the button — the button has no such delay, and is always the instant way to
+pause.
+
+Frame stepping needs the rate the clip was rendered at, and an MP4 carries no frame rate a media
+element will report — so the server sends it, per cadence, in the page.
+
+When an hourly clip ends the player rolls into the next hour rather than looping, and it warms the
+next clip's header before the seam so the handover does not stall. A clip with nothing after it
+loops, as before.
+
+**A caveat on the time mapping.** It is linear because frames are sampled at even intervals across
+the window — but they are sampled across the stills that *exist*, so a gap in capture compresses
+unevenly and the mapping drifts across it. The playhead makes that visible rather than introducing
+it; the seek has always worked this way. Fixing it properly needs a per-clip frame-time sidecar
+written at render.
+
+Clips use `preload="metadata"`, not `auto`. They are dense — 1800 frames compressed into 60 seconds
+runs to tens of megabytes — and `auto` starts pulling from byte zero the moment a clip is selected.
+That download is wasted whenever the viewer is opened on a specific moment (`?at=`), because the
+seek cannot be applied until the header arrives and playback then restarts elsewhere. Fetching
+metadata alone gets the header quickly — it is at the front, thanks to `-movflags +faststart` — so
+the seek lands first and buffering begins at the moment actually being watched.
+
+Autoplay is normally allowed for a muted video, but not on every browser and not after every
+navigation. When it is refused the player says so and offers a tap, rather than leaving a picture
+sitting paused — which is indistinguishable from a click that did nothing.
 
 ## Putting nginx in front
 

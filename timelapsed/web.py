@@ -198,6 +198,7 @@ PAGE_TEMPLATE = """<!doctype html>
   --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --fg:#e8ebf1; --muted:#8b93a5;
   --line:#242a37; --accent:#5b9dff;
   --hourly:#5b9dff; --daily:#a78bfa; --weekly:#34d399; --monthly:#f59e0b; --progress:#ec4899;
+  --person:#22d3ee; --vehicle:#a3e635;
 }
 * { box-sizing:border-box; }
 html, body { height:100%; }
@@ -241,8 +242,35 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
           border:1px solid var(--line); border-radius:10px; overflow:hidden; position:relative; }
 /* A <video> is 300x150 until metadata loads, and max-width alone never grows it
      back up; object-fit keeps the aspect ratio while it fills the screen. */
-#screen video { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
-#placeholder { color:var(--muted); font-size:.85rem; text-align:center; padding:2rem; }
+#screen video { width:100%; height:100%; object-fit:contain; display:block; background:#000; cursor:pointer; }
+#placeholder { color:var(--muted); font-size:.85rem; text-align:center; padding:2rem; position:absolute; }
+/* Autoplay is normally allowed for a muted video, but not on every browser and
+   not after every navigation. When it is refused the player must say so: a
+   picture sitting silently paused is indistinguishable from a dead click, which
+   is the bug this whole player exists to fix. */
+#tapplay { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; gap:.4rem;
+           align-items:center; justify-content:center; cursor:pointer; border:none;
+           background:rgba(5,7,11,.55); color:var(--fg); font:inherit; font-size:.8rem; }
+#tapplay .glyph { font-size:2rem; line-height:1; }
+
+/* The transport borrows .tlbar so the two bars read as one instrument. */
+#transport { margin-bottom:0; }
+#transport .at { color:var(--fg); font-size:.8rem; font-variant-numeric:tabular-nums; }
+/* `hidden` is only the UA rule [hidden] { display:none }, and any author
+   `display` beats it -- #tapplay sets one directly and #transport inherits one
+   from .tlbar. Without these two the attribute silently does nothing, which is
+   how the tap-to-play overlay came to sit on top of a video playing perfectly
+   well underneath it. Anything given a `display` here needs the same line. */
+#tapplay[hidden], #transport[hidden] { display:none; }
+/* Says which way a double tap went. Without it the picture just jumps and the
+   gesture is invisible -- and an invisible gesture is an undiscoverable one. */
+#skipflash { position:absolute; top:50%; transform:translateY(-50%); z-index:4;
+             pointer-events:none; padding:.5rem .9rem; border-radius:999px;
+             background:rgba(5,7,11,.72); color:var(--fg); font-size:.85rem;
+             font-variant-numeric:tabular-nums; animation:skipfade .6s ease-out forwards; }
+#skipflash.back { left:7%; }
+#skipflash.fwd { right:7%; }
+@keyframes skipfade { from { opacity:1; } to { opacity:0; } }
 #nowplaying { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); min-height:1.5rem; }
 #nowplaying .tag { text-transform:uppercase; letter-spacing:.07em; font-size:.65rem; font-weight:700;
                    padding:.15rem .45rem; border-radius:4px; color:#07101f; }
@@ -273,8 +301,17 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
          border-radius:4px; overflow:hidden; }
 .clip { position:absolute; top:3px; bottom:3px; border-radius:2px; cursor:pointer; opacity:.75; min-width:2px; }
 .clip:hover { opacity:1; }
-.clip.sel { opacity:1; outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; }
+.clip.sel { opacity:1; outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; cursor:ew-resize; }
 #nowline { position:absolute; top:0; bottom:18px; width:1px; background:#ff6b6b; pointer-events:none; z-index:4; }
+/* Where the video is, drawn back onto the timeline. Same geometry as #nowline
+   but in the accent colour, because it is emphatically not "now". */
+#playhead { position:absolute; top:0; bottom:18px; width:1px; background:var(--accent);
+            pointer-events:none; z-index:5; box-shadow:0 0 6px var(--accent); }
+#playhead::before { content:""; position:absolute; left:-3px; top:-3px; width:7px; height:7px;
+                    border-radius:50%; background:var(--accent); }
+/* What is actually downloaded, over the clip it belongs to. These files run to
+   tens of megabytes, so "will this seek stall" is worth being able to see. */
+.clip .buf { position:absolute; top:0; bottom:0; background:var(--fg); opacity:.3; pointer-events:none; }
 #axis { position:relative; height:16px; margin-left:56px; }
 #axis span { position:absolute; top:0; font-size:.63rem; color:var(--muted); transform:translateX(-50%);
              white-space:nowrap; font-variant-numeric:tabular-nums; }
@@ -294,6 +331,9 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
        opacity:.9; min-width:3px; }
 .evt:hover { opacity:1; outline:1px solid var(--fg); }
 .evt.sel { outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; }
+/* Lit while the playhead is inside the sighting, so the lane reads as part of
+   the picture rather than as a separate index of it. */
+.evt.live { outline:1.5px solid var(--fg); outline-offset:2px; opacity:1; z-index:4; }
 /* Hatching, so an unanalysed stretch never reads as a quiet one. */
 .pending { position:absolute; top:0; bottom:0; pointer-events:none; display:flex;
            align-items:center; justify-content:center; overflow:hidden;
@@ -330,7 +370,12 @@ header .navlink:hover { color:var(--fg); background:var(--panel-2); }
 <aside id="channels"><h2>Cameras</h2></aside>
 
 <main id="stage">
-  <div id="screen"><div id="placeholder">Select a clip on the timeline below.</div></div>
+  <div id="screen">
+    <div id="placeholder">Select a clip on the timeline below.</div>
+    <button id="tapplay" hidden><span class="glyph">&#9654;</span><span>Tap to play</span></button>
+    <span id="skipflash" hidden></span>
+  </div>
+  <div id="transport" class="tlbar" hidden></div>
   <div id="nowplaying"></div>
 </main>
 
@@ -361,6 +406,7 @@ const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR,
 
 const channels = JSON.parse(document.getElementById("channels-payload").textContent);
 const HAS_RECOGNITION = JSON.parse(document.getElementById("recognition-payload").textContent);
+const FPS = JSON.parse(document.getElementById("fps-payload").textContent);
 const params = new URLSearchParams(location.search);
 const KINDS = ["person", "vehicle"];
 const KIND_LABEL = {person: "people", vehicle: "vehicles"};
@@ -415,6 +461,21 @@ const clock = p => pad(p.h) + ":" + pad(p.mi);
 const datestr = p => DAYS[p.wd] + " " + p.da + " " + MONTHS[p.mo];
 const fmtFull = ms => { const p = parts(ms); return datestr(p) + " " + p.y + ", " + clock(p) + (state.utc ? " UTC" : ""); };
 const fmtShort = ms => { const p = parts(ms); return datestr(p) + " " + clock(p); };
+
+// A timelapse is a linear compression of its window, so wall-clock time and
+// position in the video are the same coordinate at two scales. Every agreement
+// between the player and the timeline goes through this pair: toMedia to act on
+// a moment, toMoment to report one back.
+//
+// Linear because select_frames samples at even intervals -- but it samples
+// across the stills that *exist*, so a gap in capture compresses unevenly and
+// the mapping drifts across it. Correcting that needs a per-clip frame-time
+// sidecar written at render; until then the drift is visible in the playhead
+// rather than hidden as it was when nothing read the clock back.
+const spanOf = e => e.f - e.s;
+const clamp01 = x => Math.min(Math.max(x, 0), 1);
+const toMedia = (e, atMs, duration) => clamp01((atMs - e.s) / spanOf(e)) * duration;
+const toMoment = (e, t, duration) => e.s + (t / duration) * spanOf(e);
 
 function setView(span) {
   const all = forChannel();
@@ -584,7 +645,7 @@ function drawActivityLanes(lanes, pct) {
         bar.style.width = width + "%";
         // Floor the alpha so a single sighting is still visible against the
         // track, rather than fading to nothing next to a busy bucket.
-        bar.style.background = kind === "person" ? "var(--hourly)" : "var(--daily)";
+        bar.style.background = "var(--" + kind + ")";
         bar.style.opacity = String(0.25 + 0.75 * (count / peak));
         track.appendChild(bar);
       });
@@ -600,10 +661,13 @@ function drawActivityLanes(lanes, pct) {
       const mark = el("div", "evt" + (state.selectedEvent === event.id ? " sel" : ""));
       mark.style.left = pct(event.s) + "%";
       mark.style.width = Math.max(pct(event.f) - pct(event.s), 0.2) + "%";
-      mark.style.background = kind === "person" ? "var(--hourly)" : "var(--daily)";
+      mark.style.background = "var(--" + kind + ")";
       mark.title = kind + "  " + fmtFull(event.s) + "  to  " + fmtFull(event.f)
         + "  (" + event.frame_count + " frames)";
       mark.onclick = ev => { ev.stopPropagation(); selectEvent(event); };
+      // The player tick lights these as the playhead passes through them. It
+      // only ever touches nodes it was handed here, never the DOM at large.
+      liveMarks.push({node: mark, event});
       track.appendChild(mark);
     }
 
@@ -682,6 +746,9 @@ function drawTimeline() {
   const pct = ms => ((ms - state.start) / span) * 100;
   const lanes = $("lanes");
   lanes.innerHTML = "";
+  // The tick writes to these and nothing else. The redraw that just destroyed
+  // them is what owns handing over the replacements.
+  playheadEl = null; bufferedEl = null; liveMarks = [];
 
   const entries = visible();
   $("empty").hidden = forChannel().length > 0;
@@ -701,7 +768,16 @@ function drawTimeline() {
       clip.style.width = Math.max(pct(e.f) - pct(e.s), 0.15) + "%";
       clip.style.background = cadenceColour(cadence);
       clip.title = cadence + "  " + fmtFull(e.s) + "  to  " + fmtFull(e.f) + "  (" + fmtSize(e.size_bytes) + ")";
-      clip.onclick = ev => { ev.stopPropagation(); select(e); };
+      // Where in the window the click landed is the moment to play from.
+      // Every click used to restart the clip at its first frame, so on a weekly
+      // you could click Thursday and be shown Monday.
+      clip.onclick = ev => { ev.stopPropagation(); select(e, momentAt(clip, e, ev.clientX)); };
+      if (state.selected === e) {
+        bufferedEl = el("div", "buf");
+        bufferedEl.hidden = true;
+        clip.appendChild(bufferedEl);
+        attachScrub(clip, e);
+      }
       track.appendChild(clip);
     }
     lane.appendChild(track);
@@ -719,6 +795,15 @@ function drawTimeline() {
     lanes.appendChild(line);
   }
 
+  // Positioned by the tick rather than from here: this runs on every pan and
+  // wheel event, and the playhead moves on its own clock.
+  if (state.selected) {
+    playheadEl = document.createElement("div");
+    playheadEl.id = "playhead";
+    playheadEl.hidden = true;
+    lanes.appendChild(playheadEl);
+  }
+
   drawAxis(span, pct);
   $("viewrange").textContent = fmtFull(state.start) + "  →  " + fmtFull(state.end);
   document.querySelectorAll("#ranges button").forEach((b, i) => {
@@ -731,6 +816,11 @@ function drawTimeline() {
   // No-ops unless the viewport actually moved, so every pan, zoom and range
   // button picks up new activity without each one having to remember to ask.
   refreshActivity();
+
+  // Put the playhead, the buffered shading and the live sightings back where
+  // playback actually is, rather than waiting for the next animation frame --
+  // which for a paused player would never come.
+  tickPlayer();
 }
 
 function drawAxis(span, pct) {
@@ -747,51 +837,350 @@ function drawAxis(span, pct) {
   }
 }
 
-// A timelapse is a linear compression of its window, so a wall-clock moment maps
-// straight onto a position in the video. This is what makes clicking a sighting
-// land on the sighting instead of restarting the whole hour.
-function seekToMoment(video, entry, atMs) {
-  const span = entry.f - entry.s;
-  if (!span || atMs == null) return;
-  const fraction = Math.min(Math.max((atMs - entry.s) / span, 0), 1);
-  const apply = () => {
-    if (video.duration && isFinite(video.duration)) {
-      video.currentTime = fraction * video.duration;
-    }
-  };
+// --- the player -------------------------------------------------------------
+
+// One <video> for the life of the page. Building a fresh one per selection threw
+// away the buffer, refetched the moov and restarted from zero, which is what
+// made clicking a sighting inside the clip already on screen look like a dead
+// click. Swapping .src is the only thing a new selection needs.
+const video = document.createElement("video");
+video.muted = true; video.playsInline = true; video.loop = true;
+// "metadata", not "auto". These clips are dense -- 1800 frames in 60s runs to
+// tens of MB -- and "auto" starts pulling from byte zero immediately. On a deep
+// link that download is wasted: the seek cannot be applied until the moov
+// arrives, and then playback restarts from somewhere else entirely. Asking for
+// metadata alone gets the moov (it is at the front, thanks to
+// -movflags +faststart), fires loadedmetadata quickly, and lets buffering begin
+// at the moment actually being looked at.
+video.preload = "metadata";
+$("screen").appendChild(video);
+
+// Never played and never on screen: this exists so the successor's moov is
+// already in hand when a clip ends. Without it every seam stalls on a round
+// trip, which on hourly clips is once a minute.
+const prefetch = document.createElement("video");
+prefetch.preload = "metadata"; prefetch.muted = true;
+let prefetchFor = null;
+
+const duration = () => (video.duration && isFinite(video.duration)) ? video.duration : 0;
+// The wall-clock moment currently on screen. Null until a clip is loaded and its
+// duration known, because without a duration there is nothing to scale by.
+const momentNow = () => (state.selected && duration())
+  ? toMoment(state.selected, video.currentTime, duration()) : null;
+
+// Muted autoplay is normally allowed, but not on every browser and not after
+// every navigation. A refusal that leaves the picture sitting paused is exactly
+// the failure this player was written to fix, so surface it and take the tap.
+//
+// A refusal has to be told apart from an AbortError, which is not one. That is
+// what a pending play() reports when a newer src, seek or pause supersedes it,
+// and this player supersedes its own play() constantly -- selecting a clip
+// assigns .src while the previous play() is still settling. The rejection then
+// arrives after the new play() has already succeeded, so treating every
+// rejection as a refusal put the overlay up over a video playing perfectly well
+// underneath it. Only NotAllowedError is the browser saying no.
+let blocked = false;
+
+function play() {
+  const started = video.play();
+  if (!started) return;
+  started.catch(error => {
+    if (error.name !== "NotAllowedError") return;
+    blocked = true;
+    tickPlayer();
+  });
+}
+
+function togglePlay() {
+  if (video.paused) play();
+  else { blocked = false; video.pause(); }
+}
+
+// Ground truth, whatever the promises claimed: frames are reaching the screen.
+video.addEventListener("playing", () => { blocked = false; tickPlayer(); });
+
+function seekToMoment(entry, atMs) {
+  if (atMs == null || !spanOf(entry)) return;
+  const apply = () => { if (duration()) video.currentTime = toMedia(entry, atMs, duration()); };
   if (video.readyState >= 1) apply();
   else video.addEventListener("loadedmetadata", apply, {once: true});
 }
 
+// The next clip of the same cadence on this channel, in time order. Arrow-key
+// stepping and end-of-clip chaining are the same question, asked twice.
+function neighbour(entry, direction) {
+  const pool = forChannel().filter(e => e.cadence === entry.cadence).sort((a, b) => a.s - b.s);
+  const at = pool.indexOf(entry);
+  return at < 0 ? null : (pool[at + direction] || null);
+}
+
 function select(entry, atMs) {
-  // Re-selecting the clip already on screen must not tear down the player: that
-  // restarts playback from zero, which is indistinguishable from nothing having
-  // happened when the click came from a sighting inside the current clip.
-  if (state.selected === entry) {
-    const playing = $("screen").querySelector("video");
-    if (playing) { seekToMoment(playing, entry, atMs); return; }
+  const changed = state.selected !== entry;
+  state.selected = entry;
+
+  if (changed) {
+    $("placeholder").hidden = true;
+    $("transport").hidden = false;
+    // Loop only where there is nowhere to go. With a successor the clip has to
+    // be allowed to end, because "ended" is what hands over to it.
+    video.loop = !neighbour(entry, 1);
+    video.src = entry.url;
+    prefetchFor = null;
+  }
+  seekToMoment(entry, atMs);
+  play();
+  if (changed) { drawNowPlaying(); drawTimeline(); }
+  tickPlayer();
+}
+
+// Roll into the next hour rather than replaying this one.
+video.addEventListener("ended", () => {
+  const next = state.selected && neighbour(state.selected, 1);
+  if (next) select(next, next.s);
+});
+
+// Warm the successor before the seam, not at it. timeupdate is coarse (~4Hz),
+// which is ample for a decision made once per clip.
+video.addEventListener("timeupdate", () => {
+  if (!state.selected || !duration() || video.currentTime < duration() * 0.8) return;
+  const next = neighbour(state.selected, 1);
+  if (next && prefetchFor !== next.url) { prefetchFor = next.url; prefetch.src = next.url; }
+});
+
+// Double tap a side to jump, single tap the middle to play or pause -- the
+// gesture every phone video player has trained people to expect.
+//
+// A single tap therefore cannot act immediately: a double tap is two clicks, so
+// committing to the toggle on the first one would toggle twice on the way to the
+// seek. It waits out the double-tap window instead. The transport button has no
+// such delay, so there is always an instant way to pause.
+const DOUBLE_TAP_MS = 280;
+const SIDE_FRACTION = 0.3;
+let tapTimer = null, tapSide = null;
+
+function flashSkip(direction) {
+  const flash = $("skipflash");
+  flash.hidden = false;
+  flash.className = direction < 0 ? "back" : "fwd";
+  flash.textContent = (direction < 0 ? "\u00AB " : "") + SKIP_SECONDS + "s"
+                    + (direction > 0 ? " \u00BB" : "");
+  // Restarting a CSS animation needs the element out of the tree and back, or
+  // a forced reflow. This is the cheap half of that.
+  flash.style.animation = "none";
+  void flash.offsetWidth;
+  flash.style.animation = "";
+}
+
+$("screen").onclick = ev => {
+  if (ev.target !== video) return;
+  const box = video.getBoundingClientRect();
+  const across = (ev.clientX - box.left) / box.width;
+  const side = across < SIDE_FRACTION ? -1 : across > 1 - SIDE_FRACTION ? 1 : 0;
+
+  if (tapTimer && side !== 0 && side === tapSide) {
+    clearTimeout(tapTimer);
+    tapTimer = null;
+    seekBy(side * SKIP_SECONDS);
+    flashSkip(side);
+    return;
+  }
+  clearTimeout(tapTimer);
+  tapSide = side;
+  tapTimer = setTimeout(() => { tapTimer = null; togglePlay(); }, DOUBLE_TAP_MS);
+};
+$("tapplay").onclick = () => play();
+
+// Ten seconds of the video, not of the world. On a weekly clip those are very
+// different amounts -- ten seconds of a seven-day render is most of a day -- but
+// the reason to reach for this control is "I missed something, back it up", and
+// that is a distance measured in what you were just watching. The clock in the
+// bar says what it came to in world time.
+const SKIP_SECONDS = 10;
+
+function seekBy(seconds) {
+  if (!state.selected || !duration()) return;
+  video.currentTime = Math.min(Math.max(video.currentTime + seconds, 0), duration());
+  tickPlayer();
+}
+
+// The renders are fixed-rate and the rate is per cadence, so a frame is a known
+// slice of media time. FPS comes from the server because an MP4 carries no frame
+// rate a media element will admit to.
+function frameStep(direction) {
+  if (!state.selected || !duration()) return;
+  video.pause();
+  const fps = FPS[state.selected.cadence] || 30;
+  video.currentTime = Math.min(Math.max(video.currentTime + direction / fps, 0), duration());
+}
+
+// Where along a clip a pointer is, expressed as the wall-clock moment there.
+const momentAt = (clip, entry, clientX) => {
+  const box = clip.getBoundingClientRect();
+  return entry.s + clamp01((clientX - box.left) / box.width) * spanOf(entry);
+};
+
+// Dragging the selected clip scrubs it. #lanes owns the pointer everywhere else
+// and pans with it, so this has to claim the event before it gets that far.
+// It deliberately does not preventDefault: the click still lands afterwards,
+// and that is what resumes playback wherever the drag was let go.
+function attachScrub(clip, entry) {
+  let scrubbing = false;
+  clip.addEventListener("pointerdown", ev => {
+    ev.stopPropagation();
+    scrubbing = true;
+    clip.setPointerCapture(ev.pointerId);
+    // Seeking every frame of a drag while decoding is thrash, and the picture
+    // cannot keep up anyway. The click at the end starts it again.
+    video.pause();
+    seekToMoment(entry, momentAt(clip, entry, ev.clientX));
+    tickPlayer();
+  });
+  clip.addEventListener("pointermove", ev => {
+    if (!scrubbing) return;
+    seekToMoment(entry, momentAt(clip, entry, ev.clientX));
+    tickPlayer();
+  });
+  const release = ev => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    if (clip.hasPointerCapture(ev.pointerId)) clip.releasePointerCapture(ev.pointerId);
+  };
+  clip.addEventListener("pointerup", release);
+  clip.addEventListener("pointercancel", release);
+}
+
+// --- the tick ---------------------------------------------------------------
+
+// Everything below writes only to nodes drawTimeline handed over. It must never
+// call drawTimeline itself: that empties #lanes and rebuilds every clip, bucket
+// and mark, which at animation rate is a redraw storm and would tear a node out
+// from under the click that is landing on it.
+let playheadEl = null, bufferedEl = null, liveMarks = [];
+let pumping = false;
+
+function tickPlayer() {
+  const at = momentNow();
+  $("tapplay").hidden = !blocked;
+
+  const clock = $("atclock");
+  if (clock) clock.textContent = at == null ? "" : fmtFull(at);
+  const button = $("playpause");
+  if (button) {
+    button.textContent = video.paused ? "▶" : "⏸";
+    button.title = (video.paused ? "Play" : "Pause") + " (space)";
   }
 
-  state.selected = entry;
-  const screen = $("screen");
-  screen.innerHTML = "";
-  const v = document.createElement("video");
-  // Timelapses have no audio track, and muted is what lets autoplay through.
-  v.controls = true; v.autoplay = true; v.loop = true; v.muted = true;
-  v.playsInline = true;
-  // "metadata", not "auto". These clips are dense -- 1800 frames in 60s runs to
-  // tens of MB -- and "auto" starts pulling from byte zero immediately. On a
-  // deep link that download is wasted: the seek cannot be applied until the
-  // moov arrives, and then playback restarts from somewhere else entirely.
-  // Asking for metadata alone gets the moov (it is at the front, thanks to
-  // -movflags +faststart), fires loadedmetadata quickly, and lets buffering
-  // begin at the moment actually being looked at.
-  v.preload = "metadata";
-  v.src = entry.url;
-  seekToMoment(v, entry, atMs);
-  screen.appendChild(v);
-  drawNowPlaying();
-  drawTimeline();
+  if (playheadEl) {
+    const fraction = at == null ? -1 : (at - state.start) / (state.end - state.start);
+    playheadEl.hidden = fraction < 0 || fraction > 1;
+    // The tracks start 56px in, past the lane labels, so the line has to too.
+    if (!playheadEl.hidden) {
+      playheadEl.style.left = "calc(56px + (100% - 56px) * " + fraction.toFixed(6) + ")";
+    }
+  }
+
+  if (bufferedEl && duration()) {
+    // Only the range holding the playhead. The others are some earlier seek's
+    // leavings, and shading them would claim the clip is ready when it is not.
+    let found = false;
+    for (let i = 0; i < video.buffered.length && !found; i++) {
+      const from = video.buffered.start(i), to = video.buffered.end(i);
+      if (from > video.currentTime || to < video.currentTime) continue;
+      bufferedEl.style.left = (from / duration() * 100) + "%";
+      bufferedEl.style.width = ((to - from) / duration() * 100) + "%";
+      found = true;
+    }
+    bufferedEl.hidden = !found;
+  }
+
+  for (const mark of liveMarks) {
+    mark.node.classList.toggle("live", at != null && mark.event.s <= at && at <= mark.event.f);
+  }
+}
+
+// requestAnimationFrame rather than timeupdate: timeupdate fires around 4Hz,
+// and at a six-hour zoom that reads as a playhead lurching rather than moving.
+function pump() {
+  tickPlayer();
+  pumping = !video.paused;
+  if (pumping) requestAnimationFrame(pump);
+}
+video.addEventListener("play", () => { if (!pumping) { pumping = true; requestAnimationFrame(pump); } });
+for (const event of ["pause", "seeked", "loadedmetadata", "progress", "ratechange", "playing"]) {
+  video.addEventListener(event, tickPlayer);
+}
+
+// --- the transport ----------------------------------------------------------
+
+const RATES = [0.5, 1, 2, 4];
+
+function syncRates() {
+  for (const button of document.querySelectorAll("#transport [data-rate]")) {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.rate) === video.playbackRate));
+  }
+}
+
+function drawTransport() {
+  const bar = $("transport");
+  bar.textContent = "";
+
+  const transport = el("div", "grp");
+  const playpause = el("button");
+  playpause.id = "playpause";
+  playpause.onclick = togglePlay;
+  transport.appendChild(playpause);
+
+  // Ten seconds either way, and the same jump the sides of the picture make.
+  const skips = el("div", "grp");
+  for (const direction of [-1, 1]) {
+    const button = el("button", "",
+      (direction < 0 ? "\u21BA " : "") + SKIP_SECONDS + (direction > 0 ? " \u21BB" : ""));
+    button.title = (direction < 0 ? "Back " : "Forward ") + SKIP_SECONDS
+                 + "s (double tap the " + (direction < 0 ? "left" : "right") + " of the picture)";
+    button.onclick = () => { seekBy(direction * SKIP_SECONDS); flashSkip(direction); };
+    skips.appendChild(button);
+  }
+
+  // A frame at a time is how you read a plate off a still that went past in
+  // two hundredths of a second.
+  const frames = el("div", "grp");
+  for (const [glyph, direction, title] of [["◀◀", -1, "Back a frame (,)"],
+                                           ["▶▶", 1, "On a frame (.)"]]) {
+    const button = el("button", "", glyph);
+    button.title = title;
+    button.onclick = () => frameStep(direction);
+    frames.appendChild(button);
+  }
+
+  // Rates earn their place here in a way they would not on ordinary footage: a
+  // weekly is seven days in sixty seconds, and half speed is the only way to
+  // watch it.
+  const rates = el("div", "grp");
+  for (const rate of RATES) {
+    const button = el("button", "", rate + "×");
+    button.dataset.rate = String(rate);
+    button.onclick = () => { video.playbackRate = rate; syncRates(); };
+    rates.appendChild(button);
+  }
+
+  // What time it is on screen. Nothing in the picture says so, and on a weekly
+  // clip a second of video is nearly three hours of the world.
+  const clock = el("span", "at");
+  clock.id = "atclock";
+
+  // The native controls were the only way to full screen, so removing them
+  // without this would be a straight regression.
+  const view = el("div", "grp");
+  const full = el("button", "", "⛶");
+  full.title = "Full screen";
+  full.onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else $("screen").requestFullscreen?.();
+  };
+  view.appendChild(full);
+
+  bar.append(transport, skips, frames, rates, clock, el("span", "spacer"), view);
+  syncRates();
 }
 
 function drawNowPlaying() {
@@ -810,19 +1199,21 @@ function drawNowPlaying() {
 }
 
 function step(direction) {
-  const pool = visible().filter(e => !state.selected || e.cadence === state.selected.cadence)
-                        .sort((a, b) => a.s - b.s);
-  if (!pool.length) return;
-  const at = state.selected ? pool.indexOf(state.selected) : -1;
-  const next = pool[Math.min(Math.max(at + direction, 0), pool.length - 1)];
-  if (next) {
-    select(next);
-    if (next.s < state.start || next.f > state.end) {
-      const span = state.end - state.start;
-      const mid = (next.s + next.f) / 2;
-      state.start = mid - span / 2; state.end = mid + span / 2;
-      drawTimeline();
-    }
+  if (!state.selected) {
+    const pool = visible().sort((a, b) => a.s - b.s);
+    if (pool.length) select(pool[0]);
+    return;
+  }
+  const next = neighbour(state.selected, direction);
+  if (!next) return;
+  select(next);
+  // Follow it if it fell outside the window, rather than selecting something
+  // the reader cannot see.
+  if (next.s < state.start || next.f > state.end) {
+    const span = state.end - state.start;
+    const mid = (next.s + next.f) / 2;
+    state.start = mid - span / 2; state.end = mid + span / 2;
+    drawTimeline();
   }
 }
 
@@ -869,6 +1260,11 @@ addEventListener("keydown", ev => {
   if (ev.target.tagName === "INPUT") return;
   if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); }
   else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
+  // Space is a button's own activation key, so leave it alone while one has
+  // focus: clicking play and then pressing space would otherwise toggle twice.
+  else if (ev.key === " " && ev.target.tagName !== "BUTTON") { togglePlay(); ev.preventDefault(); }
+  else if (ev.key === ",") { frameStep(-1); ev.preventDefault(); }
+  else if (ev.key === ".") { frameStep(1); ev.preventDefault(); }
 });
 
 // Keep the wall roughly live. The replacement is decoded off-screen and only
@@ -891,6 +1287,7 @@ setInterval(() => {
 if (HAS_RECOGNITION) $("librarylink").hidden = false;
 
 drawControls();
+drawTransport();
 buildChannels();
 
 // ?at= is how the library page hands a sighting back to the viewer: centre the
@@ -925,6 +1322,7 @@ def render_index(
     channel_id: str | None,
     cadence: str | None,
     recognition: "RecognitionReader | None" = None,
+    fps_by_cadence: dict[str, int] | None = None,
 ) -> bytes:
     """The viewer shell with the whole catalogue embedded.
 
@@ -964,6 +1362,12 @@ def render_index(
         # so the registry stays the single source of truth and a cadence added
         # there gets a lane without touching the viewer. Reversed: widest on top.
         + block("cadences-payload", list(reversed(CADENCES)))
+        + "\n"
+        # Frame stepping needs the rate the clip was rendered at, and that is a
+        # per-cadence setting the browser has no way to find out: an MP4 carries
+        # no frame rate the media element will admit to. Send it rather than
+        # letting the player guess at 30 and land between frames.
+        + block("fps-payload", fps_by_cadence or {})
         + "\n<script>\nconst ENTRIES",
     )
     return page.encode()
@@ -1063,11 +1467,13 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         catalogue: TimelapseCatalogue,
         thumbnails: ThumbnailCache,
         recognition: "RecognitionReader | None" = None,
+        fps_by_cadence: dict[str, int] | None = None,
         **kwargs,
     ):
         self.catalogue = catalogue
         self.thumbnails = thumbnails
         self.recognition = recognition
+        self.fps_by_cadence = fps_by_cadence or {}
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -1085,6 +1491,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                 body = render_index(
                     self.catalogue, query.get("channel"), query.get("cadence"),
                     recognition=self.recognition,
+                    fps_by_cadence=self.fps_by_cadence,
                 )
                 self._send_bytes(body, "text/html; charset=utf-8")
             elif path == "/library":
@@ -1332,6 +1739,7 @@ def build_server(config: Config) -> ThreadingHTTPServer:
         catalogue=catalogue,
         thumbnails=ThumbnailCache(),
         recognition=RecognitionReader.open(config),
+        fps_by_cadence={name: config.output_fps_for(name) for name in CADENCES},
     )
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 

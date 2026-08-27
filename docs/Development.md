@@ -42,7 +42,7 @@ random port and drive it with `urllib`.
 | `test_nvr_capture_agent.py` | URL construction, digest auth, timeouts, retries, non-image rejection, password never logged |
 | `test_cadences.py` | Hour/day/ISO-week/calendar-month rollover, the year boundary, stepping across unequal months |
 | `test_daemon.py` | The capture loop with a frozen clock, failure tolerance, pruning, render scheduling, picklability |
-| `test_web.py` | Catalogue filtering, HTTP routes, Range requests, path traversal |
+| `test_web.py` | Catalogue filtering, HTTP routes, Range requests, path traversal, the player's contract with the page |
 | `test_analysis_pipeline.py` | Detection, event grouping, re-identification, plate voting |
 | `test_analysis_index.py` | The recognition index: schema, queries, retention |
 | `test_identities.py` | Naming and merging identities |

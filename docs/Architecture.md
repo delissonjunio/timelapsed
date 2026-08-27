@@ -230,8 +230,19 @@ a channel with a backlog take its turn. The unit's `MemoryMax` is the backstop u
 
 A separate, optional process (`timelapsed.web`) built entirely on the standard library. It scans
 the timelapse directories on each request — the file count is small and a stale listing is more
-annoying than a directory scan is expensive — and serves an index page with inline `<video>`
-elements, plus a small JSON API at `/api/timelapses`.
+annoying than a directory scan is expensive — and serves a single page carrying the whole
+catalogue, plus a small JSON API at `/api/timelapses`.
+
+The page is a timeline with a player above it, and the two share one coordinate: wall-clock time.
+A timelapse is a linear compression of its window, so a moment on the timeline and a position in the
+video convert into each other directly. That conversion is the whole design — clicking a clip, a
+point inside a clip or a sighting all reduce to "play from this moment", and playback reports its
+position back as a playhead running across the lanes. There is one `<video>`, built once and kept;
+selecting a clip swaps its source rather than rebuilding the element, so the buffer survives and
+re-selecting what is already playing does not restart it. Everything the player draws onto the
+timeline is written to nodes the redraw handed over, never by triggering a redraw — a redraw empties
+the lanes, and doing that at animation rate would tear nodes out from under the clicks landing on
+them.
 
 It implements **HTTP Range requests**, which is not optional: Safari refuses to play video at all
 from a server that doesn't advertise `Accept-Ranges`, and without them scrubbing doesn't work.
