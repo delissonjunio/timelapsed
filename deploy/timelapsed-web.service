@@ -23,7 +23,11 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX, as in the other two units: the status page asks systemd how the three
+# services are doing, and `systemctl` reaches the bus over a Unix socket. Without
+# it every call here fails with "Failed to connect to bus: Address family not
+# supported by protocol" and /status quietly shows no systemd panel at all.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 LockPersonality=true
 ReadOnlyPaths=/var/lib/timelapsed

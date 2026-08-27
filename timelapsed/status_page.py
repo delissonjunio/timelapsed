@@ -772,7 +772,11 @@ function drawHost(report) {
   ]));
 
   const parts = [box];
-  if (report.services) {
+  if (report.services && report.services.unavailable) {
+    const services = panel(["systemd"]);
+    services.body.appendChild(el("p", "empty", report.services.unavailable));
+    parts.push(services);
+  } else if (report.services) {
     const services = panel(["systemd"]);
     services.body.appendChild(table([
       {label: "Unit"},

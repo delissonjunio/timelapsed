@@ -97,11 +97,21 @@ this page exists to avoid. A period the renderer skipped for holding too few fra
 reported as due, because on disk it is. Periods from before the camera captured anything are never
 counted.
 
+A video counts for a period if its start falls *inside* it, not if it equals the period's start.
+Windows are clock-aligned now, but a library that has been running a while also holds videos written
+before they were — an hourly starting at 12:04:41 rather than 12:00:00 — and on exact equality every
+one of those reads as a missing hour.
+
 ### Retention, host and configuration
 
 How full each retention window is, what the host is doing (uptime, load, memory, and `systemctl`'s
 view of the three units where systemd is present), and every setting in force including the cadence
 table.
+
+`systemctl` reaches systemd over a Unix socket, so the viewer's unit needs `AF_UNIX` in its
+`RestrictAddressFamilies` — the shipped `timelapsed-web.service` has it. Without it every call fails
+with `Failed to connect to bus`, and the page says so rather than quietly showing no units, which
+looks identical to a machine that simply has no systemd.
 
 ## The API
 

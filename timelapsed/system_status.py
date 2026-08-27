@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +81,10 @@ FRAME_STEM = re.compile(r"\d{8}_\d{6}_UTC")
 
 # Windows the capture report quotes yields over.
 RECENT_WINDOWS = {"hour": timedelta(hours=1), "day": timedelta(days=1)}
+
+# What makes a directory under the library root a channel rather than something
+# else that happens to live there.
+TRACKS = ("image", "keyframe", "timelapse")
 
 
 def _stem_at(moment: datetime) -> str:
@@ -416,6 +421,13 @@ class SystemStatusCollector:
         The union rather than the config alone: a channel dropped from the
         config still owns disk, and that disk is exactly what someone reading a
         storage page is trying to account for.
+
+        A directory counts only once it holds one of the three tracks, which is
+        the same test the viewer's catalogue applies. Not every subdirectory of
+        the library root is a channel -- the default `analysis_root` is
+        `{library}/index`, so a deployment with recognition on has the crop store
+        and the SQLite file sitting right there -- and without this the page
+        reported `index` as a retired camera holding zero stills.
         """
         on_disk = set()
         root = self.config.image_capture_library_root
@@ -423,7 +435,9 @@ class SystemStatusCollector:
             on_disk = {
                 entry.name
                 for entry in root.iterdir()
-                if entry.is_dir() and entry.name != SCRATCH_DIRECTORY_NAME
+                if entry.is_dir()
+                and entry.name != SCRATCH_DIRECTORY_NAME
+                and any((entry / track).is_dir() for track in TRACKS)
             }
         return sorted(set(self.config.channels) | on_disk, key=lambda name: (len(name), name))
 
@@ -480,16 +494,24 @@ class SystemStatusCollector:
 
     @staticmethod
     def _services() -> dict | None:
-        """What systemd thinks of the three units, or None where there is no systemd.
+        """What systemd thinks of the three units, or None where it cannot be asked.
 
         Read-only and unauthenticated: `systemctl show` needs no privilege, and
         the unit names are constants, so nothing user-supplied reaches the
         command line.
+
+        `unavailable` says why there is nothing to show, because there are two
+        very different reasons and only reporting the absence made the difference
+        invisible. The viewer's unit is sandboxed, and `systemctl` reaches the
+        bus over a Unix socket: with AF_UNIX missing from its
+        `RestrictAddressFamilies` every call fails instantly with "Failed to
+        connect to bus", which looks exactly like a machine that has no systemd.
         """
         if shutil.which("systemctl") is None:
             return None
 
         units: dict[str, dict] = {}
+        refused = None
         for unit in KNOWN_UNITS:
             try:
                 result = subprocess.run(
@@ -497,15 +519,22 @@ class SystemStatusCollector:
                      *(f"--property={name}" for name in UNIT_PROPERTIES)],
                     capture_output=True, text=True, timeout=5, check=False,
                 )
-            except (OSError, subprocess.SubprocessError):
-                return None
+            except (OSError, subprocess.SubprocessError) as error:
+                return {"unavailable": f"systemctl could not be run: {error}"}
 
             properties = {}
             for line in result.stdout.splitlines():
                 key, _, value = line.partition("=")
                 properties[key] = value
 
-            if properties.get("LoadState") in (None, "not-found"):
+            if properties.get("LoadState") is None:
+                # No LoadState at all means the command produced nothing, which
+                # is a failure to ask rather than an answer. First line of
+                # stderr: it is systemd's own, and it is one short sentence.
+                refused = (result.stderr or "").strip().splitlines()
+                refused = refused[0] if refused else f"systemctl exited {result.returncode}"
+                continue
+            if properties["LoadState"] == "not-found":
                 continue
 
             restarts = properties.get("NRestarts") or "0"
@@ -521,7 +550,9 @@ class SystemStatusCollector:
                 "restarts": int(restarts) if restarts.isdigit() else 0,
                 "memory_bytes": int(memory) if memory.isdigit() else None,
             }
-        return units or None
+        if units:
+            return units
+        return {"unavailable": refused} if refused else None
 
     # --- disk ---
 
@@ -705,12 +736,14 @@ class SystemStatusCollector:
         rows = []
         for channel in channels:
             stored = videos[channel]
-            starts_by_cadence: dict[str, set] = {}
+            starts_by_cadence: dict[str, list[datetime]] = {}
             reach_by_cadence: dict[str, datetime] = {}
             for video in stored:
-                starts_by_cadence.setdefault(video.cadence, set()).add(video.starts)
+                starts_by_cadence.setdefault(video.cadence, []).append(video.starts)
                 if video.finishes > reach_by_cadence.get(video.cadence, video.finishes - timedelta(seconds=1)):
                     reach_by_cadence[video.cadence] = video.finishes
+            for starts in starts_by_cadence.values():
+                starts.sort()
 
             cadence_rows = []
             for cadence in cadences:
@@ -761,10 +794,23 @@ class SystemStatusCollector:
         renderer keeping up -- from data already in hand, and it stays honest
         about the difference: a period skipped for having too few frames is
         reported here as missing, because on disk it is.
+
+        A video is matched to a period by its start *falling inside* the period
+        rather than equalling it. Windows are clock-aligned now, but the library
+        also holds videos written before they were -- an hourly starting at
+        12:04:41 rather than 12:00:00 -- and on exact equality every one of those
+        read as a missing hour. That was six cameras reported ~20 renders behind
+        on a server that was not behind at all.
         """
         zone = self.config.render_timezone
-        stored = starts_by_cadence.get(cadence.name, set())
+        stored = starts_by_cadence.get(cadence.name, [])
         latest_period = cadence.floor(now.astimezone(zone))
+
+        def is_rendered(period_start: datetime) -> bool:
+            start = period_start.astimezone(timezone.utc)
+            end = cadence.end_of(period_start).astimezone(timezone.utc)
+            position = bisect_left(stored, start)
+            return position < len(stored) and stored[position] < end
 
         if first_frame is None:
             # Nothing on the track this cadence reads, so no period it could have
@@ -792,7 +838,7 @@ class SystemStatusCollector:
         count = 0
         latest_rendered = None
         while period.astimezone(timezone.utc) >= horizon:
-            present = period.astimezone(timezone.utc) in stored
+            present = is_rendered(period)
             if latest_rendered is None:
                 latest_rendered = present
             if not present:
@@ -1188,8 +1234,13 @@ class SystemStatusCollector:
                 add("info", f"Analysis has not started on camera {row['channel']}",
                     "No watermark has been written for it yet.")
 
-        services = report["services"]
-        for unit, detail in (services or {}).items():
+        services = report["services"] or {}
+        if services.get("unavailable"):
+            add("info", "systemd could not be asked about the services",
+                f"{services['unavailable']} Everything else on this page is unaffected.")
+        for unit, detail in services.items():
+            if unit == "unavailable":
+                continue
             if detail["active"] != "active":
                 add("error", f"{unit} is {detail['active']}",
                     f"systemd reports sub-state {detail['sub']}, last result {detail['result']}.")

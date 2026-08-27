@@ -6,13 +6,16 @@ report never decodes one, it only counts and sizes them, so synthesising valid
 images would buy nothing and would pull ffmpeg into tests that do not need it.
 """
 import json
+import subprocess
 import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from timelapsed import system_status
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.image_capture_library import ImageCaptureLibrary
 from timelapsed.system_status import (
@@ -474,6 +477,127 @@ def test_periods_from_before_the_camera_captured_anything_are_not_counted_as_due
 
 def test_a_channel_with_no_frames_at_all_has_nothing_outstanding(config):
     assert SystemStatusCollector(config).report()["renders"]["outstanding"] == 0
+
+
+def test_a_video_covering_a_period_counts_even_if_it_does_not_start_on_the_hour(capture, config, now):
+    """The library holds clips written before windows were clock-aligned.
+
+    Matching a period on an exact start read every one of those as a missing
+    hour: on the live server that was six cameras reported ~20 renders behind
+    while every hour actually had a video.
+    """
+    capture("1", steady(now, 60, timedelta(minutes=2)))
+    closed = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    ragged = closed + timedelta(minutes=4, seconds=41)
+    video(config, "1", "hourly_" + ragged.strftime("%Y%m%d_%H%M%S_%Z")
+          + "-" + (ragged + timedelta(hours=1)).strftime("%Y%m%d_%H%M%S_%Z"))
+
+    row = next(
+        entry for entry in SystemStatusCollector(config).report()["renders"]["channels"]
+        if entry["channel"] == "1"
+    )
+    hourly = next(entry for entry in row["cadences"] if entry["cadence"] == "hourly")
+
+    assert hourly["latest_rendered"] is True
+    assert hourly["missing_periods"] == 0
+
+
+def test_a_video_starting_in_the_next_period_does_not_cover_this_one(capture, config, now):
+    """Containment, not proximity: the match is still bounded by the period."""
+    capture("1", steady(now, 120, timedelta(minutes=2)))
+    closed = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    earlier = closed - timedelta(hours=1)
+    video(config, "1", "hourly_" + earlier.strftime("%Y%m%d_%H%M%S_%Z")
+          + "-" + closed.strftime("%Y%m%d_%H%M%S_%Z"))
+
+    row = next(
+        entry for entry in SystemStatusCollector(config).report()["renders"]["channels"]
+        if entry["channel"] == "1"
+    )
+    hourly = next(entry for entry in row["cadences"] if entry["cadence"] == "hourly")
+
+    assert hourly["latest_rendered"] is False
+
+
+# --- what counts as a channel ---
+
+
+def test_the_analysis_root_inside_the_library_is_not_mistaken_for_a_camera(capture, config, now):
+    """The default analysis_root is `{library}/index`, right beside the channels."""
+    capture("1", steady(now, 5, config.capture_interval))
+    (config.image_capture_library_root / "index" / "crops" / "event").mkdir(parents=True)
+    (config.image_capture_library_root / "index" / "index.sqlite3").write_bytes(b"x")
+
+    report = SystemStatusCollector(config).report()
+
+    assert [row["channel"] for row in report["capture"]["channels"]] == ["1", "2"]
+    assert not any(check["title"].startswith("Channel index") for check in report["checks"])
+
+
+def test_a_directory_holding_a_real_track_is_still_a_channel(capture, config, now):
+    capture("9", steady(now, 3, config.capture_interval))
+
+    channels = [
+        row["channel"] for row in SystemStatusCollector(config).report()["capture"]["channels"]
+    ]
+
+    assert channels == ["1", "2", "9"]
+
+
+# --- systemd ---
+
+
+def test_systemd_being_unreachable_is_reported_rather_than_looking_like_no_systemd(config, monkeypatch):
+    """The viewer's own sandbox can block the bus, which is not the same thing."""
+    monkeypatch.setattr(system_status.shutil, "which", lambda _: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        system_status.subprocess, "run",
+        lambda *_, **__: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Failed to connect to bus: Address family not supported\n"
+        ),
+    )
+
+    report = SystemStatusCollector(config).report()
+
+    assert report["services"] == {"unavailable": "Failed to connect to bus: Address family not supported"}
+    assert any("systemd could not be asked" in check["title"] for check in report["checks"])
+
+
+def test_units_that_are_simply_not_installed_are_left_out_without_complaint(config, monkeypatch):
+    monkeypatch.setattr(system_status.shutil, "which", lambda _: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        system_status.subprocess, "run",
+        lambda *_, **__: subprocess.CompletedProcess(
+            [], 0, stdout="LoadState=not-found\nActiveState=inactive\n", stderr=""
+        ),
+    )
+
+    report = SystemStatusCollector(config).report()
+
+    assert report["services"] is None
+    assert not any("systemd" in check["title"] for check in report["checks"])
+
+
+def test_a_machine_with_no_systemd_at_all_simply_has_no_services(config, monkeypatch):
+    monkeypatch.setattr(system_status.shutil, "which", lambda _: None)
+
+    assert SystemStatusCollector(config).report()["services"] is None
+
+
+def test_the_viewer_unit_may_reach_the_bus_over_a_unix_socket():
+    """`systemctl` talks to systemd over AF_UNIX; without it /status shows nothing.
+
+    Checked here rather than noticed in production a second time: the unit file
+    is not imported by anything, so nothing else would ever fail on it.
+    """
+    units = Path(__file__).resolve().parent.parent / "deploy"
+    for name in ("timelapsed-web.service", "timelapsed.service", "timelapsed-analyzer.service"):
+        families = [
+            line for line in (units / name).read_text().splitlines()
+            if line.startswith("RestrictAddressFamilies=")
+        ]
+        assert families, f"{name} has no RestrictAddressFamilies"
+        assert "AF_UNIX" in families[0], f"{name} cannot reach the systemd bus"
 
 
 # --- retention, growth and the disk ---
