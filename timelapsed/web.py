@@ -778,7 +778,15 @@ function select(entry, atMs) {
   const v = document.createElement("video");
   // Timelapses have no audio track, and muted is what lets autoplay through.
   v.controls = true; v.autoplay = true; v.loop = true; v.muted = true;
-  v.playsInline = true; v.preload = "auto";
+  v.playsInline = true;
+  // "metadata", not "auto". These clips are dense -- 1800 frames in 60s runs to
+  // tens of MB -- and "auto" starts pulling from byte zero immediately. On a
+  // deep link that download is wasted: the seek cannot be applied until the
+  // moov arrives, and then playback restarts from somewhere else entirely.
+  // Asking for metadata alone gets the moov (it is at the front, thanks to
+  // -movflags +faststart), fires loadedmetadata quickly, and lets buffering
+  // begin at the moment actually being looked at.
+  v.preload = "metadata";
   v.src = entry.url;
   seekToMoment(v, entry, atMs);
   screen.appendChild(v);

@@ -17,16 +17,24 @@ It serves:
 | `/?channel=1` | Filter to one channel |
 | `/?cadence=weekly` | Filter to one cadence |
 | `/?channel=1&cadence=daily` | Both |
+| `/?channel=5&at=1787773521000` | Open on a moment: centres the timeline there and seeks the covering clip to it. This is what the library page links to. |
 | `/api/timelapses` | The same list as JSON |
 | `/video/{channel}/{filename}` | The video file, with HTTP Range support |
+| `/thumb/{channel}.jpg` | The latest still for a camera, downscaled for the sidebar |
+| `/library` | People and plates, when recognition is enabled |
+| `/crop/{event\|plate}/{id}.jpg` | A recognition crop |
 | `/healthz` | Returns `ok`, for monitoring |
 
 The page is mobile-first and works in Safari on iOS, which is fussier than most browsers: it needs
 `Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled.
 
-Videos use `preload="none"`, so opening a page with fifty videos on it costs one HTML request, not
-fifty video downloads. Playback starts quickly because renders are written with
-`-movflags +faststart`.
+There is one `<video>` on the page at a time — the timeline picks which clip it holds — and it uses
+`preload="metadata"`. These clips are dense: 1800 frames compressed into 60 seconds runs to tens of
+megabytes, and `preload="auto"` starts pulling from byte zero the moment a clip is selected. That
+download is wasted whenever the viewer is opened on a specific moment (`?at=`), because the seek
+cannot be applied until the header arrives and playback then restarts elsewhere. Fetching metadata
+alone gets the header quickly — it is at the front, thanks to `-movflags +faststart` — so the seek
+lands first and buffering begins at the moment actually being watched.
 
 ## Putting nginx in front
 
