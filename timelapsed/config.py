@@ -15,6 +15,9 @@ DEFAULT_IMAGE_RETENTION_DAYS = 8
 DEFAULT_TIMELAPSE_RETENTION_DAYS = {"hourly": 7, "daily": 90, "weekly": 0}
 # Enough headroom for render scratch space, the journal and an apt upgrade.
 DEFAULT_MINIMUM_FREE_DISK_GB = 5.0
+# One ffmpeg at a time. Each 1080p render peaks around 250 MB, so letting every
+# channel render its rollover at once is how a small guest meets the OOM killer.
+DEFAULT_MAX_CONCURRENT_RENDERS = 1
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,9 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         timelapse_output_fps=parser.getint("timelapse", "output_fps", fallback=30),
         timelapse_min_frames=parser.getint("timelapse", "min_frames", fallback=60),
         timelapse_cadences=cadences,
+        max_concurrent_renders=max(
+            1, parser.getint("timelapse", "max_concurrent_renders", fallback=DEFAULT_MAX_CONCURRENT_RENDERS)
+        ),
 
         image_capture_library_root=Path(parser["image_capture_library"]["root"]).expanduser(),
         image_retention=_optional_days(

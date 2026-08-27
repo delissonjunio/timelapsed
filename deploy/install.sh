@@ -32,6 +32,25 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip ffmpeg git
 
+# A 2 GB guest with no swap has no shock absorber: a render spike is an instant
+# kill rather than a few seconds of paging. This is headroom for those spikes,
+# not a place to run from, hence the low swappiness.
+echo "==> Ensuring swap exists"
+SWAP_FILE=${SWAP_FILE:-/swapfile}
+SWAP_SIZE_MB=${SWAP_SIZE_MB:-2048}
+if [[ -z "$(swapon --show --noheadings)" ]]; then
+    fallocate -l "${SWAP_SIZE_MB}M" "${SWAP_FILE}" \
+        || dd if=/dev/zero of="${SWAP_FILE}" bs=1M count="${SWAP_SIZE_MB}" status=none
+    chmod 600 "${SWAP_FILE}"
+    mkswap -q "${SWAP_FILE}"
+    swapon "${SWAP_FILE}"
+    grep -q "^${SWAP_FILE}[[:space:]]" /etc/fstab || echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+else
+    echo "Swap is already configured; leaving it alone."
+fi
+echo "vm.swappiness = 10" > /etc/sysctl.d/60-timelapsed-swappiness.conf
+sysctl -q -w vm.swappiness=10
+
 echo "==> Creating service user ${SERVICE_USER}"
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     useradd --system --home-dir "${INSTALL_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}"

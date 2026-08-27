@@ -66,10 +66,39 @@ Then, in order of likelihood:
 | --- | --- | --- |
 | `Skipping … only N frames available, minimum is 60` | Not enough stills in the window. | Lower `interval_seconds`, or lower `min_frames`. |
 | `No images found for channel 1 between … skipping weekly render` | Stills were pruned before the render ran. | Raise `image_retention_days` above your longest cadence. |
-| `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Give the VM more vCPU, or reduce `output_fps` / resolution. |
+| `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Harmless on its own: the skipped window is picked up as a missing window later. If it is constant, give the VM more vCPU or reduce `output_fps` / resolution. |
+| `Channel 5 is waiting for a render slot` | `max_concurrent_renders` is doing its job. | Nothing, unless the wait outlasts the cadence. |
 | Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight UTC, weekly on Monday. |
 
 Remember all rollovers are **UTC**. A "daily" video is rendered at 00:00 UTC, not local midnight.
+
+### There is a gap in the timeline
+
+Missing windows are not permanent. Renders are chosen by comparing what is on disk against the
+clock, so any complete window that still has its stills and has no video is re-rendered — newest
+first, a few per pass, and once at every worker startup. A gap should close on its own within a few
+cadence periods.
+
+If it does not, the stills are the thing to check:
+
+```bash
+CH=1; WINDOW=20260826_19       # channel, and the hour in UTC
+ls /var/lib/timelapsed/$CH/image | grep -c "^$WINDOW"    # frames still on disk
+ls /var/lib/timelapsed/$CH/timelapse | grep "$WINDOW"    # the video, if it exists
+```
+
+Fewer frames than `min_frames` — usually because `image_retention_days` has since expired them —
+means that window is gone for good and will be skipped deliberately. To force a pass immediately
+rather than waiting for the next rollover, `sudo systemctl restart timelapsed`.
+
+Why a window goes missing in the first place: an OOM-killed render, a restart landing mid-ffmpeg
+(renders are children of the unit and die with it), or a stretch where the NVR was unreachable and
+too few frames were captured. The journal says which:
+
+```bash
+journalctl -u timelapsed --since '2026-08-26 19:00' --until '2026-08-26 21:00' | grep -iE 'oom|render|Stopped'
+sudo dmesg -T | grep -i 'killed process'
+```
 
 ### Disk filling up
 
@@ -128,6 +157,30 @@ Levers, cheapest first:
 
 The unit files already run renders at `Nice=10` with `CPUWeight=50`, so they yield to anything more
 important on the same Proxmox host.
+
+### The OOM killer took a render
+
+```
+oom-kill:…task_memcg=/system.slice/timelapsed.service,task=ffmpeg
+Out of memory: Killed process 6349 (ffmpeg) total-vm:887840kB, anon-rss:249944kB
+```
+
+A 1080p render peaks around 250 MB, and every channel rolls over on the same tick, so the shape of
+this failure is *all* channels rendering at once on a guest that cannot hold them. Three things are
+meant to prevent it, and it is worth checking all three:
+
+```bash
+grep max_concurrent_renders /etc/timelapsed.ini    # 1 unless deliberately raised
+systemctl show timelapsed -p MemoryMax             # the cgroup backstop
+swapon --show                                      # headroom for spikes
+```
+
+`MemoryMax` matters beyond the render itself: without it the kernel picks a victim anywhere on the
+guest, so a render can take out `tailscaled` or the viewer instead of itself. `deploy/install.sh`
+provisions a 2 GB swapfile at `/swapfile` with `vm.swappiness=10`; a guest installed before that
+existed will not have one.
+
+Windows lost this way are re-rendered automatically — see "There is a gap in the timeline".
 
 ### The viewer shows nothing
 

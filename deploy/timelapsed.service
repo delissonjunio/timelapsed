@@ -21,6 +21,14 @@ Nice=10
 CPUWeight=50
 IOWeight=50
 
+# And memory-hungry: a 1080p render peaks around 250 MB. max_concurrent_renders
+# keeps that to one at a time, and this is the belt to that braces -- a runaway
+# render is reclaimed and then killed inside this cgroup, instead of the kernel
+# picking whichever process on the guest happens to look expensive.
+MemoryAccounting=true
+MemoryHigh=768M
+MemoryMax=1G
+
 # Hardening. The daemon needs the library path, its config, and nothing else.
 NoNewPrivileges=true
 PrivateTmp=true

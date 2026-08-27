@@ -16,6 +16,10 @@ TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%Z"
 TargetName = Literal["image", "timelapse"]
 
 RECLAIM_LOCK_NAME = ".reclaim.lock"
+# Render scratch space, kept inside the library so staged frames can be
+# hardlinked instead of copied. Dot-prefixed and holding neither an `image` nor
+# a `timelapse` directory, so nothing mistakes it for a channel.
+SCRATCH_DIRECTORY_NAME = ".render"
 
 
 def _generate_timelapse_filename(cadence_name: str, recording_starts: datetime, recording_finishes: datetime) -> str:
@@ -196,6 +200,38 @@ class ImageCaptureLibrary:
                 deleted, cadence_name or target_name, str(retention), channel_id,
             )
         return deleted
+
+    def image_timestamps(self, channel_id: str) -> list[datetime]:
+        """Every stored still's capture time for a channel, oldest first.
+
+        One directory scan answering "which windows have frames", so deciding
+        what still needs rendering does not restat the library once per window.
+        """
+        return [timestamp for timestamp, _ in self._timestamped_paths(channel_id, "image")]
+
+    def rendered_window_starts(self, channel_id: str, cadence_name: str) -> list[datetime]:
+        """The start time of every stored video of one cadence, oldest first."""
+        return [
+            timestamp
+            for timestamp, path in self._timestamped_paths(channel_id, "timelapse")
+            if parse_timelapse_filename(path.stem)[0] == cadence_name
+        ]
+
+    def scratch_directory(self) -> Path:
+        """Where a render stages its frames and writes its output.
+
+        Deliberately inside the library rather than /tmp: same filesystem means
+        `os.link` works, so staging a thousand frames costs no bytes and no copy
+        time, and an in-flight render cannot fill a small root partition.
+        """
+        scratch_path = self.root_path / SCRATCH_DIRECTORY_NAME
+        scratch_path.mkdir(parents=True, exist_ok=True)
+        return scratch_path
+
+    def clear_scratch(self) -> None:
+        """Drop anything a killed render left staged. Startup only -- it does not
+        distinguish live renders from dead ones."""
+        shutil.rmtree(self.root_path / SCRATCH_DIRECTORY_NAME, ignore_errors=True)
 
     def free_bytes(self) -> int:
         """Bytes still available on the filesystem holding the library."""

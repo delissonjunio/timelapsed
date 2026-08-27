@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from timelapsed.image_capture_library import ImageCaptureLibrary
 from timelapsed.schema import CADENCES
-from timelapsed.timelapsed import RenderScheduler, capture_continuously
-from tests.conftest import BASE_TIME
+from timelapsed.timelapsed import RenderScheduler, capture_continuously, pending_render_windows
+from tests.conftest import BASE_TIME, requires_ffmpeg
 
 
 class FakeCaptureAgent:
@@ -57,12 +58,22 @@ def fast_worker(monkeypatch):
         monkeypatch.setattr("timelapsed.timelapsed.datetime", FrozenDatetime)
 
         submitted = []
+        rendered: dict[str, list[datetime]] = {}
+
+        def record(self, cadence, windows):
+            for start_time, end_time in windows:
+                submitted.append((cadence.name, self.channel_id, start_time, end_time))
+                rendered.setdefault(cadence.name, []).append(start_time)
+            return bool(windows)
+
+        monkeypatch.setattr(RenderScheduler, "submit", record)
+        # A real render leaves a video behind, and that video is how the next
+        # pass knows the window is done. Nothing renders here, so stand in for it
+        # or every rollover would re-submit every window it has already seen.
         monkeypatch.setattr(
-            RenderScheduler,
-            "submit",
-            lambda self, cadence, start_time, end_time: submitted.append(
-                (cadence.name, self.channel_id, start_time, end_time)
-            ),
+            ImageCaptureLibrary,
+            "rendered_window_starts",
+            lambda self, channel_id, cadence_name: sorted(rendered.get(cadence_name, [])),
         )
         monkeypatch.setattr(RenderScheduler, "shutdown", lambda self, timeout=30.0: None)
 
@@ -115,6 +126,7 @@ def test_worker_does_not_render_immediately_on_start(config, library, fast_worke
 
 def test_worker_renders_hourly_on_the_hour(config, library, fast_worker):
     config.capture_interval = timedelta(minutes=20)
+    config.timelapse_min_frames = 1
     start = datetime(2025, 6, 3, 12, 30, tzinfo=timezone.utc)
 
     submitted = fast_worker(config, library, FakeCaptureAgent(), cycles=6, start=start)
@@ -122,10 +134,16 @@ def test_worker_renders_hourly_on_the_hour(config, library, fast_worker):
     hourly = [entry for entry in submitted if entry[0] == "hourly"]
     assert len(hourly) == 2  # 13:10 and 14:10 within six 20-minute cycles
     assert all(end - begin == timedelta(hours=1) for _, _, begin, end in hourly)
+    # Windows are clock-aligned, not "one hour back from whenever this fired".
+    assert [begin for _, _, begin, _ in hourly] == [
+        datetime(2025, 6, 3, 12, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 13, tzinfo=timezone.utc),
+    ]
 
 
 def test_worker_renders_daily_and_weekly_with_the_right_windows(config, library, fast_worker):
     config.capture_interval = timedelta(hours=8)
+    config.timelapse_min_frames = 1
     start = datetime(2025, 6, 7, 12, 0, tzinfo=timezone.utc)  # Saturday
 
     submitted = fast_worker(config, library, FakeCaptureAgent(), cycles=10, start=start)
@@ -139,6 +157,7 @@ def test_worker_renders_daily_and_weekly_with_the_right_windows(config, library,
 def test_only_enabled_cadences_are_rendered(config, library, fast_worker):
     config.timelapse_cadences = [CADENCES["weekly"]]
     config.capture_interval = timedelta(hours=12)
+    config.timelapse_min_frames = 1
     start = datetime(2025, 6, 7, 12, 0, tzinfo=timezone.utc)
 
     submitted = fast_worker(config, library, FakeCaptureAgent(), cycles=8, start=start)
@@ -160,17 +179,132 @@ def test_worker_prunes_expired_images(config, library, fast_worker):
     assert "20250603_10" <= oldest  # nothing older than the retention window survived
 
 
+# --- pending windows -------------------------------------------------------
+
+def _store_frames(library, channel_id, start, end, spacing=timedelta(minutes=1)):
+    """Fill [start, end) with frames, one every `spacing`."""
+    taken_at = start
+    while taken_at < end:
+        library.store_image(channel_id, "jpg", b"frame", taken_at)
+        taken_at += spacing
+
+
+def _hourly_windows(library, config, now, **kwargs):
+    return pending_render_windows(library, config, "1", CADENCES["hourly"], now, **kwargs)
+
+
+def test_pending_windows_offers_the_hour_that_just_closed(config, library):
+    now = datetime(2025, 6, 3, 13, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(hours=1), now)
+
+    assert _hourly_windows(library, config, now) == [
+        (datetime(2025, 6, 3, 12, tzinfo=timezone.utc), datetime(2025, 6, 3, 13, tzinfo=timezone.utc)),
+    ]
+
+
+def test_pending_windows_skips_hours_that_are_already_rendered(config, library, tmp_path):
+    now = datetime(2025, 6, 3, 13, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(hours=3), now)
+    rendered = tmp_path / "rendered.mp4"
+    rendered.write_bytes(b"mp4")
+    # Stored a few seconds late, exactly as a real rollover render would be.
+    library.store_timelapse(
+        "1", rendered, "hourly",
+        datetime(2025, 6, 3, 12, 0, 3, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 13, 0, 3, tzinfo=timezone.utc),
+    )
+
+    starts = [begin for begin, _ in _hourly_windows(library, config, now)]
+
+    assert datetime(2025, 6, 3, 12, tzinfo=timezone.utc) not in starts
+    assert starts == [
+        datetime(2025, 6, 3, 11, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 10, tzinfo=timezone.utc),
+    ]
+
+
+def test_pending_windows_fills_a_gap_left_by_a_killed_render(config, library, tmp_path):
+    """The hour a crash swallowed comes back on the next pass, newest first."""
+    now = datetime(2025, 6, 3, 13, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(hours=4), now)
+    rendered = tmp_path / "rendered.mp4"
+    rendered.write_bytes(b"mp4")
+    for hour in (10, 11):  # 09:00 and 12:00 are the gaps
+        library.store_timelapse(
+            "1", rendered, "hourly",
+            datetime(2025, 6, 3, hour, tzinfo=timezone.utc),
+            datetime(2025, 6, 3, hour + 1, tzinfo=timezone.utc),
+        )
+
+    starts = [begin for begin, _ in _hourly_windows(library, config, now)]
+
+    assert starts == [
+        datetime(2025, 6, 3, 12, tzinfo=timezone.utc),
+        datetime(2025, 6, 3, 9, tzinfo=timezone.utc),
+    ]
+
+
+def test_pending_windows_ignores_hours_with_too_few_frames(config, library):
+    config.timelapse_min_frames = 30
+    now = datetime(2025, 6, 3, 13, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(hours=1), now, spacing=timedelta(minutes=20))
+
+    assert _hourly_windows(library, config, now) == []
+
+
+def test_pending_windows_are_capped_and_bounded_by_retention(config, library):
+    config.image_retention = timedelta(hours=6)
+    now = datetime(2025, 6, 3, 13, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(days=2), now, spacing=timedelta(minutes=5))
+
+    assert len(_hourly_windows(library, config, now)) == 4  # MAX_WINDOWS_PER_RENDER
+    # Retention is the real bound: nothing older than it can still be rendered.
+    assert len(_hourly_windows(library, config, now, limit=100)) == 6
+
+
+def test_pending_windows_never_offers_the_hour_still_in_progress(config, library):
+    now = datetime(2025, 6, 3, 13, 30, tzinfo=timezone.utc)
+    _store_frames(library, "1", datetime(2025, 6, 3, 13, tzinfo=timezone.utc), now)
+
+    assert _hourly_windows(library, config, now) == []
+
+
 # --- render scheduler ------------------------------------------------------
 
 def _busy(seconds):
     time.sleep(seconds)
 
 
+@requires_ffmpeg
+def test_renders_are_serialised_by_the_shared_slot(config, library, populate_images):
+    """One slot means one ffmpeg: the second channel waits rather than piling on."""
+    populate_images(channel_id="1", count=40, end=BASE_TIME)
+    populate_images(channel_id="2", count=40, end=BASE_TIME)
+    slot = multiprocessing.BoundedSemaphore(1)
+    window = [(BASE_TIME - timedelta(hours=1), BASE_TIME)]
+    schedulers = [RenderScheduler(config, library, channel, slot) for channel in ("1", "2")]
+
+    slot.acquire()  # Stand in for a render already in flight.
+    try:
+        for scheduler in schedulers:
+            scheduler.submit(CADENCES["hourly"], window)
+        time.sleep(2)
+        assert library.rendered_window_starts("1", "hourly") == []
+        assert library.rendered_window_starts("2", "hourly") == []
+    finally:
+        slot.release()
+
+    for scheduler in schedulers:
+        scheduler._processes["hourly"].join(timeout=60)
+    assert len(library.rendered_window_starts("1", "hourly")) == 1
+    assert len(library.rendered_window_starts("2", "hourly")) == 1
+
+
 def test_scheduler_starts_a_process_per_render(config, library):
     """Runs the real entrypoint; with an empty library it returns without rendering."""
     scheduler = RenderScheduler(config, library, "1")
 
-    assert scheduler.submit(CADENCES["hourly"], BASE_TIME - timedelta(hours=1), BASE_TIME) is True
+    assert scheduler.submit(CADENCES["hourly"], [(BASE_TIME - timedelta(hours=1), BASE_TIME)]) is True
 
     process = scheduler._processes["hourly"]
     process.join(timeout=30)
@@ -202,9 +336,9 @@ def test_scheduler_skips_a_cadence_that_is_still_rendering(config, library):
     scheduler._processes["hourly"].start()
 
     try:
-        assert scheduler.submit(CADENCES["hourly"], BASE_TIME - timedelta(hours=1), BASE_TIME) is False
+        assert scheduler.submit(CADENCES["hourly"], [(BASE_TIME - timedelta(hours=1), BASE_TIME)]) is False
         # A different cadence is unaffected by the busy one.
-        assert scheduler.submit(CADENCES["daily"], BASE_TIME - timedelta(days=1), BASE_TIME) is True
+        assert scheduler.submit(CADENCES["daily"], [(BASE_TIME - timedelta(days=1), BASE_TIME)]) is True
     finally:
         for process in scheduler._processes.values():
             process.terminate()

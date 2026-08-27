@@ -64,8 +64,9 @@ Per channel, every `interval_seconds`:
    and an XML error body; without this check that XML gets written to disk as a "frame" and poisons
    the next render.
 3. Write to `{root}/{channel}/image/{timestamp}.jpg`.
-4. For each enabled cadence, ask whether the clock has rolled over into a new period. If so, fork a
-   render for the window ending now.
+4. For each enabled cadence, ask whether the clock has rolled over into a new period. If so, work
+   out which of that cadence's windows are still missing a video and fork one render process for
+   them.
 5. Once an hour, prune stills and videos past their retention.
 6. Sleep for whatever remains of the interval. If the cycle itself ate more than 80% of the
    interval, log a warning — that's the signal your interval is too aggressive for the hardware.
@@ -91,6 +92,24 @@ both ISO week 1 of 2026, and correctly do *not* trigger a rollover).
 On startup, every cadence is seeded with the current time. A restart therefore does not immediately
 re-render everything; each cadence waits for its next genuine rollover.
 
+## What gets rendered: missing windows, not just the last one
+
+A rollover is the *trigger*; it is not the answer to "what should be rendered". That question is
+answered by comparing what is on disk against the clock:
+
+* Windows are **aligned to the clock** — the top of the hour, midnight UTC, Monday — so a period has
+  one canonical name no matter what second the render actually fired on.
+* A period is **already done** if a video of that cadence exists whose start falls inside it.
+* A period is **renderable** if it holds at least `min_frames` stills.
+* Everything else, back as far as retention still holds stills, is **missing** — and missing windows
+  are submitted newest first, at most `MAX_WINDOWS_PER_RENDER` per pass.
+
+The window that just closed is simply the newest missing one, so the common case is unchanged. What
+this buys is that every other way a window can go missing now heals itself: a render killed by the
+OOM killer, a `systemctl restart` landing mid-ffmpeg (renders are children of the unit, so they die
+with it), or a render skipped because the previous one of that cadence was still going. Each worker
+also runs one sweep at startup rather than waiting for the next rollover to notice.
+
 ## Rendering
 
 `generate_timelapse` does four things:
@@ -100,15 +119,23 @@ re-render everything; each cadence waits for its next genuine rollover.
    even intervals across the whole list. This is what makes the output length predictable: a
    60-second video at 30 fps is always 1,800 frames whether the window held 720 stills or 120,000.
    If fewer stills exist than the target, all of them are used and the video is simply shorter.
-3. **Stage them** in a temp directory as `input-%015d.jpg`, which is the sequence pattern ffmpeg's
-   image2 demuxer wants. Staging uses **hardlinks** where the filesystem allows it, so no image
-   bytes are copied; it falls back to a real copy across filesystem boundaries.
+3. **Stage them** as `input-%015d.jpg`, which is the sequence pattern ffmpeg's image2 demuxer wants,
+   in a scratch directory **inside the library** (`{root}/.render`) rather than `/tmp`. Same
+   filesystem means `os.link` works, so staging 1,800 frames copies no bytes at all; `/tmp` is a
+   different mount even when it is the same disk, and hardlinks do not cross mounts. Leftovers from
+   a killed render are cleared at startup.
 4. **Run ffmpeg**: `libx264`, `-preset veryfast`, `-crf 23`, `-pix_fmt yuv420p` for universal
    playback, and `-movflags +faststart` so the viewer can begin playing before the file finishes
    downloading.
 
 Below `min_frames` the render is skipped with a warning rather than producing a video that flashes
 past in a third of a second.
+
+**Renders are serialised across the whole daemon.** Every channel rolls over on the same tick, and
+each 1080p ffmpeg peaks around 250 MB, so six of them at once is 1.5 GB — more than a 2 GB guest
+has. A `multiprocessing.BoundedSemaphore(max_concurrent_renders)`, held around each individual
+ffmpeg run rather than around a whole batch, is what keeps that to one at a time while still letting
+a channel with a backlog take its turn. The unit's `MemoryMax` is the backstop underneath it.
 
 ## The web viewer
 

@@ -81,10 +81,10 @@ Then add headroom for:
   ```bash
   sudo du -sh /var/lib/timelapsed/*/timelapse
   ```
-* **Render scratch space** — renders hardlink rather than copy where the filesystem allows it, so
-  staging is usually free. Across a filesystem boundary it falls back to real copies, needing up to
-  `target_frames × avg_image_size` (~500 MB) temporarily. `PrivateTmp=true` in the unit puts this
-  under `/tmp` on the root filesystem, so leave a couple of GB free there.
+* **Render scratch space** — renders stage into `{root}/.render`, which is on the same filesystem as
+  the stills, so staging is hardlinks and costs no bytes. What does land there is the video being
+  encoded, so budget one render's output (~150 MB) plus a little. The free-space floor
+  (`min_free_disk_gb`) already covers it.
 * **Filesystem overhead** — millions of small files. ext4's default inode ratio handles this, but
   check `df -i` as well as `df -h`; running out of inodes looks exactly like a full disk.
 

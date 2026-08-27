@@ -25,3 +25,6 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+
+# Claude Code scratch worktrees
+.claude/

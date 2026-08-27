@@ -31,6 +31,11 @@ output_fps = 30
 min_frames = 60
 # Which timelapses to produce. Any of: hourly, daily, weekly.
 cadences = hourly,daily,weekly
+# How many renders may run at once across ALL channels. Every channel rolls over
+# at the same instant, and each 1080p ffmpeg peaks around 250 MB, so on a small
+# guest this is the difference between renders finishing and the OOM killer
+# taking them. Raise it only if there is RAM per render to spare.
+max_concurrent_renders = 1
 
 [image_capture_library]
 # Where images and videos are written. Needs a lot of room; see docs/Storage-Planning.md.

@@ -28,13 +28,16 @@ def select_frames(image_paths: Sequence[Path], target_frame_count: int) -> Seque
 
 
 @contextmanager
-def _stage_paths_in_temp_directory(paths: Sequence[Path]) -> Iterator[Path]:
+def _stage_paths_in_temp_directory(paths: Sequence[Path], scratch_root: Path) -> Iterator[Path]:
     """Stage paths as input-%015d.<ext> so ffmpeg's image2 demuxer can read them in order.
 
     Hardlinks where the filesystem allows it (no extra bytes, no copy time) and
-    falls back to a real copy across filesystem boundaries.
+    falls back to a real copy across filesystem boundaries. scratch_root lives in
+    the library precisely so the hardlink path is the one that gets taken: a
+    sampled daily render is ~1800 frames, and copying those is 400 MB of writes
+    on a host whose /tmp is neither big nor on the same disk.
     """
-    temp_dir = Path(tempfile.mkdtemp(prefix="timelapse_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="timelapse_", dir=scratch_root))
     try:
         for index, path in enumerate(paths):
             temp_path = temp_dir / f"input-{index:0>15}{path.suffix}"
@@ -89,9 +92,10 @@ def generate_timelapse(
         cadence_name, channel_id, len(frames), len(image_paths), output_fps, len(frames) / output_fps,
     )
 
-    output_path = Path(tempfile.mkdtemp(prefix="timelapse_out_")) / "timelapse.mp4"
+    scratch_root = library.scratch_directory()
+    output_path = Path(tempfile.mkdtemp(prefix="timelapse_out_", dir=scratch_root)) / "timelapse.mp4"
     try:
-        with _stage_paths_in_temp_directory(frames) as working_directory:
+        with _stage_paths_in_temp_directory(frames, scratch_root) as working_directory:
             ffmpeg_command = [
                 "ffmpeg",
                 "-hide_banner",

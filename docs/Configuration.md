@@ -64,10 +64,17 @@ comes back.
 | `output_fps` | no | `30` | Playback frame rate. `24`–`30` looks natural; higher just costs bitrate. |
 | `min_frames` | no | `60` | Refuse to render fewer frames than this. At 30 fps, 60 frames is a 2-second video. |
 | `cadences` | no | `hourly,daily,weekly` | Which timelapses to produce. Any subset of `hourly`, `daily`, `weekly`. An unknown name is a startup error. |
+| `max_concurrent_renders` | no | `1` | How many renders may run at once across **all** channels. |
 
 `duration_seconds × output_fps` is the target frame count. The renderer picks that many stills,
 evenly spaced across the whole window. If the window holds fewer, all are used and the video comes
 out shorter — it is never padded or slowed down.
+
+`max_concurrent_renders` is a RAM budget written as a process count. Every channel rolls over on the
+same tick, so without it six cameras start six ffmpegs at once, each peaking around 250 MB at 1080p.
+Budget ~300 MB per concurrent render on top of the daemon itself and leave the guest room to
+breathe; `1` is right for anything with 2 GB. Renders that cannot start are not dropped — they wait
+their turn, and anything missed is picked up as a missing window later.
 
 ## `[image_capture_library]`
 
@@ -162,6 +169,7 @@ duration_seconds = 60
 output_fps = 30
 min_frames = 60
 cadences = hourly,daily,weekly
+max_concurrent_renders = 1
 
 [image_capture_library]
 root = /var/lib/timelapsed

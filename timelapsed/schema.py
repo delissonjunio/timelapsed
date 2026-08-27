@@ -21,6 +21,10 @@ class Cadence:
     name: str
     window: timedelta
     is_due: Callable[[datetime, datetime], bool]
+    # Snaps a timestamp back to the start of the period containing it. Renders
+    # are looked up by period, so a window has to have one canonical name no
+    # matter what second of it the render actually fired on.
+    floor: Callable[[datetime], datetime]
 
 
 def _hour_rolled_over(now: datetime, last_run: datetime) -> bool:
@@ -37,10 +41,24 @@ def _week_rolled_over(now: datetime, last_run: datetime) -> bool:
     return now.isocalendar()[:2] != last_run.isocalendar()[:2]
 
 
+def _floor_to_hour(moment: datetime) -> datetime:
+    return moment.replace(minute=0, second=0, microsecond=0)
+
+
+def _floor_to_day(moment: datetime) -> datetime:
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _floor_to_week(moment: datetime) -> datetime:
+    # weekday() is 0 on Monday, which is where the ISO week starts and so where
+    # _week_rolled_over fires.
+    return _floor_to_day(moment) - timedelta(days=moment.weekday())
+
+
 CADENCES: dict[str, Cadence] = {
-    "hourly": Cadence("hourly", timedelta(hours=1), _hour_rolled_over),
-    "daily": Cadence("daily", timedelta(days=1), _day_rolled_over),
-    "weekly": Cadence("weekly", timedelta(days=7), _week_rolled_over),
+    "hourly": Cadence("hourly", timedelta(hours=1), _hour_rolled_over, _floor_to_hour),
+    "daily": Cadence("daily", timedelta(days=1), _day_rolled_over, _floor_to_day),
+    "weekly": Cadence("weekly", timedelta(days=7), _week_rolled_over, _floor_to_week),
 }
 
 
@@ -59,6 +77,10 @@ class Config:
     timelapse_output_fps: int
     timelapse_min_frames: int
     timelapse_cadences: list[Cadence]
+    # How many renders may run at once across every channel. ffmpeg is the
+    # memory-hungry part of this daemon, so this is the guest's RAM budget
+    # expressed as a process count.
+    max_concurrent_renders: int
 
     image_capture_library_root: Path
     image_retention: timedelta | None
