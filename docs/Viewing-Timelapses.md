@@ -14,11 +14,11 @@ It serves:
 | Path | What it does |
 | --- | --- |
 | `/` | An NVR-style timeline: one lane per cadence, a camera wall down the side, and a player |
-| `/?channel=1` | Filter to one channel |
-| `/?cadence=weekly` | Filter to one cadence |
+| `/?channel=1` | Open on one channel. Every camera stays in the page, so the wall still works |
+| `/?cadence=weekly` | Open with one cadence lane showing. The chips turn the rest back on |
 | `/?channel=1&cadence=daily` | Both |
 | `/?channel=5&at=1787773521000` | Open on a moment: centres the timeline there and seeks the covering clip to it. This is what the library page links to. |
-| `/api/timelapses` | The same list as JSON |
+| `/api/timelapses` | The same list as JSON. This one does filter: `?channel=` and `?cadence=` narrow the response |
 | `/video/{channel}/{filename}` | The video file, with HTTP Range support |
 | `/thumb/{channel}.jpg` | The latest still for a camera, downscaled for the sidebar |
 | `/library` | People and plates, when recognition is enabled |

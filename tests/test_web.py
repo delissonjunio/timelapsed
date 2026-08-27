@@ -163,14 +163,33 @@ def test_index_renders_and_embeds_every_video(base_url):
     assert len(embedded_payload(body)) == 4
 
 
-def test_index_filters_by_channel_and_cadence(base_url):
+def test_index_embeds_every_camera_whatever_the_query_opens_on(base_url):
+    """?channel= and ?cadence= say what to open on, not what to send.
+
+    Filtering the embedded catalogue left the page holding one camera's clips
+    while the wall down the side still offered all of them, so clicking any
+    other camera found nothing. The library page links back as
+    `/?channel=5&at=...`, which made arriving from a sighting look as though
+    every other camera had lost its videos.
+    """
     _, _, all_videos = get(base_url + "/")
     _, _, channel_one = get(base_url + "/?channel=1")
     _, _, weekly = get(base_url + "/?cadence=weekly")
 
     assert len(embedded_payload(all_videos)) == 4
-    assert len(embedded_payload(channel_one)) == 3
-    assert {e["cadence"] for e in embedded_payload(weekly)} == {"weekly"}
+    assert embedded_payload(channel_one) == embedded_payload(all_videos)
+    assert embedded_payload(weekly) == embedded_payload(all_videos)
+
+
+def test_the_api_still_filters_by_channel_and_cadence(base_url):
+    """The page is a whole catalogue to browse; the API is a query."""
+    everything = json.loads(get(base_url + "/api/timelapses")[2])
+    channel_one = json.loads(get(base_url + "/api/timelapses?channel=1")[2])
+    weekly = json.loads(get(base_url + "/api/timelapses?cadence=weekly")[2])
+
+    assert len(everything) == 4
+    assert {e["channel"] for e in channel_one} == {"1"}
+    assert {e["cadence"] for e in weekly} == {"weekly"}
 
 
 def test_index_lays_out_a_lane_per_cadence(base_url):

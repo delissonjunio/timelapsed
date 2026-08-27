@@ -346,15 +346,23 @@ header .navlink { color:var(--muted); text-decoration:none; font-size:.75rem;
                   padding:.3rem .6rem; border-radius:6px; border:1px solid var(--line); }
 header .navlink:hover { color:var(--fg); background:var(--panel-2); }
 
+/* A phone has no spare height to hand out. The camera strip, the transport and
+   seven timeline lanes are most of the viewport between them, and in a layout
+   that must fit exactly the picture is what absorbs the difference -- it came
+   out a sixty-pixel band with a postage stamp in the middle. So here the page
+   scrolls rather than fits, and the video keeps its own shape. */
 @media (max-width:760px) {
-  body { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr) auto; }
-  header { grid-column:1; }
-  #channels { grid-column:1; border-right:none; border-bottom:1px solid var(--line);
+  html, body { height:auto; }
+  body { display:block; overflow:visible; }
+  #channels { border-right:none; border-bottom:1px solid var(--line);
               display:flex; gap:.4rem; overflow-x:auto; padding:.5rem; }
   #channels h2 { display:none; }
   .cam { width:132px; flex:none; margin-bottom:0; }
-  #stage { grid-column:1; }
-  #timeline { grid-column:1; }
+  #screen { flex:none; aspect-ratio:16/9; }
+  /* Horizontal drags pan the timeline, vertical ones scroll the page. With the
+     desktop `touch-action:none` a swipe that starts on the lanes moves nothing
+     at all, which on a page that now scrolls is a dead patch half a screen tall. */
+  #lanes { touch-action:pan-y; }
 }
 </style>
 </head>
@@ -413,7 +421,11 @@ const KIND_LABEL = {person: "people", vehicle: "vehicles"};
 
 const state = {
   channel: params.get("channel") && channels.includes(params.get("channel")) ? params.get("channel") : channels[0] || null,
-  show: Object.fromEntries(CADENCES.map(c => [c, true])),
+  // ?cadence= opens with one lane showing. It is a starting view like the
+  // channel above it, not a filter on what the page holds -- the chips turn the
+  // rest back on without a reload.
+  show: Object.fromEntries(CADENCES.map(
+    c => [c, !CADENCES.includes(params.get("cadence")) || params.get("cadence") === c])),
   utc: true,
   start: 0, end: 0,
   selected: null,
@@ -512,16 +524,51 @@ function buildChannels() {
     b.append(thumb, row);
     b.onclick = () => {
       if (state.channel === id) return;
+      // Where the reader is now, before the switch throws the selection away.
+      const at = momentNow();
+      // Picking a camera by hand is where the link that brought them here has
+      // served its purpose, so the query stops describing it and starts
+      // describing where they now are.
+      syncUrl(id);
       state.channel = id;
       state.selected = null;
       setView(state.end - state.start || DAY);
       syncChannels();
       drawTimeline();
-      drawNowPlaying();
+      // Land on something playable. The clip covering the moment just being
+      // watched where this camera has one -- the switch is usually "what did
+      // that camera see at the same time" -- and the newest otherwise.
+      const covers = e => at && e.s <= at && e.f >= at;
+      const target = visible().filter(covers).sort((a, b) => spanOf(a) - spanOf(b))[0]
+        || visible().sort((a, b) => b.s - a.s)[0];
+      if (target) {
+        select(target, covers(target) ? at : undefined);
+      } else {
+        // A camera with nothing rendered yet. Leaving the previous one's frame
+        // up under its own name is worse than saying there is nothing here.
+        video.removeAttribute("src");
+        video.load();
+        $("placeholder").hidden = false;
+        $("transport").hidden = true;
+        drawNowPlaying();
+      }
     };
     box.appendChild(b);
   }
   syncChannels();
+}
+
+// The query is what a reload comes back to, so it has to keep saying where the
+// reader actually is. ?channel= follows the camera they picked, or a reload
+// drops them back on the one the link named. ?at= and ?identity= are one-shot
+// -- they hand them a moment the library page sent them to, and stop meaning
+// anything once they have moved off it.
+function syncUrl(channel) {
+  state.focusIdentity = null;
+  params.set("channel", channel);
+  params.delete("at");
+  params.delete("identity");
+  history.replaceState(null, "", location.pathname + "?" + params.toString());
 }
 
 // onReady fires once the image has decoded, which is when it is safe to put it
@@ -1319,8 +1366,6 @@ if (target) select(target, deepLinkAt || undefined);
 
 def render_index(
     catalogue: TimelapseCatalogue,
-    channel_id: str | None,
-    cadence: str | None,
     recognition: "RecognitionReader | None" = None,
     fps_by_cadence: dict[str, int] | None = None,
 ) -> bytes:
@@ -1329,8 +1374,15 @@ def render_index(
     Everything is served in one request: the catalogue is small (retention caps
     it at a few thousand entries) and embedding it means no second round trip
     and no loading state. The page filters and lays out client-side.
+
+    The whole catalogue, deliberately. `?channel=` and `?cadence=` say what to
+    open on, not what to send: they used to filter here, which left the page
+    holding one camera's clips while the wall down the side still offered all
+    six. Clicking any of the others found nothing, and since the library page
+    links back as `/?channel=5&at=...`, arriving from a sighting made every
+    other camera look as though its videos had been deleted.
     """
-    entries = catalogue.entries(channel_id, cadence)
+    entries = catalogue.entries()
 
     # The union, so a camera that is capturing but has not rendered anything yet
     # still gets a tile instead of vanishing from the wall.
@@ -1513,7 +1565,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 body = render_index(
-                    self.catalogue, query.get("channel"), query.get("cadence"),
+                    self.catalogue,
                     recognition=self.recognition,
                     fps_by_cadence=self.fps_by_cadence,
                 )
