@@ -88,6 +88,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 | [Recognition Feasibility](docs/Recognition-Feasibility.md) | What the cameras can support, measured before building |
 | [Operations](docs/Operations.md) | Logs, common failures, upgrades, backups |
 | [Development](docs/Development.md) | Running the tests, project layout, contributing |
+| [NVR Roadmap](docs/NVR-Roadmap.md) | Pulling event video off the NVR (planned, not built) |
 
 ## Tests
 

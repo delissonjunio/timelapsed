@@ -18,6 +18,7 @@ listing, you can debug it.
 * **[Recognition Feasibility](Recognition-Feasibility.md)** — what these cameras can actually support, measured
 * **[Operations](Operations.md)** — logs, failure modes, upgrades, backups
 * **[Development](Development.md)** — tests and project layout
+* **[NVR Roadmap](NVR-Roadmap.md)** — pulling event video off the NVR (planned, not built)
 
 ## The two things that trip people up
 

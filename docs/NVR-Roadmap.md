@@ -1,0 +1,256 @@
+# NVR Roadmap
+
+**Status: plan only. Nothing here is implemented.** This page records what the NVR can actually do,
+measured against the live device, and what it would take to use it. It exists so the decision does
+not have to be re-derived later.
+
+Device figures were measured from VM 302 against `nvr-zermatt` (192.168.18.89) on **2026-08-27**.
+Re-measure before trusting them; scenes, firmware and detection settings drift.
+
+## Where this starts
+
+Timelapsed already answers *what was there*. [Recognition](Recognition.md) finds people and
+vehicles in the stills the capture daemon writes, groups them into events, reads plates, and keeps
+it all in `index/index.sqlite3`. The viewer draws activity lanes and has pages for identities and
+plates.
+
+What it cannot answer is **what actually happened**. Recognition sees a person on ch5 at 14:32
+because a still landed in that 10-second slot. The moment itself — the walk up to the gate, the
+plate as the car turns — exists only on the NVR, at 30 fps, and Timelapsed never touches it.
+
+**The gap this roadmap closes is video.** Everything else is already built.
+
+## Why not simply capture stills faster
+
+Because stills are the wrong representation for motion, by a factor measured on this hardware.
+From a real downloaded segment (ch6, 50.0s, 1,501 frames, H.265 1080p):
+
+| | bytes per frame |
+| --- | --- |
+| Frame inside the NVR's own recording | **9.6 KB** |
+| Same frame as an ISAPI JPEG snapshot | **231 KB** |
+
+**24× more expensive per frame**, against the NVR's own 2048 kbit/s encode rather than some
+idealised codec. JPEG has no inter-frame compression and these scenes are near-static, which is
+exactly where video codecs win by an order of magnitude.
+
+Three further reasons a sub-2-second interval is wasted effort:
+
+1. **The renderer discards the frames.** `image_processor.py` samples every window down to
+   `output_fps × duration_seconds` = 1,800 frames, and [Storage Planning](Storage-Planning.md)
+   shows a 2-second interval already fills a full 60-second hourly clip.
+2. **The transport is per-frame.** `nvr_capture_agent.py` calls `requests.get()` with a fresh
+   `HTTPDigestAuth` each time — no `Session` — so every frame costs a new TCP connection plus a
+   full digest challenge, two round trips. Free at 10s; at 1s across six channels it is 12
+   requests/second, each forcing a decode, scale and JPEG encode on NVR CPU.
+3. **It still would not be motion.** Polling tops out near 1 fps. The gate walk needs 30.
+
+**Keep `interval_seconds = 10`. Never go below 2.** Faster capture is not the route to video.
+
+## What this NVR actually is
+
+A DS-7616NXI-K1, firmware V4.76.015, one 953 GB SATA disk in `quota` work mode, `freeSpace 0` and
+wrapping. Quota mode means **per-channel** retention, so a quiet camera's footage outlives a busy
+one's.
+
+### Channels
+
+| ch | name | camera | model | NVR recording |
+| --- | --- | --- | --- | --- |
+| 1 | OFICINA INTERNO | 192.168.18.2 | DS-2CD1023G2-LIU | motion detection **off** |
+| 5 | PORTAO SOCIAL SUPERIOR | 192.168.18.6 | DS-2CD1327G2H-LIU | on |
+| 6 | GERAL LOTE | 192.168.18.9 | DS-2CD1327G2H-LIU | on |
+| 7 | FUNDOS OFICINA | 192.168.18.10 | DS-2CD1327G2H-LIU | on |
+| 8 | RUA OFICINA | 192.168.18.11 | DS-2CD1327G2H-LIU | on |
+| 9 | FRENTE OFICINA | 192.168.18.12 | DS-2CD1327G2H-LIU | on |
+
+Channels 2 (`Camera 01`, .18.5) and 3 (`LATERAL FRENTE`, .18.3) are configured but `netUnreachable`.
+
+Channel 1 is the only interior camera and the only non-ColorVu sensor. Its motion detection being
+off is most likely deliberate — an indoor workshop camera triggers continuously while anyone works.
+It streams fine and Timelapsed captures its stills normally, averaging 115 KB against ~290 KB
+outdoors.
+
+### It records on events, not continuously
+
+`ActionRecordingMode = AllEvent`; every segment is tagged `recordType.meta.hikvision.com/allEvent`.
+Duty cycle over 48 hours:
+
+| ch | segments | covered | duty | mean segment |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 0.0h | 0.0% | 46s |
+| 5 | 702 | 29.6h | 61.7% | 152s |
+| 6 | 794 | 31.2h | 65.0% | 141s |
+| 7 | 223 | 4.9h | 10.2% | 79s |
+| 8 | 823 | 24.6h | 51.2% | 108s |
+| 9 | 437 | 9.8h | 20.4% | 81s |
+
+**≈ 50 video-hours per day.** Continuous scrub playback cannot be delivered by pulling from this
+device — that footage does not exist. Event playback can, which is what matters here.
+
+Those duty figures are high because detection is configured loosely: `PostRecordTimeSeconds = 30`
+on every channel (so re-triggers chain segments into the observed 141–152s blobs), no `gridMap`
+region mask, and `sensitivityLevel = 60`. Worth tuning on its own merits — it would also roughly
+quadruple the NVR's own retention window — but the plan below does not depend on it.
+
+### Streams
+
+All six channels H.265. Main `{ch}01` is 1920×1080 at a 2048 kbit/s VBR cap, GOP 60, 30 fps.
+A sub-stream `{ch}02` exists at 640×360 / 512 kbit/s, but **only `{ch}01` tracks are recorded**, so
+any archive is main-stream only.
+
+## Transport: download, never RTSP
+
+RTSP playback (`/Streaming/tracks/{ch}01/?starttime=…&endtime=…`) resolves and describes correctly
+but reports `duration=-103656199`. Hikvision never advertises an end, so `ffmpeg -c copy` **hung for
+300 seconds and produced nothing, with no error.** Do not build on it.
+
+`POST /ISAPI/ContentMgmt/download` is strictly better. Measured over five consecutive segments:
+
+```
+seg0   50s video   14.8 MB  0.87s  136.5 Mbit/s   57.5x realtime
+seg1   65s video   18.1 MB  0.89s  162.0 Mbit/s   72.7x realtime
+seg2   65s video   19.4 MB  0.93s  166.8 Mbit/s   70.0x realtime
+seg3   97s video   22.3 MB  1.07s  166.8 Mbit/s   90.6x realtime
+seg4   49s video   11.2 MB  0.88s  101.5 Mbit/s   55.7x realtime
+TOTAL 326s video   85.8 MB  4.6s   147.8 Mbit/s     70x realtime
+```
+
+**147.8 Mbit/s, 70× realtime**, across the Tailscale link to the remote site. Bandwidth is not the
+constraint; an hour of footage lands in about 51 seconds. It also keeps credentials inside the HTTP
+digest exchange rather than on an `ffmpeg` command line where `ps` would expose them.
+
+## The idea: let recognition choose the footage
+
+Archiving everything the NVR records is 948 MB per video-hour × 50 video-hours/day ≈ **47 GB/day**.
+Against the ~95 GB free once the still library reaches its ~96 GB steady state, that is two days.
+Not an archive.
+
+But Timelapsed already knows which moments matter. Recognition produces about **45 events a day**
+across six channels ([Recognition Feasibility](Recognition-Feasibility.md)), and an event is a
+person or a vehicle above a 0.5 score — not foliage, not headlights, not a neighbouring building.
+
+Fetching a bounded clip per recognition event instead of archiving every motion segment:
+
+| clip length | GB/day | 30 days | 90 days | 365 days |
+| --- | --- | --- | --- | --- |
+| 60s (20s pre / 40s post) | 0.71 | 21 GB | 64 GB | 260 GB |
+| 90s (30s pre / 60s post) | 1.07 | 32 GB | 96 GB | 390 GB |
+
+**60-second clips at 90-day retention is 64 GB** — it fits the disk that exists, and it is roughly
+a **50× reduction** against archiving all motion footage, aimed at the events that were worth
+keeping in the first place.
+
+Clip length is bounded deliberately rather than following event duration. A parked car is one
+recognition event lasting hours; the interesting part is the arrival.
+
+### The two event sources are complementary
+
+Recognition runs on 10-second stills, so something crossing frame in under ten seconds may land on
+one still or none. The NVR saw it at 30 fps regardless. So:
+
+* **NVR extents** answer *is there footage for this moment* — needed before any fetch.
+* **Recognition events** answer *was this moment worth keeping*.
+
+On channels where recognition sees almost nothing (ch7 and ch9 recorded essentially no activity in
+25 hours) NVR motion events are the only signal available, and are worth falling back to.
+
+## Stages
+
+Each is independently useful and shippable.
+
+### Stage 1 — Index what footage exists
+
+Poll `ContentMgmt/search` per channel on a slow timer into a new `nvr_segment` table in the existing
+`index/index.sqlite3` — same database recognition already uses, same WAL discipline, analyzer-writes
+/ viewer-reads. Handle the two device quirks: UUID `searchID`, 64 results per page.
+
+Keep it a **rebuildable cache**: the NVR is authoritative for what it holds, so a `rebuild()` that
+re-queries and repopulates is enough. Nothing here needs backing up.
+
+Cost: near zero, no stored bytes. Yields an exact map of what footage exists, per channel, per
+second.
+
+### Stage 2 — Show it
+
+Add a footage lane to the timeline beside the existing activity lanes, drawn from `nvr_segment`, so
+it is visible which moments can be pulled. Serve it from a new endpoint — **not** `/api/events`,
+which already means recognition events. `/api/footage` is free.
+
+Extend the lane-colour whitelist rather than interpolating names into CSS; the existing XSS posture
+must survive.
+
+### Stage 3 — Fetch clips
+
+A `clip_fetcher` module: `POST /ISAPI/ContentMgmt/download` with the exact `playbackURI` from
+`nvr_segment`, then `ffmpeg -i clip.ps -c copy -movflags +faststart clip.mp4`.
+
+* **Never RTSP playback.** It hangs.
+* Bound every fetch with a deadline and a subprocess kill regardless.
+* Reuse the render-semaphore pattern so fetches cannot swamp the guest.
+* Stage to scratch and move into place atomically, as renders already do, so a killed fetch never
+  leaves a truncated file that looks valid.
+* Store under `{root}/{channel}/clip/`, and record it in a `local_clip` table.
+
+Trigger on recognition event close — the point at which the identity is settled and the plate voted
+— so one fetch covers a settled event rather than firing per detection.
+
+### Stage 4 — Play them
+
+A clip becomes the highest-value thing a recognition event can link to: from a named person or a
+plate read, jump to the footage. The viewer already implements HTTP Range and nginx now serves
+`/video/*.mp4` off disk, so playback needs little new machinery.
+
+Extend `reclaim()` with clip tiers. Clips still inside the NVR's retention window are the most
+disposable — refetchable. Clips of footage the NVR has since overwritten are the **least**
+disposable, because nothing can regenerate them.
+
+## What does not change
+
+* **The 10-second snapshot poller stays.** It is the timelapse source and the input recognition
+  reads. The argument above is against *sub-2-second* snapshots, not against snapshots.
+* **Filename-as-index for stills stays.** Correct at 8,640 files/channel/day.
+* **The render pipeline stays** — sampling, hardlink staging, the render semaphore, missing-window
+  sweeps.
+* **Recognition stays where it is.** It runs on stills, costs the NVR nothing, and already works;
+  nothing here proposes moving inference onto video.
+* **VM 302 does not become a recorder.** The NVR does not record continuously, and duplicating six
+  live streams buys nothing the download API does not give at 70× realtime.
+* **No face recognition.** Ruled out by measurement, not preference — see
+  [Recognition Feasibility](Recognition-Feasibility.md). Pulling video does not change it; the
+  faces are 38 px in the video too.
+* **No authentication in the viewer.** Tailscale remains the access control — and clips of people
+  raise the same LGPD concerns [Recognition](Recognition.md) already documents, more sharply.
+
+## Open decisions
+
+1. **Clip length and retention** — the table above; 60s at 90 days fits the current disk.
+2. **Which channels.** ch5, ch6 and ch8 are 88% of NVR footage volume; ch7 and ch9 see almost no
+   recognised activity.
+3. **Whether to tune NVR detection.** Region masks and smart events would quadruple the device's own
+   retention window, but mean genuinely not recording some things — a security-coverage call.
+4. **Whether event playback is enough**, given continuous playback is not available from this device.
+
+## Appendix: ISAPI notes
+
+Hard-won specifics for whoever implements this.
+
+* **`searchID` must be a real UUID.** Anything else returns HTTP 400, `statusCode 6`.
+* **`maxResults` caps at 64 per page.** Page with `searchResultPostion` — note the device's spelling.
+* **Downloads are per-recorded-segment.** An arbitrary time range without the `name=` and `size=`
+  fields from a search result is rejected. The search index is the unit of fetch, so a clip window
+  has to be mapped onto the segments covering it.
+* **Downloads arrive as MPEG-PS**, not MP4. Remux with `-c copy`; 0.17s for a 50s clip.
+* **Keyframes land one per 1.6s** and extract at 32× realtime with `-skip_frame nokey`, so stills
+  can be derived from fetched clips almost free.
+* **`alertStream` works** — `multipart/mixed`, ~55 B/s of heartbeats — but is largely redundant
+  here: it reports motion, while recognition already reports people, vehicles and plates. If used,
+  it needs reconnect-with-backoff and a **read watchdog**; it blocks silently between events, and a
+  75-second listen ran 149 seconds because the bound was only checked on chunk arrival.
+* **`-rw_timeout` is not valid for the RTSP demuxer** on the guest's ffmpeg build.
+* **Device clock is NTP-synced** at `-03:00` and matches host UTC. No skew to compensate for.
+* Useful read-only endpoints: `/ISAPI/System/deviceInfo`, `/ISAPI/System/time`,
+  `/ISAPI/ContentMgmt/Storage`, `/ISAPI/Streaming/channels`,
+  `/ISAPI/ContentMgmt/InputProxy/channels` and `.../channels/status`,
+  `/ISAPI/ContentMgmt/record/tracks/{ch}01`, `/ISAPI/Event/triggers`,
+  `/ISAPI/System/Video/inputs/channels/{ch}/motionDetection`, `/ISAPI/Smart/capabilities`.
