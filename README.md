@@ -6,6 +6,10 @@ timelapses, with a built-in web viewer to watch them from anywhere on your Tailn
 No database, no cloud dependency, no message queue. Images are files, the filename is the index,
 and `ffmpeg` does the rest.
 
+Optionally it will also **recognise people, vehicles and number plates** in the stills it already
+captured, and show them on the timeline — see [Recognition](docs/Recognition.md). That part is off
+by default and is the one place a real index exists.
+
 ```
 NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image/20250601_120000_UTC.jpg
                              │
@@ -78,6 +82,8 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 | [Storage Planning](docs/Storage-Planning.md) | How to pick a capture interval and size the disk |
 | [Proxmox Deployment](docs/Proxmox-Deployment.md) | VM creation through to a running service |
 | [Viewing Timelapses](docs/Viewing-Timelapses.md) | The built-in viewer, Tailscale Serve, Jellyfin |
+| [Recognition](docs/Recognition.md) | People, vehicles and plates on the timeline |
+| [Recognition Feasibility](docs/Recognition-Feasibility.md) | What the cameras can support, measured before building |
 | [Operations](docs/Operations.md) | Logs, common failures, upgrades, backups |
 | [Development](docs/Development.md) | Running the tests, project layout, contributing |
 
@@ -88,7 +94,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 .venv/bin/python -m pytest
 ```
 
-112 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
+221 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
 probing the output with `ffprobe` — and fake only the NVR.
 
 ## License

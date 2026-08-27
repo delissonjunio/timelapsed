@@ -44,14 +44,21 @@ fetch reid.onnx "${REID_URL}"
 fetch plate_detect.onnx "${PLATE_DETECT_URL}"
 fetch plate_ocr.onnx "${PLATE_OCR_URL}"
 
+# User only, not user:user -- a service account's primary group is not always
+# named after it (nobody's is nogroup), and under `set -e` a failed chown here
+# would abort before the models were ever verified.
 if id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${MODEL_DIR}"
+    chown -R "${SERVICE_USER}" "${MODEL_DIR}" || true
 fi
 
 echo
 echo "Verifying the models load..."
-PYTHON="/opt/timelapsed/.venv/bin/python"
+PYTHON="${PYTHON:-/opt/timelapsed/.venv/bin/python}"
 [[ -x "${PYTHON}" ]] || PYTHON="$(command -v python3)"
+if ! "${PYTHON}" -c "import onnxruntime" 2>/dev/null; then
+    echo "  skipped: ${PYTHON} has no onnxruntime yet (install dependencies first)"
+    exit 0
+fi
 "${PYTHON}" - "${MODEL_DIR}" <<'PY'
 import sys
 from pathlib import Path

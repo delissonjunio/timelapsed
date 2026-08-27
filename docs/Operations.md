@@ -194,6 +194,31 @@ An empty JSON array means no videos have been rendered yet — that is a capture
 a viewer problem. If `/healthz` fails but the service is running, check `host` and `port` in the
 config.
 
+### Recognition is not finding anything
+
+Only relevant with `[analysis] enabled = true`. Full detail in
+[Recognition](Recognition.md).
+
+| Symptom | Cause |
+| --- | --- |
+| `Model not found at ... Run deploy/fetch-models.sh` | Enabled before the models were downloaded |
+| `Analysis is disabled in the config` then exit 0 | `enabled` is false; the unit is meant to stay stopped |
+| `attempt to write a readonly database` from the viewer | `timelapsed-web.service` lost `ReadWritePaths=/var/lib/timelapsed/index`; WAL writes sidecars even to read |
+| Events everywhere, day and night, that never end | `score_threshold` below 0.5, detecting scenery as objects |
+| Watermarks hours behind | Backfill still draining, or the guest is CPU-starved |
+
+```bash
+# how far each channel has been analysed
+sudo -u timelapsed sqlite3 -readonly /var/lib/timelapsed/index/index.sqlite3 \
+  'SELECT channel, datetime(analysed_through, "unixepoch") FROM watermark ORDER BY channel;'
+
+# per-pass throughput, logged every pass that did work
+journalctl -u timelapsed-analyzer -S -1h | grep 'ms/frame'
+```
+
+Recognition is entirely optional and entirely separable. Stopping it, or deleting
+`/var/lib/timelapsed/index` outright, leaves capture and the viewer working.
+
 ## Upgrades
 
 The checkout at `/opt/timelapsed` **is** the install — there is no copy to get out of sync — so an

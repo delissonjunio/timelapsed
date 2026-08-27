@@ -14,7 +14,20 @@ main process  (timelapsed.timelapsed:run)
         └── render-weekly-1   (short-lived, one per cadence per channel)
             render-daily-1
             render-hourly-1
+
+timelapsed-analyzer  (timelapsed.analyzer:run)      -- optional, off by default
+  │  reads the stills the capture workers wrote, from a per-channel watermark
+  └── detects people and vehicles, groups them into events, reads plates
+
+timelapsed-web       (timelapsed.web:run)
+  └── serves the viewer, the timelapse catalogue and the recognition index
 ```
+
+Recognition runs in its own process rather than inside the capture loop. That loop sleeps
+`interval - elapsed` and already warns when a cycle eats 80% of the interval, so inference inside
+it would come straight out of the capture budget. Separate also means its own `CPUQuota` and
+`MemoryMax`, and it can be stopped or backfilled without interrupting capture. See
+[Recognition](Recognition.md).
 
 **One OS process per channel, not a worker pool.** Capture workers never return, so a pool sized
 below the channel count would start the first N channels and silently never start the rest. A
@@ -44,6 +57,11 @@ accommodates this.
       weekly_20250525_120000_UTC-20250601_120000_UTC.mp4
   2/
     ...
+  index/                                      ← recognition only; absent unless enabled
+    index.sqlite3
+    crops/event/20250601/1234.jpg
+    crops/plate/20250601/56.jpg
+    models/
 ```
 
 **The filename is the index.** Timestamps are fixed-width and always UTC, so sorting filenames
@@ -52,6 +70,13 @@ use `bisect`. There is no database to corrupt, migrate, or back up separately, a
 "what did the camera see at 3pm" with `ls`.
 
 Everything is UTC on disk. Local-time filenames break ordering twice a year at the DST boundary.
+
+The one exception to "no database" is `index/`, which recognition writes. It answers questions a
+directory listing cannot -- "every time this person appeared on this channel" -- so it keeps a
+real index. It sits outside the per-channel trees so the library's pruning never walks it, and it
+carries its own retention: `reclaim` measures free space across the whole filesystem, so crops
+left to grow unbounded would push it under the floor and make it delete stills instead. Delete
+the whole directory and everything else still works.
 
 ## The capture cycle
 

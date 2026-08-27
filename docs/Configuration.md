@@ -162,6 +162,58 @@ The viewer has **no authentication**. Bind it to `0.0.0.0` only when Tailscale i
 access control, or bind to `127.0.0.1` and put a proxy in front. Never port-forward it from your
 router. See [Viewing Timelapses](Viewing-Timelapses.md).
 
+## `[analysis]`
+
+Recognition: people, vehicles and plates found in the stills capture already wrote. Off by
+default. See [Recognition](Recognition.md) for what it does, and
+[Recognition Feasibility](Recognition-Feasibility.md) for what these cameras can actually support.
+
+| Key | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | no | `false` | Whether to run recognition at all. |
+| `root` | no | `{library root}/index` | Where the index, crops and models live. |
+| `model_root` | no | `{root}/models` | Where the ONNX models live. |
+| `score_threshold` | no | `0.5` | Minimum detector confidence. |
+| `threads` | no | `2` | ONNX Runtime threads per model. |
+| `batch_size` | no | `200` | Frames per channel per pass. |
+| `detection_retention_days` | no | `30` | How long to keep per-frame detection rows. `0` keeps them forever. |
+| `event_retention_days` | no | `365` | How long to keep events, crops and plates. `0` keeps them forever. |
+| `reid_enabled` | no | `true` | Group repeat sightings of a person by appearance. |
+| `reid_threshold` | no | `0.8` | Cosine similarity required to call two sightings the same person. |
+| `reid_window_hours` | no | `12` | How far back to look for a match. |
+| `plate_channels` | no | *(empty)* | Channels to read plates on. Empty disables plate reading. |
+| `plate_confidence` | no | `0.7` | Minimum OCR confidence per read. |
+
+### Do not lower `score_threshold`
+
+This is the setting most likely to be "tuned" into uselessness. The usual detector default is
+0.25, and at 0.35 on this footage the results were nonsense: a neighbouring building seen over a
+wall scored as a vehicle on **70% of night frames**, and a pile of tools on a workshop floor
+scored as a car on **57%** of frames from an indoor camera. Both vanished completely at 0.5 —
+no masking, no exclusion zones, no static-background subtraction.
+
+Lowering it does not buy you extra detail. It buys phantom events that never end.
+
+### `plate_channels` is a whitelist for a reason
+
+Plate OCR needs roughly 50 px of plate width. Measured across six cameras here, exactly one
+channel clears it: 52–65 px, reading cleanly. The others sit near 40 px and return garbage.
+Enabling every channel does not find more plates, it just spends CPU producing reads that the
+confidence and format guards then throw away.
+
+### `reid_threshold` trades recall for precision
+
+Grouping is by body appearance, **not** by face — faces on these cameras are ~38 px, well under
+what any embedding needs. Measured on 423 real body crops:
+
+| Threshold | Same-person pairs matched | Different people wrongly merged |
+| --- | --- | --- |
+| `0.7` | 50% | 14.6% |
+| `0.8` | 27% | 1.2% |
+
+The default is 0.8 because a group you have named should stay trustworthy. Most sightings will
+sit alone in their own group; that is the intended trade.
+
 ## `[general]`
 
 | Key | Required | Default | Meaning |

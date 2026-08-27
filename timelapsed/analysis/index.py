@@ -379,8 +379,12 @@ class AnalysisIndex:
                 "last_seen": from_epoch(row["last_seen_at"]).isoformat(),
                 "sightings": row["sighting_count"],
             }
+            # Most-seen first: at a precision-first threshold most groups are
+            # single sightings, and a list led by one-offs buries the few groups
+            # that are actually worth naming.
             for row in self.connection.execute(
-                f"SELECT * FROM identity {where} ORDER BY last_seen_at DESC LIMIT ?", parameters
+                f"SELECT * FROM identity {where} "
+                f"ORDER BY sighting_count DESC, last_seen_at DESC LIMIT ?", parameters
             )
         ]
 

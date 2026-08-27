@@ -145,3 +145,23 @@ df -i /var/lib/timelapsed                 # inodes: check this too
 
 Steady state is reached after `image_retention_days` days. Growth that continues past that point
 means pruning is not running — check the logs for permission errors on delete.
+
+## Recognition, if you enable it
+
+Recognition adds three things under `{library root}/index/`, none of which scale with the capture
+interval the way stills do:
+
+| What | Size |
+| --- | --- |
+| The four ONNX models | ~155 MB, fixed |
+| Crops | ~2.6 MB/day measured across six channels |
+| The index itself | a few MB a month |
+
+Crops are per **event**, not per frame, which is what keeps this small: a car parked for eight
+hours contributes one event and about three crops, not 2,900. Budget a couple of GB a year and
+size the disk for the stills as before.
+
+> Crops are **not** covered by `min_free_disk_gb`'s reclaim, which only walks the per-channel
+> `image/` and `timelapse/` directories. They have their own retention
+> (`event_retention_days`) and they need it: left to grow unbounded they would eat into the free
+> space floor and make reclaim delete **stills** to compensate.

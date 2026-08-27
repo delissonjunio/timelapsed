@@ -14,6 +14,8 @@ listing, you can debug it.
 * **[Storage Planning](Storage-Planning.md)** — the one decision that matters most
 * **[Proxmox Deployment](Proxmox-Deployment.md)** — from `qm create` to a running service
 * **[Viewing Timelapses](Viewing-Timelapses.md)** — the viewer, Tailscale Serve, Jellyfin
+* **[Recognition](Recognition.md)** — people, vehicles and plates on the timeline
+* **[Recognition Feasibility](Recognition-Feasibility.md)** — what these cameras can actually support, measured
 * **[Operations](Operations.md)** — logs, failure modes, upgrades, backups
 * **[Development](Development.md)** — tests and project layout
 

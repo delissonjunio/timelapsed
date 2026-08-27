@@ -109,6 +109,7 @@ class EventTracker:
         self,
         index: AnalysisIndex,
         store_crop: Callable[[np.ndarray, str, int, int], str | None] | None = None,
+        assign_identity: Callable[[int, np.ndarray, float, int], None] | None = None,
         iou_threshold: float = 0.3,
         gap: timedelta = timedelta(seconds=60),
     ):
@@ -117,6 +118,11 @@ class EventTracker:
         # crop when an event closes, but it has no business knowing where crops
         # live or how they are encoded.
         self.store_crop = store_crop or (lambda *_: None)
+        # Identity is settled when the event closes, not while it runs: a person
+        # walking towards the camera yields a better crop every frame, and
+        # matching on each one would file the same visit under several
+        # identities and count it several times over.
+        self.assign_identity = assign_identity
         self.iou_threshold = iou_threshold
         self.gap_seconds = int(gap.total_seconds())
         self.open_events: dict[str, list[OpenEvent]] = {}
@@ -177,7 +183,11 @@ class EventTracker:
             self.open_events[channel] = []
 
     def finish(self, event: OpenEvent) -> None:
-        """Commit whatever an event accumulated: the voted plate, mainly."""
+        """Commit whatever an event accumulated: its identity and voted plate."""
+        if event.best_body and self.assign_identity:
+            quality, vector = event.best_body
+            self.assign_identity(event.event_id, vector, quality, event.last_seen)
+
         if not event.plate_reads:
             return
 
@@ -241,7 +251,13 @@ class FrameAnalyzer:
         self.identity_matcher = identity_matcher
         self.plate_channels = plate_channels
         self.plate_confidence = plate_confidence
-        self.tracker = tracker or EventTracker(index, store_crop=self._store_crop)
+        self.tracker = tracker or EventTracker(
+            index,
+            store_crop=self._store_crop,
+            assign_identity=(
+                identity_matcher.assign if identity_matcher is not None else None
+            ),
+        )
 
     def analyse(self, channel: str, path: Path, captured_at: datetime) -> FrameResult:
         at = to_epoch(captured_at)
@@ -282,14 +298,11 @@ class FrameAnalyzer:
         crop = image[y:y + h, x:x + w]
         if crop.size == 0:
             return
-        # Keep only the best crop per event and match once, at close. Embedding
-        # every frame of a five-minute loiter would spend the CPU to answer the
-        # same question 30 times.
+        # Re-embed only when the crop actually improves -- a bigger box carries
+        # more detail. The match itself waits until the event closes, so a visit
+        # is filed under one identity rather than one per frame.
         if event.best_body is None or h > event.best_body[0]:
-            vector = self.body_embedder(crop)
-            event.best_body = (float(h), vector)
-            if event.event_id and self.identity_matcher:
-                self.identity_matcher.assign(event.event_id, vector, float(h), at)
+            event.best_body = (float(h), self.body_embedder(crop))
 
     def _maybe_read_plate(self, image: np.ndarray, detection: Detection, event: OpenEvent) -> None:
         if self.plate_reader is None:

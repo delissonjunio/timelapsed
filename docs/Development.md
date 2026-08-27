@@ -57,17 +57,27 @@ timelapsed/
   nvr_capture_agent.py      HTTP snapshot fetching
   image_capture_library.py  filesystem store: naming, queries, pruning
   image_processor.py        frame selection and ffmpeg invocation
-  web.py                    the viewer (standard library only)
+  web.py                    the viewer (standard library only, plus the recognition API)
+  analyzer.py               the recognition daemon: run(), run_once(), prune()
+  analysis/
+    index.py                SQLite schema and queries
+    models.py               ONNX wrappers: detector, re-ID, plate detect + OCR
+    pipeline.py             frame -> detections -> events, plate voting
+    identities.py           appearance matching and grouping
 deploy/
   install.sh                Debian/Ubuntu installer
+  fetch-models.sh           downloads and verifies the ONNX models
   timelapsed.service        capture daemon unit
   timelapsed-web.service    viewer unit
+  timelapsed-analyzer.service  recognition daemon unit
 docs/                       this wiki
 tests/                      pytest suite
 ```
 
 The dependency direction is one-way: `timelapsed.py` knows about everything, `web.py` knows about
 the library and config, and `image_capture_library.py` knows about nothing but the filesystem.
+`analysis/` is the same shape: `index.py` knows only SQLite, `models.py` only ONNX and numpy,
+and `pipeline.py` wires them together without either knowing where crops live.
 
 ## Adding a cadence
 

@@ -276,10 +276,54 @@ def test_analyzer_skips_plates_on_channels_not_configured_for_them(index, tmp_pa
     analyzer.analyse("1", frame, BASE_TIME)  # channel 1 is not in plate_channels
 
 
+def test_a_visit_is_filed_under_one_identity_however_many_frames_it_spans(index, tmp_path, frame):
+    """A person walking towards the camera gives a better crop every frame.
+    Matching on each one would file one visit under several identities and
+    count it several times over, so the match waits for the event to close.
+    """
+    assigned = []
+
+    class RecordingMatcher:
+        def assign(self, event_id, vector, quality, at):
+            assigned.append((event_id, vector, quality, at))
+
+    class GrowingDetector:
+        """The same person, closer each frame."""
+        def __init__(self):
+            self.step = 0
+
+        def __call__(self, image, score_threshold):
+            self.step += 1
+            height = 150 + self.step * 40
+            return [person((10, 10, 200, height))]
+
+    analyzer = FrameAnalyzer(
+        index=index,
+        crops_root=tmp_path / "crops",
+        detector=GrowingDetector(),
+        score_threshold=0.5,
+        body_embedder=lambda crop: np.ones(8, dtype=np.float32) / np.sqrt(8),
+        identity_matcher=RecordingMatcher(),
+    )
+
+    for step in range(4):
+        analyzer.analyse("1", frame, BASE_TIME + timedelta(seconds=10 * step))
+    assert assigned == []  # still open, nothing settled yet
+
+    analyzer.tracker.close_all()
+    assert len(assigned) == 1
+    # And it used the best crop, which is the last and largest.
+    assert assigned[0][2] == pytest.approx(150 + 4 * 40)
+
+
 def test_analyzer_skips_reid_on_bodies_too_small_to_identify(index, tmp_path, frame):
     class ExplodingEmbedder:
         def __call__(self, crop):
             raise AssertionError("re-ID must not run on a tiny crop")
+
+    class UnusedMatcher:
+        def assign(self, *args):
+            raise AssertionError("nothing should be assigned")
 
     analyzer = FrameAnalyzer(
         index=index,
@@ -287,6 +331,6 @@ def test_analyzer_skips_reid_on_bodies_too_small_to_identify(index, tmp_path, fr
         detector=FakeDetector([[person((10, 10, 40, 90))]]),
         score_threshold=0.5,
         body_embedder=ExplodingEmbedder(),
-        identity_matcher=object(),
+        identity_matcher=UnusedMatcher(),
     )
     analyzer.analyse("1", frame, BASE_TIME)
