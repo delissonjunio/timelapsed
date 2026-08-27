@@ -128,11 +128,16 @@ def vote(reads: list[tuple[str, float]]) -> tuple[str, float, int] | None:
     return text, confidence, agreed
 
 
+def characters_apart(first: str, second: str) -> int:
+    """How far two reads are from each other, or the length on a mismatch."""
+    if len(first) != len(second):
+        return max(len(first), len(second))
+    return sum(1 for a, b in zip(first, second) if a != b)
+
+
 def nearly(first: str, second: str, drift: int = PLATE_TRACK_DRIFT) -> bool:
     """Two reads close enough to be the same plate rather than another car."""
-    if len(first) != len(second):
-        return False
-    return sum(1 for a, b in zip(first, second) if a != b) <= drift
+    return characters_apart(first, second) <= drift
 
 
 def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:

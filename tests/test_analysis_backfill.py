@@ -57,6 +57,26 @@ def test_the_pooled_row_spans_from_first_sighting_to_last(index):
     assert plate["last_seen_at"] == from_epoch(BASE + 180).isoformat()
 
 
+def test_one_car_read_badly_all_evening_comes_out_as_one_row(index):
+    """Matching against a group's dominant text rather than its last row. Real
+    data from this deployment: one car parked in front of camera 5, read every
+    ten seconds, hardly ever the same way twice. Chaining off the last row let
+    each group wander two characters at a step and split the evening into
+    several overlapping runs.
+    """
+    seen = ["JSY1M23", "JSY1M73", "JSY1M21", "JSY1M23", "JSY1M71", "JSY1M23",
+            "JIY1M73", "JSY1M23", "JSY1M93", "JSY1M23", "JSV1M23", "JSY1M13"]
+    for step, text in enumerate(seen * 3):
+        legacy(index, "5", BASE + step * 10, text)
+
+    apply(index, plan(index, GAP, 2))
+
+    plates = index.plates()
+    assert len(plates) == 1
+    assert plates[0]["text"] == "JSY1M23"
+    assert plates[0]["reads"] == len(seen) * 3
+
+
 def test_two_different_plates_are_left_alone(index):
     legacy(index, "5", BASE, "ABC1D23")
     legacy(index, "5", BASE + 20, "XYZ9A99")

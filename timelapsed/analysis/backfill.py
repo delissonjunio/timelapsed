@@ -25,10 +25,16 @@ import argparse
 import json
 import logging
 import sys
+from collections import Counter
 from pathlib import Path
 
 from timelapsed.analysis.index import AnalysisIndex, from_epoch
-from timelapsed.analysis.pipeline import looks_brazilian, nearly, tally_reads, vote_tally
+from timelapsed.analysis.pipeline import (
+    characters_apart,
+    looks_brazilian,
+    tally_reads,
+    vote_tally,
+)
 from timelapsed.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -39,22 +45,34 @@ DEFAULT_GAP_MINUTES = 30
 def _group(rows: list[dict], gap_seconds: int, drift: int) -> list[list[dict]]:
     """Runs of rows that are one car, oldest first within each run.
 
+    A row is compared against what its candidate group mostly says, not against
+    whichever row joined it last. That distinction is the whole difference
+    between one run and five: the last row is itself a misread half the time, so
+    chaining off it lets a group wander two characters at a step, and one car
+    read four hundred times comes out as several overlapping runs that each hold
+    a slice of the same evening.
+
     Time is measured against the newest row in the group rather than the first,
     so a car that fragments for an hour chains through however many rows that
     took, while a genuine second visit an hour later still starts its own.
     """
-    groups: list[list[dict]] = []
+    groups: list[dict] = []
     for row in sorted(rows, key=lambda row: row["captured_at"]):
-        for group in reversed(groups):
-            if row["captured_at"] - group[-1]["captured_at"] > gap_seconds:
+        best, closest = None, drift + 1
+        for group in reversed(groups):  # newest first, so it wins a tie
+            if row["captured_at"] - group["last"] > gap_seconds:
                 continue
-            if not nearly(group[-1]["text"], row["text"], drift):
-                continue
-            group.append(row)
-            break
-        else:
-            groups.append([row])
-    return groups
+            apart = characters_apart(group["tally"].most_common(1)[0][0], row["text"])
+            if apart < closest:
+                best, closest = group, apart
+
+        if best is None:
+            best = {"rows": [], "tally": Counter(), "last": row["captured_at"]}
+            groups.append(best)
+        best["rows"].append(row)
+        best["tally"][row["text"]] += max(row["votes"], 1)
+        best["last"] = row["captured_at"]
+    return [group["rows"] for group in groups]
 
 
 def _pool(group: list[dict]) -> dict:
@@ -87,6 +105,7 @@ def _pool(group: list[dict]) -> dict:
     )
     return {
         "id": keep["id"],
+        "channel": keep["channel"],
         # Retention prunes by event, so hang the row off the newest one behind
         # it: it is the same car, and the older events go first.
         "event_id": newest["event_id"],
@@ -143,7 +162,8 @@ def report(pooled: list[dict]) -> None:
     for merge in pooled:
         print(
             f"{from_epoch(merge['captured_at']):%Y-%m-%d %H:%M}"
-            f"-{from_epoch(merge['last_seen_at']):%H:%M}  {merge['text']}"
+            f"-{from_epoch(merge['last_seen_at']):%H:%M}  camera {merge['channel']}"
+            f"  {merge['text']}"
             f"  {merge['votes']} of {merge['reads']} reads agreed"
             f"  (was {len(merge['drop']) + 1} rows)"
         )
