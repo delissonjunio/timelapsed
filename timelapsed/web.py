@@ -22,9 +22,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from timelapsed.analysis.index import AnalysisIndex, to_epoch
+from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
 from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
+from timelapsed.library_page import render_library
 from timelapsed.schema import Config
 
 logger = logging.getLogger(__name__)
@@ -283,42 +284,27 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 /* Activity lanes. Density strips rather than discrete clips: at a 30-day zoom
    a single sighting is well under a pixel, so what reads is the shading. */
 .lane.activity .track { background:var(--panel-2); }
+/* The shading is painted from bucket counts, so it cannot resolve a click to a
+   sighting by itself. The track above it does that, and owns the cursor. */
 .bucket { position:absolute; top:0; bottom:0; pointer-events:none; }
+.lane.activity .track.clickable { cursor:pointer; }
+.lane.activity .track.clickable:hover { outline:1px solid var(--line); }
 .lane.activity .label { color:var(--muted); }
-.evt { position:absolute; top:3px; bottom:3px; border-radius:2px; cursor:pointer;
-       opacity:.85; min-width:2px; }
+.evt { position:absolute; top:2px; bottom:2px; border-radius:2px; cursor:pointer;
+       opacity:.9; min-width:3px; }
 .evt:hover { opacity:1; outline:1px solid var(--fg); }
 .evt.sel { outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; }
+/* Hatching, so an unanalysed stretch never reads as a quiet one. */
+.pending { position:absolute; top:0; bottom:0; pointer-events:none; display:flex;
+           align-items:center; justify-content:center; overflow:hidden;
+           background:repeating-linear-gradient(135deg, transparent 0 6px,
+                      rgba(255,255,255,.045) 6px 12px); }
+.pending span { font-size:.6rem; color:var(--muted); letter-spacing:.04em;
+                white-space:nowrap; }
 
-/* Recognition panel, below the camera wall. */
-#recog { border-top:1px solid var(--line); padding:.6rem .5rem; }
-#recog h2 { font-size:.63rem; text-transform:uppercase; letter-spacing:.09em;
-            color:var(--muted); margin:0 0 .5rem; font-weight:600; }
-#recog .tabs { display:flex; gap:.3rem; margin-bottom:.5rem; }
-#recog .tabs button { background:none; border:none; color:var(--muted); font:inherit;
-                      font-size:.7rem; cursor:pointer; padding:.25rem .5rem; border-radius:5px; }
-#recog .tabs button[aria-pressed="true"] { background:#28303f; color:var(--fg); }
-#recog .list { display:flex; flex-direction:column; gap:.3rem; max-height:230px; overflow-y:auto; }
-.ident { display:flex; align-items:center; gap:.5rem; padding:.3rem; border-radius:6px;
-         cursor:pointer; background:var(--panel-2); border:1px solid transparent; }
-.ident:hover { border-color:var(--line); }
-.ident[aria-pressed="true"] { border-color:var(--fg); }
-.ident img { width:34px; height:44px; object-fit:cover; border-radius:4px; background:#000; flex:none; }
-.ident .meta { min-width:0; flex:1; }
-.ident .who { font-size:.75rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ident .when { font-size:.63rem; color:var(--muted); font-variant-numeric:tabular-nums; }
-.ident .rename { background:none; border:none; color:var(--muted); cursor:pointer;
-                 font-size:.7rem; padding:.2rem .35rem; border-radius:4px; flex:none; }
-.ident .rename:hover { color:var(--fg); background:#28303f; }
-.plate { display:flex; align-items:center; gap:.5rem; padding:.3rem; border-radius:6px;
-         background:var(--panel-2); cursor:pointer; border:1px solid transparent; }
-.plate:hover { border-color:var(--line); }
-.plate img { width:56px; height:28px; object-fit:cover; border-radius:3px; background:#000; flex:none; }
-.plate .txt { font-family:ui-monospace,Menlo,monospace; font-size:.78rem; letter-spacing:.04em; }
-.plate .when { font-size:.63rem; color:var(--muted); margin-left:auto;
-               font-variant-numeric:tabular-nums; }
-#recog .note { font-size:.63rem; color:var(--muted); line-height:1.4; margin-top:.5rem; }
-#recog .empty { font-size:.7rem; color:var(--muted); padding:.4rem .3rem; }
+header .navlink { color:var(--muted); text-decoration:none; font-size:.75rem;
+                  padding:.3rem .6rem; border-radius:6px; border:1px solid var(--line); }
+header .navlink:hover { color:var(--fg); background:var(--panel-2); }
 
 @media (max-width:760px) {
   body { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr) auto; }
@@ -336,21 +322,12 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 <header>
   <span class="dot"></span>
   <h1>Timelapsed</h1>
+  <a class="navlink" id="librarylink" href="/library" hidden>People &amp; plates</a>
   <span class="spacer"></span>
   <span class="stat" id="stat"></span>
 </header>
 
-<aside id="channels"><h2>Cameras</h2>
-  <section id="recog" hidden>
-    <h2>Recognition</h2>
-    <div class="tabs">
-      <button id="tab-people" aria-pressed="true">People</button>
-      <button id="tab-plates" aria-pressed="false">Plates</button>
-    </div>
-    <div class="list" id="recog-list"></div>
-    <p class="note" id="recog-note"></p>
-  </section>
-</aside>
+<aside id="channels"><h2>Cameras</h2></aside>
 
 <main id="stage">
   <div id="screen"><div id="placeholder">Select a clip on the timeline below.</div></div>
@@ -401,9 +378,9 @@ const state = {
   events: [],
   identities: [],
   plates: [],
-  tab: "people",
   focusIdentity: null,
   selectedEvent: null,
+  analysedThrough: null,
 };
 
 const $ = id => document.getElementById(id);
@@ -569,14 +546,17 @@ function refreshActivity() {
     const token = ++activityToken;
     const query = "channel=" + encodeURIComponent(state.channel) + "&start=" + start + "&end=" + end;
     try {
-      const [activity, events] = await Promise.all([
+      const [activity, events, status] = await Promise.all([
         fetch("/api/activity?" + query + "&buckets=240").then(r => r.json()),
         fetch("/api/events?" + query + "&limit=800").then(r => r.json()),
+        fetch("/api/status").then(r => r.json()),
       ]);
       // A slower earlier request must not overwrite a newer answer.
       if (token !== activityToken) return;
       state.activity = activity;
       state.events = events.map(e => ({...e, s: Date.parse(e.starts), f: Date.parse(e.finishes)}));
+      const through = status[state.channel];
+      state.analysedThrough = through ? Date.parse(through) : null;
       drawTimeline();
     } catch (err) {
       console.warn("activity fetch failed", err);
@@ -584,20 +564,6 @@ function refreshActivity() {
   }, 120);
 }
 
-async function refreshRecognitionPanel() {
-  if (!HAS_RECOGNITION) return;
-  try {
-    const [identities, plates] = await Promise.all([
-      fetch("/api/identities?kind=person").then(r => r.json()),
-      fetch("/api/plates").then(r => r.json()),
-    ]);
-    state.identities = identities;
-    state.plates = plates;
-    drawRecognitionPanel();
-  } catch (err) {
-    console.warn("recognition fetch failed", err);
-  }
-}
 
 function drawActivityLanes(lanes, pct) {
   if (!HAS_RECOGNITION) return;
@@ -641,6 +607,38 @@ function drawActivityLanes(lanes, pct) {
       track.appendChild(mark);
     }
 
+    // An empty lane and an unanalysed one look identical, and during a backfill
+    // most of them are the latter. Shade what has not been reached yet and say
+    // so, rather than letting it read as "nothing was there".
+    const through = state.analysedThrough;
+    if (through != null && through < state.end) {
+      const pending = el("div", "pending");
+      pending.style.left = Math.max(pct(through), 0) + "%";
+      pending.style.right = "0";
+      if (through <= state.start) {
+        pending.append(el("span", "", "not analysed yet · through " + fmtShort(through)));
+      }
+      track.appendChild(pending);
+    }
+
+    // The whole lane is the target, not just the marks. What reads as clickable
+    // is the density shading, and that is drawn from bucket counts rather than
+    // from individual events -- so clicking it has to resolve to the nearest
+    // sighting itself. Without this you get the grab cursor over something that
+    // plainly looks like a button.
+    const inLane = state.events.filter(e => e.kind === kind);
+    if (inLane.length) {
+      track.classList.add("clickable");
+      track.onclick = ev => {
+        if (ev.target.classList.contains("evt")) return;  // the mark handles itself
+        const box = track.getBoundingClientRect();
+        const at = state.start + ((ev.clientX - box.left) / box.width) * (state.end - state.start);
+        const distance = e => (e.s <= at && at <= e.f) ? 0 : Math.min(Math.abs(e.s - at), Math.abs(e.f - at));
+        const nearest = inLane.reduce((best, e) => distance(e) < distance(best) ? e : best);
+        selectEvent(nearest);
+      };
+    }
+
     lane.appendChild(track);
     lanes.appendChild(lane);
   }
@@ -648,102 +646,35 @@ function drawActivityLanes(lanes, pct) {
 
 function selectEvent(event) {
   state.selectedEvent = event.id;
-  // Jump the player to the clip covering this sighting, so clicking a person on
-  // the activity lane shows the footage rather than just highlighting a bar.
-  const covering = forChannel()
-    .filter(e => e.s <= event.s && e.f >= event.s)
-    .sort((a, b) => (a.f - a.s) - (b.f - b.s))[0];
-  if (covering) select(covering);
+  // Play the footage of this sighting, seeked to the moment it happened.
+  // Shortest covering clip first: an hourly compresses an hour into 60s, so it
+  // gives far finer resolution on the moment than the daily covering the same
+  // instant. Fall back past the cadence toggles rather than refusing to play.
+  const covers = e => e.s <= event.s && e.f >= event.s;
+  const byLength = (a, b) => (a.f - a.s) - (b.f - b.s);
+  const covering = visible().filter(covers).sort(byLength)[0]
+    || forChannel().filter(covers).sort(byLength)[0];
+
+  if (covering) {
+    select(covering, event.s);
+  } else {
+    // Nothing rendered covers this moment -- an hourly aged out, or the window
+    // has not been rendered yet. Say so instead of appearing to ignore a click.
+    drawTimeline();
+    const box = $("nowplaying");
+    box.textContent = "";
+    box.append(
+      el("span", "tag", event.kind),
+      el("span", "when", fmtFull(event.s) + "  →  " + fmtFull(event.f)),
+      el("span", "", "no rendered clip covers this sighting"),
+    );
+    return;
+  }
   drawTimeline();
 }
 
-function drawRecognitionPanel() {
-  if (!HAS_RECOGNITION) return;
-  $("recog").hidden = false;
-  const list = $("recog-list");
-  list.innerHTML = "";
 
-  if (state.tab === "people") {
-    if (!state.identities.length) {
-      list.appendChild(el("div", "empty", "Nobody grouped yet."));
-    }
-    for (const identity of state.identities) {
-      const row = el("div", "ident");
-      row.setAttribute("aria-pressed", String(state.focusIdentity === identity.id));
-      const thumb = document.createElement("img");
-      thumb.alt = "";
-      thumb.loading = "lazy";
-      thumb.src = "/crop/event/" + identity.id + ".jpg";
-      thumb.onerror = () => thumb.remove();
-      const meta = el("div", "meta");
-      meta.append(
-        el("div", "who", identity.name || "Unnamed #" + identity.id),
-        el("div", "when", identity.sightings + " sighting"
-          + (identity.sightings === 1 ? "" : "s") + " · " + fmtShort(Date.parse(identity.last_seen))),
-      );
-      const rename = el("button", "rename", "edit");
-      rename.title = "Name this group";
-      rename.onclick = ev => { ev.stopPropagation(); renameIdentity(identity); };
-      row.append(thumb, meta, rename);
-      row.onclick = () => {
-        state.focusIdentity = state.focusIdentity === identity.id ? null : identity.id;
-        drawRecognitionPanel();
-        drawTimeline();
-      };
-      list.appendChild(row);
-    }
-    $("recog-note").textContent = state.identities.length
-      ? "Grouped by clothing and build, not by face — faces are too small on these cameras to identify. Groups do not survive a change of clothes."
-      : "";
-  } else {
-    if (!state.plates.length) {
-      list.appendChild(el("div", "empty", "No plates read yet."));
-    }
-    for (const plate of state.plates) {
-      const row = el("div", "plate");
-      if (plate.crop) {
-        const thumb = document.createElement("img");
-        thumb.alt = "";
-        thumb.loading = "lazy";
-        thumb.src = plate.crop;
-        thumb.onerror = () => thumb.remove();
-        row.appendChild(thumb);
-      }
-      row.append(
-        el("span", "txt", plate.text),
-        el("span", "when", fmtShort(Date.parse(plate.seen_at))),
-      );
-      row.title = plate.votes + " frame" + (plate.votes === 1 ? "" : "s")
-        + " agreed · confidence " + plate.confidence;
-      row.onclick = () => {
-        const at = Date.parse(plate.seen_at);
-        state.start = at - 30 * MIN; state.end = at + 30 * MIN;
-        drawTimeline(); refreshActivity();
-      };
-      list.appendChild(row);
-    }
-    $("recog-note").textContent = state.plates.length
-      ? "Each plate is voted across every frame of one sighting; single frames disagree at this resolution."
-      : "";
-  }
-}
 
-async function renameIdentity(identity) {
-  const name = prompt("Name for this group", identity.name || "");
-  if (name === null) return;
-  try {
-    const response = await fetch("/api/identities/" + identity.id, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: name.trim() || null}),
-    });
-    if (!response.ok) throw new Error(response.statusText);
-    identity.name = name.trim() || null;
-    drawRecognitionPanel();
-  } catch (err) {
-    console.warn("rename failed", err);
-  }
-}
 
 function drawTimeline() {
   clampView();
@@ -816,7 +747,31 @@ function drawAxis(span, pct) {
   }
 }
 
-function select(entry) {
+// A timelapse is a linear compression of its window, so a wall-clock moment maps
+// straight onto a position in the video. This is what makes clicking a sighting
+// land on the sighting instead of restarting the whole hour.
+function seekToMoment(video, entry, atMs) {
+  const span = entry.f - entry.s;
+  if (!span || atMs == null) return;
+  const fraction = Math.min(Math.max((atMs - entry.s) / span, 0), 1);
+  const apply = () => {
+    if (video.duration && isFinite(video.duration)) {
+      video.currentTime = fraction * video.duration;
+    }
+  };
+  if (video.readyState >= 1) apply();
+  else video.addEventListener("loadedmetadata", apply, {once: true});
+}
+
+function select(entry, atMs) {
+  // Re-selecting the clip already on screen must not tear down the player: that
+  // restarts playback from zero, which is indistinguishable from nothing having
+  // happened when the click came from a sighting inside the current clip.
+  if (state.selected === entry) {
+    const playing = $("screen").querySelector("video");
+    if (playing) { seekToMoment(playing, entry, atMs); return; }
+  }
+
   state.selected = entry;
   const screen = $("screen");
   screen.innerHTML = "";
@@ -825,6 +780,7 @@ function select(entry) {
   v.controls = true; v.autoplay = true; v.loop = true; v.muted = true;
   v.playsInline = true; v.preload = "auto";
   v.src = entry.url;
+  seekToMoment(v, entry, atMs);
   screen.appendChild(v);
   drawNowPlaying();
   drawTimeline();
@@ -924,28 +880,32 @@ setInterval(() => {
   }
 }, THUMB_REFRESH);
 
-if (HAS_RECOGNITION) {
-  for (const [id, tab] of [["tab-people", "people"], ["tab-plates", "plates"]]) {
-    $(id).onclick = () => {
-      state.tab = tab;
-      $("tab-people").setAttribute("aria-pressed", String(tab === "people"));
-      $("tab-plates").setAttribute("aria-pressed", String(tab === "plates"));
-      drawRecognitionPanel();
-    };
-  }
-  // Identities and plates accumulate slowly; polling them at the thumbnail
-  // cadence would be wasted requests.
-  setInterval(() => { if (!document.hidden) refreshRecognitionPanel(); }, 120e3);
-}
+if (HAS_RECOGNITION) $("librarylink").hidden = false;
 
 drawControls();
 buildChannels();
-setView(DAY);
+
+// ?at= is how the library page hands a sighting back to the viewer: centre the
+// timeline on that moment and start the covering clip there, rather than
+// dropping the reader at the newest clip and making them hunt for it.
+const deepLinkAt = Number(params.get("at"));
+if (deepLinkAt) {
+  state.start = deepLinkAt - 30 * MIN;
+  state.end = deepLinkAt + 30 * MIN;
+  const identity = Number(params.get("identity"));
+  if (identity) state.focusIdentity = identity;
+} else {
+  setView(DAY);
+}
 drawTimeline();
 drawNowPlaying();
-refreshRecognitionPanel();
-const latest = visible().sort((a, b) => b.s - a.s)[0];
-if (latest) select(latest);
+
+const covers = e => e.s <= deepLinkAt && e.f >= deepLinkAt;
+const target = deepLinkAt
+  ? (visible().filter(covers).sort((a, b) => (a.f - a.s) - (b.f - b.s))[0]
+     || forChannel().filter(covers).sort((a, b) => (a.f - a.s) - (b.f - b.s))[0])
+  : visible().sort((a, b) => b.s - a.s)[0];
+if (target) select(target, deepLinkAt || undefined);
 </script>
 </body>
 </html>
@@ -1050,6 +1010,13 @@ class RecognitionReader:
         with self._lock:
             return self._connection().plates(text=text, channel=channel)
 
+    def watermarks(self) -> dict[str, str]:
+        with self._lock:
+            return {
+                channel: from_epoch(through).isoformat()
+                for channel, through in self._connection().watermarks().items()
+            }
+
     def rename_identity(self, identity_id: int, name: str | None) -> bool:
         # The one write. Opened separately so the read connection stays read-only
         # and a bug in a GET handler cannot mutate anything.
@@ -1107,6 +1074,11 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     recognition=self.recognition,
                 )
                 self._send_bytes(body, "text/html; charset=utf-8")
+            elif path == "/library":
+                if self.recognition is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Recognition is not enabled")
+                    return
+                self._send_bytes(render_library(), "text/html; charset=utf-8")
             elif path == "/api/timelapses":
                 entries = self.catalogue.entries(query.get("channel"), query.get("cadence"))
                 body = json.dumps([entry.as_dict() for entry in entries], indent=2).encode()
@@ -1214,6 +1186,11 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     limit=min(number("limit", 500) or 500, 2000),
                 )
             ]
+        elif path == "/api/status":
+            # How far analysis has actually reached. Without this an empty
+            # activity lane is indistinguishable from a window that simply has
+            # not been analysed yet -- which, during a backfill, is most of them.
+            payload = self.recognition.watermarks()
         elif path == "/api/identities":
             payload = self.recognition.identities(kind=query.get("kind"))
         elif path == "/api/plates":

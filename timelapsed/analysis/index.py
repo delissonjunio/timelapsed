@@ -370,20 +370,28 @@ class AnalysisIndex:
         return [(row["identity_id"], row["vector"]) for row in rows]
 
     def identities(self, kind: str | None = None, limit: int = 500) -> list[dict]:
-        where = "WHERE kind = ?" if kind else ""
+        where = "WHERE identity.kind = ?" if kind else ""
         parameters = (kind, limit) if kind else (limit,)
+        # Carry a representative crop. Without one the caller has to guess a URL,
+        # and the obvious guess -- treating the identity id as an event id --
+        # silently shows somebody else's picture.
+        thumb_for = (
+            "(SELECT event.id FROM event WHERE event.identity_id = identity.id "
+            " AND event.thumb_path IS NOT NULL ORDER BY event.started_at DESC LIMIT 1)"
+        )
         return [
             {
                 "id": row["id"], "kind": row["kind"], "name": row["name"],
                 "first_seen": from_epoch(row["created_at"]).isoformat(),
                 "last_seen": from_epoch(row["last_seen_at"]).isoformat(),
                 "sightings": row["sighting_count"],
+                "thumb": f"/crop/event/{row['thumb_event']}.jpg" if row["thumb_event"] else None,
             }
             # Most-seen first: at a precision-first threshold most groups are
             # single sightings, and a list led by one-offs buries the few groups
             # that are actually worth naming.
             for row in self.connection.execute(
-                f"SELECT * FROM identity {where} "
+                f"SELECT identity.*, {thumb_for} AS thumb_event FROM identity {where} "
                 f"ORDER BY sighting_count DESC, last_seen_at DESC LIMIT ?", parameters
             )
         ]

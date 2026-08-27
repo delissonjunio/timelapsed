@@ -179,6 +179,74 @@ def test_posting_to_an_unknown_path_is_a_404(base_url):
     assert error.value.code == 404
 
 
+def test_identities_carry_a_representative_crop(base_url):
+    """The URL has to come from the API. Deriving it from the identity id
+    happened to work while ids lined up, and showed the wrong person once
+    they stopped."""
+    identity = get_json(f"{base_url}/api/identities")[0]
+    assert identity["thumb"] == "/crop/event/1.jpg"
+
+    with urllib.request.urlopen(f"{base_url}{identity['thumb']}") as response:
+        assert response.headers["Content-Type"] == "image/jpeg"
+
+
+def test_an_identity_with_no_crop_reports_none(base_url, config):
+    with AnalysisIndex(config.analysis_index_path) as index:
+        index.create_identity("person", BASE)
+
+    bare = [i for i in get_json(f"{base_url}/api/identities") if i["sightings"] == 0]
+    assert bare and bare[0]["thumb"] is None
+
+
+def test_status_reports_how_far_analysis_has_reached(base_url, config):
+    """An empty activity lane and an unanalysed one look identical without this."""
+    with AnalysisIndex(config.analysis_index_path) as index:
+        index.set_watermark("1", BASE + 3600)
+
+    assert get_json(f"{base_url}/api/status") == {"1": "2025-06-01T13:00:00+00:00"}
+
+
+def test_the_library_page_is_served(base_url):
+    with urllib.request.urlopen(f"{base_url}/library") as response:
+        page = response.read().decode()
+    assert response.headers["Content-Type"].startswith("text/html")
+    assert "People &amp; plates" in page
+    # It fetches everything; nothing is server-rendered into it.
+    assert "/api/identities" in page and "/api/events?identity=" in page
+
+
+def test_the_library_is_absent_when_recognition_is_off(library, config, tmp_path):
+    config.analysis_enabled = False
+    server = build_server(config)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(f"{url}/library")
+        assert error.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_the_viewer_links_to_the_library_when_recognition_is_on(base_url):
+    with urllib.request.urlopen(base_url) as response:
+        assert 'href="/library"' in response.read().decode()
+
+
+def test_sightings_carry_what_a_deep_link_needs(base_url):
+    """Each sighting has to name a channel, a moment and its own still, or the
+    library cannot hand it back to the viewer."""
+    identity = get_json(f"{base_url}/api/identities")[0]
+    sighting = get_json(f"{base_url}/api/events?identity={identity['id']}")[0]
+
+    assert sighting["channel"] == "1"
+    assert sighting["starts"].startswith("2025-06-01T12:00")
+    assert sighting["thumb"] == "/crop/event/1.jpg"
+
+
 def test_the_page_advertises_that_recognition_is_available(base_url):
     with urllib.request.urlopen(base_url) as response:
         page = response.read().decode()
