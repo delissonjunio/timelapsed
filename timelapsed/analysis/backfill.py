@@ -42,6 +42,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_GAP_MINUTES = 30
 
 
+def _dominant(rows: list[dict]) -> str:
+    """What a run of rows mostly says, weighted by the reads behind each."""
+    tally: Counter[str] = Counter()
+    for row in rows:
+        tally[row["text"]] += max(row["votes"], 1)
+    return tally.most_common(1)[0][0]
+
+
+def _apart(first: list[dict], second: list[dict]) -> int:
+    """Seconds between two runs, or 0 where they overlap in time."""
+    gap = max(first[0]["captured_at"], second[0]["captured_at"]) - min(
+        first[-1]["captured_at"], second[-1]["captured_at"]
+    )
+    return max(gap, 0)
+
+
 def _group(rows: list[dict], gap_seconds: int, drift: int) -> list[list[dict]]:
     """Runs of rows that are one car, oldest first within each run.
 
@@ -56,23 +72,58 @@ def _group(rows: list[dict], gap_seconds: int, drift: int) -> list[list[dict]]:
     so a car that fragments for an hour chains through however many rows that
     took, while a genuine second visit an hour later still starts its own.
     """
-    groups: list[dict] = []
+    groups: list[list[dict]] = []
     for row in sorted(rows, key=lambda row: row["captured_at"]):
         best, closest = None, drift + 1
         for group in reversed(groups):  # newest first, so it wins a tie
-            if row["captured_at"] - group["last"] > gap_seconds:
+            if row["captured_at"] - group[-1]["captured_at"] > gap_seconds:
                 continue
-            apart = characters_apart(group["tally"].most_common(1)[0][0], row["text"])
+            apart = characters_apart(_dominant(group), row["text"])
             if apart < closest:
                 best, closest = group, apart
 
         if best is None:
-            best = {"rows": [], "tally": Counter(), "last": row["captured_at"]}
+            best = []
             groups.append(best)
-        best["rows"].append(row)
-        best["tally"][row["text"]] += max(row["votes"], 1)
-        best["last"] = row["captured_at"]
-    return [group["rows"] for group in groups]
+        best.append(row)
+    return groups
+
+
+def _consolidate(groups: list[list[dict]], gap_seconds: int, drift: int) -> list[list[dict]]:
+    """Fold together runs that turned out to be the same car.
+
+    One pass leaves a car split whenever two runs of it are alive at once: a row
+    reading exactly what the second run says is nearer to it than to the first,
+    so both keep being fed and neither absorbs the other. They are not two cars.
+    Nothing else was parked in that spot, they overlap in time, and their texts
+    are a character apart.
+
+    Merging repeats until nothing moves, so a chain of three folds into one.
+    What bounds it is that both tests must pass on the runs as wholes -- they
+    have to overlap or nearly so *and* mostly agree -- which two genuinely
+    different plates never do.
+    """
+    groups = [list(group) for group in groups]
+    merging = True
+    while merging:
+        merging = False
+        for first in range(len(groups)):
+            for second in range(first + 1, len(groups)):
+                if _apart(groups[first], groups[second]) > gap_seconds:
+                    continue
+                if characters_apart(
+                    _dominant(groups[first]), _dominant(groups[second])
+                ) > drift:
+                    continue
+                groups[first] = sorted(
+                    groups[first] + groups[second], key=lambda row: row["captured_at"]
+                )
+                del groups[second]
+                merging = True
+                break
+            if merging:
+                break
+    return groups
 
 
 def _pool(group: list[dict]) -> dict:
@@ -137,7 +188,8 @@ def plan(index: AnalysisIndex, gap_seconds: int, drift: int) -> list[dict]:
 
     pooled = []
     for channel in sorted(channels):
-        for group in _group(channels[channel], gap_seconds, drift):
+        grouped = _consolidate(_group(channels[channel], gap_seconds, drift), gap_seconds, drift)
+        for group in grouped:
             if len(group) > 1:
                 pooled.append(_pool(group))
     return pooled

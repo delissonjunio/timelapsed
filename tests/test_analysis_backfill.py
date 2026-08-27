@@ -77,6 +77,19 @@ def test_one_car_read_badly_all_evening_comes_out_as_one_row(index):
     assert plates[0]["reads"] == len(seen) * 3
 
 
+def test_two_runs_of_one_car_alive_at_once_are_folded_together(index):
+    """A row reading exactly what the second run says is nearer to it than to
+    the first, so both keep being fed and neither absorbs the other. They are
+    still one car: same spot, same half hour, one character apart.
+    """
+    for step in range(30):
+        legacy(index, "5", BASE + step * 20, "JSY1M23" if step % 2 else "JSY1M73")
+
+    apply(index, plan(index, GAP, 2))
+
+    assert len(index.plates()) == 1
+
+
 def test_two_different_plates_are_left_alone(index):
     legacy(index, "5", BASE, "ABC1D23")
     legacy(index, "5", BASE + 20, "XYZ9A99")
