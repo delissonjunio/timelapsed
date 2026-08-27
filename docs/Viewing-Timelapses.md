@@ -25,6 +25,10 @@ It serves:
 | `/crop/{event\|plate}/{id}.jpg` | A recognition crop |
 | `/healthz` | Returns `ok`, for monitoring |
 
+Every route answers `HEAD` as well as `GET`, with the same status and the same headers and no body —
+so `curl -I` works as a liveness check, and `curl -I` on a video reports its size and resolves a
+`Range` without transferring it.
+
 Lanes are drawn widest-first, so with everything enabled the order top to bottom is `progress`,
 `monthly`, `weekly`, `daily`, `hourly`. Each has a colour swatch that doubles as a filter chip. The
 lane list comes from the cadence registry rather than being written into the page, so a cadence added

@@ -1461,6 +1461,11 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
     server_version = "timelapsed"
     protocol_version = "HTTP/1.1"
 
+    # Set for the duration of a HEAD. Every response path checks it instead of
+    # writing its body; the headers are produced exactly as they would be for a
+    # GET, which is the whole point of HEAD.
+    body_suppressed = False
+
     def __init__(
         self,
         *args,
@@ -1478,6 +1483,25 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args) -> None:
         logger.debug("%s %s", self.address_string(), format % args)
+
+    def do_HEAD(self) -> None:
+        """HEAD is GET with the body left off.
+
+        BaseHTTPRequestHandler answers 501 to any method it has no `do_` for, so
+        without this the viewer refused the request every monitoring tool and
+        every `curl -I` opens with -- including the check `nginx-setup.sh` prints
+        and the ones in the docs, none of which could ever have passed against
+        the Python side.
+
+        Running the real do_GET is what keeps the two consistent: the routing,
+        the 404s and every header including Content-Length are produced by the
+        same code, so a HEAD can never drift from the GET it describes.
+        """
+        self.body_suppressed = True
+        try:
+            self.do_GET()
+        finally:
+            self.body_suppressed = False
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1655,7 +1679,8 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         if cache_control:
             self.send_header("Cache-Control", cache_control)
         self.end_headers()
-        self.wfile.write(body)
+        if not self.body_suppressed:
+            self.wfile.write(body)
 
     def _serve_thumbnail(self, path: str) -> None:
         """The latest still for a camera, downscaled, for the sidebar."""
@@ -1718,6 +1743,9 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         if status == HTTPStatus.PARTIAL_CONTENT:
             self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
         self.end_headers()
+        # The range was still resolved and reported; only the bytes are skipped.
+        if self.body_suppressed:
+            return
 
         with open(video_path, "rb") as video_file:
             video_file.seek(start)

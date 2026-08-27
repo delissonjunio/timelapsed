@@ -53,6 +53,55 @@ def get(url: str, headers: dict | None = None):
         return response.status, dict(response.headers), response.read()
 
 
+def head(url: str, headers: dict | None = None):
+    request = urllib.request.Request(url, headers=headers or {}, method="HEAD")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.status, dict(response.headers), response.read()
+
+
+# --- HEAD ------------------------------------------------------------------
+
+def test_head_answers_everywhere_get_does(base_url, stocked_library):
+    """`curl -I` is how you check a web server is up.
+
+    BaseHTTPRequestHandler 501s any method it has no `do_` for, so the viewer
+    used to refuse it -- including on /healthz, which is what nginx-setup.sh
+    prints as the check to run and what the docs tell you to poll.
+    """
+    video = json.loads(get(base_url + "/api/timelapses")[2])[0]["url"]
+
+    for path in ("/healthz", "/", "/api/timelapses", video):
+        get_status, get_headers, body = get(base_url + path)
+        head_status, head_headers, empty = head(base_url + path)
+
+        assert head_status == get_status == 200, path
+        assert empty == b"", path
+        # The headers have to describe the GET, not the empty response, or a
+        # HEAD is worse than useless -- it lies about the resource.
+        assert head_headers["Content-Length"] == str(len(body)), path
+        assert head_headers["Content-Type"] == get_headers["Content-Type"], path
+
+
+def test_head_reports_a_range_without_sending_it(base_url):
+    """Range resolution is shared with GET, so it cannot drift from it."""
+    video = json.loads(get(base_url + "/api/timelapses")[2])[0]["url"]
+
+    status, headers, body = head(base_url + video, {"Range": "bytes=100-199"})
+
+    assert status == 206
+    assert headers["Content-Range"] == f"bytes 100-199/{len(VIDEO_BODY)}"
+    assert headers["Content-Length"] == "100"
+    assert headers["Accept-Ranges"] == "bytes"
+    assert body == b""
+
+
+def test_head_still_refuses_what_get_refuses(base_url):
+    for path in ("/nope", "/video/1/../../etc/passwd", "/thumb/../secret.jpg"):
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            head(base_url + path)
+        assert raised.value.code == 404, path
+
+
 # --- catalogue -------------------------------------------------------------
 
 def test_catalogue_lists_channels_that_have_timelapses(stocked_library):
