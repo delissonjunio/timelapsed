@@ -26,7 +26,7 @@ from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
 from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.library_page import render_library
-from timelapsed.schema import Config
+from timelapsed.schema import CADENCES, Config
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ PAGE_TEMPLATE = """<!doctype html>
   color-scheme: dark;
   --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --fg:#e8ebf1; --muted:#8b93a5;
   --line:#242a37; --accent:#5b9dff;
-  --hourly:#5b9dff; --daily:#a78bfa; --weekly:#34d399;
+  --hourly:#5b9dff; --daily:#a78bfa; --weekly:#34d399; --monthly:#f59e0b; --progress:#ec4899;
 }
 * { box-sizing:border-box; }
 html, body { height:100%; }
@@ -354,10 +354,10 @@ header .navlink:hover { color:var(--fg); background:var(--panel-2); }
 const ENTRIES = JSON.parse(document.getElementById("payload").textContent).map(e => ({
   ...e, s: Date.parse(e.starts), f: Date.parse(e.finishes),
 }));
-const CADENCES = ["weekly", "daily", "hourly"];
+const CADENCES = JSON.parse(document.getElementById("cadences-payload").textContent);
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
-const RANGES = [["6h", 6 * HOUR], ["24h", DAY], ["7d", 7 * DAY], ["30d", 30 * DAY], ["All", 0]];
-const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY];
+const RANGES = [["6h", 6 * HOUR], ["24h", DAY], ["7d", 7 * DAY], ["30d", 30 * DAY], ["90d", 90 * DAY], ["1y", 365 * DAY], ["All", 0]];
+const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY, 180 * DAY, 365 * DAY];
 
 const channels = JSON.parse(document.getElementById("channels-payload").textContent);
 const HAS_RECOGNITION = JSON.parse(document.getElementById("recognition-payload").textContent);
@@ -959,6 +959,11 @@ def render_index(
         + block("channels-payload", channels)
         + "\n"
         + block("recognition-payload", recognition is not None)
+        + "\n"
+        # Lane order, colour lookup and filter chips all read this one array,
+        # so the registry stays the single source of truth and a cadence added
+        # there gets a lane without touching the viewer. Reversed: widest on top.
+        + block("cadences-payload", list(reversed(CADENCES)))
         + "\n<script>\nconst ENTRIES",
     )
     return page.encode()

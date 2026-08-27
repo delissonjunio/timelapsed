@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%Z"
 
-TargetName = Literal["image", "timelapse"]
+TargetName = Literal["image", "keyframe", "timelapse"]
 
 RECLAIM_LOCK_NAME = ".reclaim.lock"
 # Render scratch space, kept inside the library so staged frames can be
@@ -52,15 +52,43 @@ def _parse_image_filename(filename: str) -> datetime:
     return datetime.strptime(filename, TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
 
 
+def _nearest_within(
+    entries: Sequence[tuple[datetime, Path]], taken_at: datetime, search_max_distance: timedelta
+) -> Path | None:
+    """The entry closest to taken_at, or None when nothing is within the distance."""
+    if not entries:
+        return None
+
+    timestamps = [timestamp for timestamp, _ in entries]
+    position = bisect_left(timestamps, taken_at)
+
+    closest_path = None
+    smallest_difference = search_max_distance
+    for index in (position - 1, position, position + 1):
+        if 0 <= index < len(entries):
+            difference = abs(taken_at - timestamps[index])
+            if difference <= smallest_difference:
+                closest_path = entries[index][1]
+                smallest_difference = difference
+
+    return closest_path
+
+
 class ImageCaptureLibrary:
     """Filesystem-backed store for captured images and rendered timelapses.
 
     Layout:
         {root}/{channel_id}/image/YYYYMMDD_HHMMSS_UTC.jpg
-        {root}/{channel_id}/timelapse/{start}-{end}.mp4
+        {root}/{channel_id}/keyframe/YYYYMMDD_HHMMSS_UTC.jpg
+        {root}/{channel_id}/timelapse/{cadence}_{start}-{end}.mp4
 
     The filename is the index: because timestamps are fixed-width UTC, sorting
     filenames lexicographically sorts them chronologically. There is no database.
+
+    `keyframe` holds one promoted still per local day, hardlinked from `image`, and
+    is what the monthly and progress renders read. It exists because those windows
+    are far longer than the stills survive: a month of stills for six channels is
+    ~380 GB, a month of keyframes is 42 MB.
     """
 
     root_path: Path
@@ -102,6 +130,34 @@ class ImageCaptureLibrary:
         image_path.write_bytes(content)
         return image_path
 
+    def store_keyframe(self, channel_id: str, source_path: Path, promoted_for: datetime) -> Path:
+        """Promote a captured still into the long-lived keyframe track.
+
+        Hardlinked, not copied: the keyframe track sits on the same filesystem as
+        the stills, so this costs one inode and no bytes. When image retention
+        unlinks the original eight days from now, this name keeps the inode alive
+        -- which is the entire trick, because holding the stills instead would
+        mean 32 days of them, ~380 GB for six channels on a 200 GB disk.
+
+        Named for the instant it was promoted *for* -- local noon, expressed in
+        UTC -- rather than for the still's real capture time. That makes promotion
+        idempotent by filename, and puts frames exactly 24 hours apart so the
+        video reads as one frame a day instead of as jitter.
+        """
+        keyframe_path = (
+            self._path_for_channel(channel_id, "keyframe")
+            / f"{_generate_image_filename(promoted_for)}{source_path.suffix}"
+        )
+        keyframe_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            os.link(source_path, keyframe_path)
+        except FileExistsError:
+            pass  # Already promoted. The only mutation here is idempotent by design.
+        except OSError:
+            shutil.copy(source_path, keyframe_path)  # Across a filesystem boundary.
+        return keyframe_path
+
     def store_timelapse(
         self,
         channel_id: str,
@@ -126,37 +182,39 @@ class ImageCaptureLibrary:
             return channel_path / found_image
         return None
 
-    def retrieve_image(self, channel_id: str, taken_at: datetime, search_max_distance: timedelta | None) -> Path | None:
-        """Find the image taken at taken_at, or the nearest one within search_max_distance."""
-        if image := self._retrieve_exact_image_path(channel_id, taken_at):
-            return image
+    def retrieve_image(
+        self,
+        channel_id: str,
+        taken_at: datetime,
+        search_max_distance: timedelta | None,
+        entries: Sequence[tuple[datetime, Path]] | None = None,
+    ) -> Path | None:
+        """Find the image taken at taken_at, or the nearest one within search_max_distance.
 
-        if search_max_distance is None:
-            return None
+        `entries` is the channel's stills as (timestamp, path), which a caller
+        asking about several instants at once can pass in. Scanning is the whole
+        cost here -- at a 10 second interval over 8 days of retention the still
+        directory holds ~69,000 files -- so backfilling a week of keyframes wants
+        one scan rather than seven.
+        """
+        if entries is None:
+            if image := self._retrieve_exact_image_path(channel_id, taken_at):
+                return image
 
-        entries = self._timestamped_paths(channel_id, "image")
-        if not entries:
-            return None
+            if search_max_distance is None:
+                return None
 
-        timestamps = [timestamp for timestamp, _ in entries]
-        position = bisect_left(timestamps, taken_at)
+            entries = self._timestamped_paths(channel_id, "image")
 
-        closest_path = None
-        smallest_difference = search_max_distance
-        for index in (position - 1, position, position + 1):
-            if 0 <= index < len(entries):
-                difference = abs(taken_at - timestamps[index])
-                if difference <= smallest_difference:
-                    closest_path = entries[index][1]
-                    smallest_difference = difference
+        return _nearest_within(entries, taken_at, search_max_distance or timedelta(0))
 
-        return closest_path
-
-    def retrieve_images_within(self, channel_id: str, start: datetime, end: datetime) -> Sequence[Path]:
-        """Every image captured in the inclusive window [start, end], oldest first."""
+    def retrieve_images_within(
+        self, channel_id: str, start: datetime, end: datetime, target_name: TargetName = "image"
+    ) -> Sequence[Path]:
+        """Every frame captured in the inclusive window [start, end], oldest first."""
         return [
             path
-            for timestamp, path in self._timestamped_paths(channel_id, "image")
+            for timestamp, path in self._timestamped_paths(channel_id, target_name)
             if start <= timestamp <= end
         ]
 
@@ -201,13 +259,67 @@ class ImageCaptureLibrary:
             )
         return deleted
 
-    def image_timestamps(self, channel_id: str) -> list[datetime]:
-        """Every stored still's capture time for a channel, oldest first.
+    def prune_superseded(self, channel_id: str, cadence_name: str, keep_newest: int = 1) -> int:
+        """Delete all but the newest videos of a cadence, judged by how far each reaches.
+
+        For an anchored cadence every render covers everything the previous one
+        did and more, so the older files are strict prefixes holding nothing the
+        newest does not. Age-based retention cannot do this job at all: an
+        anchored video's start is day one of the project, so pruning on age
+        deletes the current video and keeps nothing.
+        """
+        entries = []
+        for _, path in self._timestamped_paths(channel_id, "timelapse"):
+            name, _, finishes = parse_timelapse_filename(path.stem)
+            if name == cadence_name:
+                entries.append((finishes, path))
+        entries.sort(key=lambda entry: entry[0])
+
+        deleted = 0
+        for _, path in entries[: max(0, len(entries) - keep_newest)]:
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                logger.warning("Could not delete superseded %s", path, exc_info=True)
+
+        if deleted:
+            logger.info(
+                "Deleted %d superseded %s video(s) for channel %s", deleted, cadence_name, channel_id
+            )
+        return deleted
+
+    def frame_entries(
+        self, channel_id: str, target_name: TargetName = "image"
+    ) -> list[tuple[datetime, Path]]:
+        """Every stored frame as (capture time, path), oldest first.
+
+        What `image_timestamps` throws the paths away from. Keyframe promotion
+        needs both halves, and needs them out of a single scan.
+        """
+        return self._timestamped_paths(channel_id, target_name)
+
+    def image_timestamps(self, channel_id: str, target_name: TargetName = "image") -> list[datetime]:
+        """Every stored frame's capture time for a channel, oldest first.
 
         One directory scan answering "which windows have frames", so deciding
         what still needs rendering does not restat the library once per window.
         """
-        return [timestamp for timestamp, _ in self._timestamped_paths(channel_id, "image")]
+        return [timestamp for timestamp, _ in self._timestamped_paths(channel_id, target_name)]
+
+    def rendered_windows(self, channel_id: str, cadence_name: str) -> list[tuple[datetime, datetime]]:
+        """The (start, end) of every stored video of one cadence, oldest first.
+
+        An anchored cadence is judged on how far its video reaches rather than on
+        where it starts -- its start never moves -- so the end has to survive the
+        lookup.
+        """
+        windows = []
+        for _, path in self._timestamped_paths(channel_id, "timelapse"):
+            name, starts, finishes = parse_timelapse_filename(path.stem)
+            if name == cadence_name:
+                windows.append((starts, finishes))
+        return windows
 
     def images_after(
         self, channel_id: str, after: datetime | None, until: datetime, limit: int
@@ -251,11 +363,7 @@ class ImageCaptureLibrary:
 
     def rendered_window_starts(self, channel_id: str, cadence_name: str) -> list[datetime]:
         """The start time of every stored video of one cadence, oldest first."""
-        return [
-            timestamp
-            for timestamp, path in self._timestamped_paths(channel_id, "timelapse")
-            if parse_timelapse_filename(path.stem)[0] == cadence_name
-        ]
+        return [starts for starts, _ in self.rendered_windows(channel_id, cadence_name)]
 
     def scratch_directory(self) -> Path:
         """Where a render stages its frames and writes its output.
@@ -300,7 +408,19 @@ class ImageCaptureLibrary:
         used them has already run. Hourly clips are the most disposable history.
         Only then are stills a render still needs taken, because losing those
         degrades an upcoming video rather than destroying a finished one. Daily
-        and weekly videos are the archive and go last.
+        videos follow. The keyframe-sourced videos come next because they can be
+        re-rendered from the keyframe track whenever -- progress before monthly,
+        since a progress video is superseded on the next rollover anyway. Weekly
+        goes last: its stills were pruned months ago, so once it is gone no amount
+        of CPU brings it back.
+
+        The keyframe track itself is deliberately absent. It is the one
+        unrecoverable thing in the library -- a pruned still cannot be re-promoted
+        -- and at ~500 MB a year against a steady state near 100 GB, sacrificing
+        it buys under half a percent of the disk while destroying the beginning of
+        the record, which is the part worth having. If the floor cannot be met
+        without it, the floor cannot be met; the error at the end of `reclaim`
+        says so.
         """
         stills = self._sorted_across_channels(channel_ids, "image")
         cutoff = now - protected_window
@@ -309,6 +429,8 @@ class ImageCaptureLibrary:
             ("hourly videos", self._sorted_across_channels(channel_ids, "timelapse", "hourly")),
             ("stills an upcoming render needs", [e for e in stills if e[0] >= cutoff]),
             ("daily videos", self._sorted_across_channels(channel_ids, "timelapse", "daily")),
+            ("progress videos", self._sorted_across_channels(channel_ids, "timelapse", "progress")),
+            ("monthly videos", self._sorted_across_channels(channel_ids, "timelapse", "monthly")),
             ("weekly videos", self._sorted_across_channels(channel_ids, "timelapse", "weekly")),
         ]
 
@@ -367,11 +489,15 @@ class ImageCaptureLibrary:
                     if reclaimed >= needed:
                         break
                     try:
-                        size = path.stat().st_size
+                        status = path.stat()
                         path.unlink()
                     except OSError:
                         continue  # Vanished under us, or not ours to delete.
-                    reclaimed += size
+                    # A still that has been promoted to a keyframe is hardlinked,
+                    # so dropping this name frees nothing -- the inode lives on
+                    # under the other one. Counting those bytes would stop the
+                    # loop short of the floor it just claimed to have reached.
+                    reclaimed += status.st_size if status.st_nlink <= 1 else 0
                     deleted += 1
                 if deleted:
                     logger.warning(

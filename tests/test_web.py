@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from timelapsed.image_capture_library import _parse_image_filename
+from timelapsed.schema import CADENCES
 from timelapsed.web import THUMBNAIL_WIDTH, TimelapseCatalogue, build_server
 from tests.conftest import BASE_TIME, requires_ffmpeg
 
@@ -129,7 +130,18 @@ def test_index_lays_out_a_lane_per_cadence(base_url):
     # The whole point of the timeline: overlapping cadences get their own row.
     for cadence in (b"hourly", b"daily", b"weekly"):
         assert b'"' + cadence + b'"' in body
-    assert b'const CADENCES = ["weekly", "daily", "hourly"]' in body
+    # The lane order is injected from the registry rather than written into the
+    # page, so adding a cadence gets a lane without touching the viewer. Widest
+    # on top, which is the order the lanes are drawn in.
+    assert b'id="cadences-payload">["progress","monthly","weekly","daily","hourly"]' in body
+
+
+def test_every_registered_cadence_has_a_lane_colour(base_url):
+    """A lane whose colour is missing falls back to grey and reads as a bug."""
+    _, _, body = get(base_url + "/")
+
+    for cadence in CADENCES:
+        assert f"--{cadence}:".encode() in body
 
 
 def test_a_crafted_filename_stays_data_in_the_embedded_payload(base_url, stocked_library):

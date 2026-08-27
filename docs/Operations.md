@@ -65,12 +65,38 @@ Then, in order of likelihood:
 | Log line | Meaning | Fix |
 | --- | --- | --- |
 | `Skipping … only N frames available, minimum is 60` | Not enough stills in the window. | Lower `interval_seconds`, or lower `min_frames`. |
-| `No images found for channel 1 between … skipping weekly render` | Stills were pruned before the render ran. | Raise `image_retention_days` above your longest cadence. |
+| `No image frames found for channel 1 between … skipping weekly render` | Stills were pruned before the render ran. | Raise `image_retention_days` above your longest still-sourced cadence. |
+| `No keyframe frames found … skipping monthly render` | The keyframe track is empty or does not reach that far back. | See *No keyframes are being promoted*, below. |
 | `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Harmless on its own: the skipped window is picked up as a missing window later. If it is constant, give the VM more vCPU or reduce `output_fps` / resolution. |
 | `Channel 5 is waiting for a render slot` | `max_concurrent_renders` is doing its job. | Nothing, unless the wait outlasts the cadence. |
-| Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight UTC, weekly on Monday. |
+| Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight, weekly on Monday, monthly and progress on the 1st. |
 
-Remember all rollovers are **UTC**. A "daily" video is rendered at 00:00 UTC, not local midnight.
+Rollovers are judged on `[timelapse] timezone`, which defaults to **UTC** — so out of the box a
+"daily" video is rendered at 00:00 UTC, not at local midnight. Set the zone if you want your own
+midnight. Stored filenames stay UTC either way.
+
+### No keyframes are being promoted
+
+Keyframes are the daily frame the `monthly` and `progress` renders read. Nothing promotes them unless
+one of those cadences is enabled.
+
+```bash
+ls -l /var/lib/timelapsed/1/keyframe/ | tail
+journalctl -u timelapsed | grep -i keyframe
+stat -c '%h %n' /var/lib/timelapsed/1/keyframe/* | tail   # link count 2 while the still lives
+```
+
+| Symptom | Meaning | Fix |
+| --- | --- | --- |
+| The directory does not exist | No keyframe-sourced cadence is enabled. | Add `monthly` and/or `progress` to `cadences`. |
+| `Promoted N keyframe(s)` never appears | As above, or every day already has one. | Nothing, if the file count is growing by one a day per channel. |
+| Days missing, camera was fine | No still within `tolerance_minutes` of `[keyframe] at`. | Widen `tolerance_minutes`. Check the camera was recording at that hour. |
+| Days missing, camera was down | Expected. That day is simply absent. | Nothing to do — the stills that could have filled it are already pruned. |
+| Two frames on the same day | `[keyframe] at` was changed. | Expected for days still inside `image_retention_days`. Delete the unwanted ones by name. |
+
+**Promotion only reaches back as far as the stills survive** — eight days by default. History from
+before the daemon started promoting is not in the library and cannot be recovered from it. The NVR's
+own recordings may still have it, but getting them out is a separate job.
 
 ### There is a gap in the timeline
 
@@ -309,6 +335,7 @@ Three things with very different value:
 | --- | --- | --- |
 | `/etc/timelapsed.ini` | 1 KB | **Yes.** Holds the NVR password. |
 | `/var/lib/timelapsed/*/timelapse/` | MBs–GBs | **Yes**, if the history matters. This is the whole point of the system. |
+| `/var/lib/timelapsed/*/keyframe/` | ~500 MB/year | **Yes, most of all.** The only unrecoverable thing here: a pruned still cannot be re-promoted, and every monthly and progress video is re-renderable from these. |
 | `/var/lib/timelapsed/*/image/` | Tens of GBs | **No.** Regenerated continuously and pruned within days. |
 
 Exclude the stills from `vzdump`:
@@ -320,9 +347,12 @@ sudo -n vzdump 302 --storage local --mode snapshot --exclude-path /var/lib/timel
 To archive just the videos off-box:
 
 ```bash
-rsync -av --include='*/' --include='*/timelapse/***' --exclude='*' \
+rsync -av --include='*/' --include='*/timelapse/***' --include='*/keyframe/***' --exclude='*' \
   /var/lib/timelapsed/ backup-host:/archive/timelapsed/
 ```
+
+Note that `--exclude-path /var/lib/timelapsed/` above drops the keyframes from the `vzdump` too, so
+the `rsync` is the thing actually protecting them. Worth a cron entry rather than a one-off.
 
 ## Monitoring
 

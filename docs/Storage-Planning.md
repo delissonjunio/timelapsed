@@ -110,16 +110,47 @@ disk: shorten it or grow the disk.
 
 ## Retention and cadences interact
 
-`image_retention_days` **must be greater than your longest cadence window**:
+`image_retention_days` **must be greater than your longest still-sourced cadence window**:
 
 | Cadences enabled | Minimum `image_retention_days` |
 | --- | --- |
 | `hourly` | 1 |
 | `hourly,daily` | 2 |
 | `hourly,daily,weekly` | **8** |
+| plus `monthly,progress` | still **8** — they do not read the stills |
 
 Set it lower and pruning deletes the stills before the render reads them. Timelapsed warns at
 startup, but the render still silently produces nothing. This is the most common misconfiguration.
+
+The last row is the whole point of the keyframe track. Feeding a monthly render from the stills would
+need 32 days of them — **~380 GB for six channels at a 10 second interval**, on a 200 GB disk. So one
+still a day is hardlinked out of the capture window into `keyframe/`, and the monthly and progress
+renders read that instead.
+
+## The keyframe track costs almost nothing
+
+| Artefact | Year one, six channels | After that |
+| --- | --- | --- |
+| Keyframes, 231 KB × 365 × 6 | ~506 MB | +506 MB/yr |
+| Monthly videos, ~31 frames × 80 KB × 12 × 6 | ~178 MB | +178 MB/yr |
+| Progress videos, one per channel, capped at 360 frames | ~173 MB | flat — each render replaces the last |
+| **Total** | **~0.86 GB** | **~0.7 GB/yr** |
+
+Under half a percent of a 200 GB disk carrying ~96 GB of stills. Ten years of keyframes is 5 GB and
+still the smallest thing on the box. Inodes grow by ~2,190 a year against ~415,000 stills.
+
+And for the first eight days of its life a keyframe costs **zero bytes** — it is a second name on a
+still that already exists. Only once retention unlinks the still does the keyframe start occupying
+anything of its own.
+
+Two consequences worth knowing:
+
+* **`du` on `keyframe/` overcounts** while the stills are still there. `du` counts an inode once per
+  invocation, so `du -sh */keyframe` reports the full size but `du -sh /var/lib/timelapsed` does not
+  double-count it.
+* **Keyframes are exempt from the free-space floor.** They are the only unrecoverable artefact here,
+  and reclaiming them could not save a disk that 500 MB a year is not filling. See
+  [Configuration](Configuration.md).
 
 ## Keeping years of footage without keeping years of stills
 
@@ -129,15 +160,18 @@ The stills are the expensive part; the videos are not. The intended pattern is:
 * `timelapse_retention_days.hourly = 7` — hourly clips answer "what happened this morning", not "what happened in March"
 * `timelapse_retention_days.daily = 90` — a quarter of day-by-day history, the expensive cadence kept bounded
 * `timelapse_retention_days.weekly = 0` — the weekly archive, kept forever, at ~44 GB a year for six channels
+* `keyframe_retention_days = 0` — the multi-year record, at ~500 MB a year for six channels
 
 You end up with a permanent hourly, daily and weekly record at a fraction of a percent of the raw
-storage. If you want the raw stills archived too, sync them off the box before pruning catches
+storage, and — with `monthly,progress` enabled — a month-by-month and since-day-one record for the
+cost of rounding error. If you want the raw stills archived too, sync them off the box before pruning catches
 them — see [Operations](Operations.md).
 
 ## Watching it in practice
 
 ```bash
 du -sh /var/lib/timelapsed/*/image        # stills per channel
+du -sh /var/lib/timelapsed/*/keyframe     # the daily record (shares inodes with image/ for 8 days)
 du -sh /var/lib/timelapsed/*/timelapse    # videos per channel
 df -h /var/lib/timelapsed
 df -i /var/lib/timelapsed                 # inodes: check this too

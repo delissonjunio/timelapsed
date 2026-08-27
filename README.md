@@ -1,7 +1,8 @@
 # Timelapsed
 
 Captures stills from an ISAPI (Hikvision-compatible) NVR and renders **hourly, daily and weekly**
-timelapses, with a built-in web viewer to watch them from anywhere on your Tailnet.
+timelapses — plus **monthly and since-day-one** ones for watching a building go up — with a built-in
+web viewer to watch them from anywhere on your Tailnet.
 
 No database, no cloud dependency, no message queue. Images are files, the filename is the index,
 and `ffmpeg` does the rest.
@@ -15,6 +16,14 @@ NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image
                              │
                              ├──on hour/day/week rollover──▶ render process ──ffmpeg──▶
                              │                                {root}/{channel}/timelapse/weekly_….mp4
+                             │
+                             ├──hourly──▶ hardlink the still nearest local noon ──▶
+                             │              {root}/{channel}/keyframe/20250601_150000_UTC.jpg
+                             │                                          │
+                             │            on the 1st ──▶ render process ┘──ffmpeg──▶
+                             │                                {root}/{channel}/timelapse/monthly_….mp4
+                             │                                {root}/{channel}/timelapse/progress_….mp4
+                             │
                              └──hourly──▶ prune stills past retention
                                                                        ▼
                                                             web viewer :8080
@@ -35,6 +44,10 @@ NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image
   so the video always spans the full period and always plays at the length you asked for.
 * **Retention is enforced.** Stills are pruned hourly. Without this a 10 second interval writes
   about 2.6 GB per channel per day, forever.
+* **The long cadences read a different track.** A monthly video needs 32 days of stills — ~380 GB
+  for six channels. So one still a day, taken at a fixed local hour so the sun angle stays constant,
+  is *hardlinked* out of the capture window into a keyframe track that is kept for years. It costs
+  one inode and no bytes until retention unlinks the still, and about 500 MB a year after that.
 
 ## Quick start
 
@@ -70,8 +83,10 @@ override earlier ones key by key. Every setting is documented in
 [`timelapsed.ini.example`](timelapsed.ini.example) and in **[Configuration](docs/Configuration.md)**.
 
 The one constraint worth stating up front: **`image_retention_days` must be greater than your
-longest cadence.** A weekly render reads 7 days of stills, so retention below 8 days deletes the
-frames before the render can use them. Timelapsed warns loudly at startup if you get this wrong.
+longest *still-sourced* cadence.** A weekly render reads 7 days of stills, so retention below 8 days
+deletes the frames before the render can use them. Timelapsed warns loudly at startup if you get
+this wrong. `monthly` and `progress` are exempt — they read the keyframe track, not the stills, which
+is the whole reason that track exists.
 
 ## Documentation
 
@@ -97,7 +112,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 .venv/bin/python -m pytest
 ```
 
-227 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
+351 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
 probing the output with `ffprobe` — and fake only the NVR.
 
 ## License

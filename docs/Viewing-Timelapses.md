@@ -13,7 +13,7 @@ It serves:
 
 | Path | What it does |
 | --- | --- |
-| `/` | Grid of every rendered video, newest first, with inline playback |
+| `/` | An NVR-style timeline: one lane per cadence, a camera wall down the side, and a player |
 | `/?channel=1` | Filter to one channel |
 | `/?cadence=weekly` | Filter to one cadence |
 | `/?channel=1&cadence=daily` | Both |
@@ -24,6 +24,16 @@ It serves:
 | `/library` | People and plates, when recognition is enabled |
 | `/crop/{event\|plate}/{id}.jpg` | A recognition crop |
 | `/healthz` | Returns `ok`, for monitoring |
+
+Lanes are drawn widest-first, so with everything enabled the order top to bottom is `progress`,
+`monthly`, `weekly`, `daily`, `hourly`. Each has a colour swatch that doubles as a filter chip. The
+lane list comes from the cadence registry rather than being written into the page, so a cadence added
+in `schema.py` gets a lane without the viewer changing.
+
+Two things about the `progress` lane specifically: its clip spans the entire project, so it fills the
+width at every zoom level, and the arrow keys — which step within a cadence — have nothing to step
+to. Click it in the lane to play it. The range presets go up to `1y` and `All`, which is what you
+want for a build that has been running for months.
 
 The page is mobile-first and works in Safari on iOS, which is fussier than most browsers: it needs
 `Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled.

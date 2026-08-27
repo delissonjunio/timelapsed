@@ -29,27 +29,7 @@ memory multiplier.
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning.md).
-
-### The free-space floor
-
-Retention bounds how **old** files get, not how many **bytes** they occupy, so it cannot on its own
-promise the disk stays writable: add two cameras, point them at a more detailed scene, or let a
-video archive grow for a year and the steady state moves without any setting changing.
-
-`min_free_disk_gb` is the backstop. Every capture cycle checks free space — a `statvfs`, so it costs
-nothing — and when it falls below the floor the daemon deletes past retention until the floor is met
-again. It sacrifices in order of what cannot be recovered:
-
-1. **Stills past every render window** — free to drop; every render that could have used them has run
-2. **Hourly videos** — the most disposable history
-3. **Stills an upcoming render needs** — degrades a future video rather than destroying a finished one
-4. **Daily videos**
-5. **Weekly videos** — the archive, taken only when nothing else is left
-
-Each channel worker checks, but the deleting is serialised behind a lock file so six workers cannot
-race each other into over-deleting. When the floor still cannot be met after exhausting everything,
-it logs an error saying so — that means the configuration genuinely does not fit the disk. |
+| `interval_seconds` | yes | — | Seconds between snapshots, per channel. **This is your disk usage dial.** See [Storage Planning](Storage-Planning.md). |
 | `resolution.width` | yes | — | Requested snapshot width. |
 | `resolution.height` | yes | — | Requested snapshot height. |
 
@@ -63,9 +43,34 @@ comes back.
 | `duration_seconds` | yes | — | Target length of the rendered video. Surplus frames are sampled out, so this holds regardless of window size. |
 | `output_fps` | no | `30` | Playback frame rate. `24`–`30` looks natural; higher just costs bitrate. |
 | `min_frames` | no | `60` | Refuse to render fewer frames than this. At 30 fps, 60 frames is a 2-second video. |
-| `cadences` | no | `hourly,daily,weekly` | Which timelapses to produce. Any subset of `hourly`, `daily`, `weekly`. An unknown name is a startup error. |
+| `cadences` | no | `hourly,daily,weekly` | Which timelapses to produce. Any subset of `hourly`, `daily`, `weekly`, `monthly`, `progress`. An unknown name is a startup error. |
 | `timezone` | no | `UTC` | IANA zone name the cadences roll over on, e.g. `America/Sao_Paulo`. An unknown name is a startup error. |
+| `output_fps.<cadence>` | no | `monthly` 6, `progress` 6 | Per-cadence playback rate. |
+| `min_frames.<cadence>` | no | `monthly` 5, `progress` 10 | Per-cadence minimum. |
+| `deflicker` | no | `true` | Even out auto-exposure between frames a day apart. Keyframe-sourced renders only. |
 | `max_concurrent_renders` | no | `1` | How many renders may run at once across **all** channels. |
+
+### The construction-progress cadences
+
+`monthly` and `progress` are a different kind of video from the other three: one frame per day
+rather than one every few seconds. `monthly` covers one calendar month; `progress` covers everything
+captured so far, in one file, re-rendered on the 1st.
+
+Both read the **keyframe track** rather than the stills — see `[keyframe]` below and
+[Architecture](Architecture.md) — because a month of stills does not fit on the disk. Enabling them
+is what starts the daily promotion; until then the keyframe directory is never created.
+
+**They do not inherit `output_fps` and `min_frames`.** The baselines are tuned for a window holding
+thousands of stills, and are wrong for one frame a day in both directions: at 30 fps a 31-frame
+month plays in one second, and a 60-frame minimum would refuse to render a month that can never hold
+more than 31. `install.sh` copies the shipped template verbatim, so those baselines *are* written
+into `/etc/timelapsed.ini`, and inheriting them would silently break every monthly render. They fall
+back to their own defaults instead. An explicit `output_fps.monthly` still wins.
+
+At 6 fps a month is about five seconds and a year is about a minute. Past `duration_seconds ×
+output_fps` frames — 360 by default, so roughly a year — the progress video starts evenly sampling
+days out and holds at a fixed length rather than growing forever. If you would rather keep every day
+at any length, raise `duration_seconds`.
 
 ### Which midnight a daily closes at
 
@@ -100,14 +105,54 @@ Budget ~300 MB per concurrent render on top of the daemon itself and leave the g
 breathe; `1` is right for anything with 2 GB. Renders that cannot start are not dropped — they wait
 their turn, and anything missed is picked up as a missing window later.
 
+## `[keyframe]`
+
+The daily construction-progress frame. Only read when a keyframe-sourced cadence (`monthly`,
+`progress`) is enabled; a plain hourly/daily/weekly deployment never pays for any of this.
+
+| Key | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `at` | no | `12:00` | Local wall-clock time to take the daily frame at, as 24-hour `HH:MM`, on the `[timelapse] timezone`. An unparseable value is a startup error. |
+| `tolerance_minutes` | no | `30` | How far from `at` a stored still may be and still count as that day's frame. |
+
+### Why a time of day and not an interval
+
+A months-long timelapse lives or dies on a **constant sun angle**. Take the frame at "every 24
+hours" and it drifts; take it at local noon and every frame has the same shadows, so what moves in
+the video is the building rather than the light.
+
+Noon is the default for two reasons: the sun is highest, so shadows are shortest and seasonal drift
+is smallest; and noon exists unambiguously in every timezone, which midnight does not — some zones
+spring forward at 00:00 and that local time simply does not occur on one day of the year.
+
+Pick a different hour if the site faces east or west and gets better light off-noon. Whatever you
+pick, it needs to be an hour the cameras are actually recording.
+
+### What happens when there is no frame
+
+If no stored still falls within `tolerance_minutes` of the time — the camera was down over noon, the
+network was out, the NVR was rebooting — **that day is simply absent** from the video. There is
+nothing to retry: the stills that could have filled it are the ones being pruned.
+
+`tolerance_minutes` must be longer than `interval_seconds`, or most days will have no still close
+enough. Timelapsed warns at startup if it isn't.
+
+### Changing `at` later does not move existing keyframes
+
+Keyframes are named for the instant they were promoted *for*, so raising or lowering `at` does not
+rename what is already on disk. Days still inside `image_retention_days` will pick up a **second**
+keyframe at the new time, so those days appear twice in the next render. Set it once, before the
+archive matters.
+
 ## `[image_capture_library]`
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `root` | yes | — | Where images and videos are written. `~` is expanded. |
 | `image_retention_days` | no | `8` | Delete stills older than this. `0` means keep forever. |
+| `keyframe_retention_days` | no | `0` | Delete promoted keyframes older than this. `0` — keep forever — is the right answer; see below. |
 | `timelapse_retention_days` | no | — | Baseline video retention for every cadence. `0` means keep forever. |
-| `timelapse_retention_days.<cadence>` | no | `hourly` 7, `daily` 90, `weekly` 0 | Per-cadence override. Wins over the baseline. |
+| `timelapse_retention_days.<cadence>` | no | `hourly` 7, `daily` 90, `weekly` 0, `monthly` 0, `progress` 0 | Per-cadence override. Wins over the baseline. |
 | `min_free_disk_gb` | no | `5` | Hard floor on free space. Below it, files are deleted past retention until it is met. `0` disables. |
 
 Timelapse footage compresses badly — consecutive frames are minutes apart, so a full 1,800-frame
@@ -130,15 +175,31 @@ again. It sacrifices in order of what cannot be recovered:
 2. **Hourly videos** — the most disposable history
 3. **Stills an upcoming render needs** — degrades a future video rather than destroying a finished one
 4. **Daily videos**
-5. **Weekly videos** — the archive, taken only when nothing else is left
+5. **Progress videos** — re-renderable from keyframes, and superseded on the next rollover anyway
+6. **Monthly videos** — also re-renderable from keyframes
+7. **Weekly videos** — taken only when nothing else is left: its stills were pruned months ago, so
+   once it is gone no amount of CPU brings it back
+
+**Keyframes are never taken.** They are the one thing in the library that cannot be rebuilt — a
+pruned still cannot be re-promoted — and at ~500 MB a year against a steady state near 100 GB,
+sacrificing them buys under half a percent of the disk while destroying the beginning of the record,
+which is the part worth having.
 
 Each channel worker checks, but the deleting is serialised behind a lock file so six workers cannot
 race each other into over-deleting. When the floor still cannot be met after exhausting everything,
 it logs an error saying so — that means the configuration genuinely does not fit the disk.
 
-**`image_retention_days` must be strictly greater than your longest cadence window.** With `weekly`
-enabled, that means at least 8. If it isn't, pruning deletes the stills before the weekly render
-can read them and you get no weekly video, silently. Timelapsed checks this at startup and logs:
+One subtlety worth knowing if you read the code: a still that has been promoted is a hardlink, so
+unlinking it frees **nothing** — the inode survives under the keyframe's name. `reclaim` counts
+`st_nlink` and credits itself zero bytes for those, or it would stop short of a floor it had just
+claimed to reach.
+
+**`image_retention_days` must be strictly greater than your longest *still-sourced* cadence
+window.** With `weekly` enabled, that means at least 8. `monthly` and `progress` do not read the
+still track, so they do not constrain it — which is the entire reason the keyframe track exists.
+
+If it isn't, pruning deletes the stills before the weekly render can read them and you get no weekly
+video, silently. Timelapsed checks this at startup and logs:
 
 ```
 Configuration problem: image_retention_days (7) is not greater than the weekly cadence window
@@ -150,6 +211,20 @@ It is a warning, not a fatal error — the daemon still starts and the other cad
 
 Videos are tiny compared to stills (a 60-second 1080p timelapse is a few MB), so `0` — keep them
 forever — is the sensible default. Stills are the thing that will fill your disk.
+
+### Leave `timelapse_retention_days.progress` at 0
+
+The progress video's start is day one of the project and never moves, so an age-based retention
+deletes the **current** video as soon as that start ages out, and keeps nothing. Each render
+supersedes the last instead — there is always exactly one file, and it is always current. Timelapsed
+warns at startup if you configure a retention for it anyway.
+
+### `keyframe_retention_days` should stay at 0 too
+
+Six channels at 231 KB a day is about **500 MB a year**, and for the first eight days of its life a
+keyframe costs literally nothing — it is a second name on a still that already exists. Against that,
+they are the only unrecoverable thing in the library. Anything shorter than 32 days also stops a
+monthly render working at all, which Timelapsed warns about at startup.
 
 ## `[web]`
 

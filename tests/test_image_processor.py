@@ -14,7 +14,7 @@ def probe_video(path: Path) -> dict:
     result = subprocess.run(
         [
             "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=nb_frames,width,height,codec_name,r_frame_rate",
+            "-show_entries", "stream=nb_frames,width,height,codec_name,r_frame_rate:format=duration",
             "-of", "default=noprint_wrappers=1", str(path),
         ],
         capture_output=True, text=True, check=True,

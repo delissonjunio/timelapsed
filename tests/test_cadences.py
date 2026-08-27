@@ -77,3 +77,68 @@ def test_rollovers_follow_the_wall_clock_they_are_given():
 
     # The same two instants judged in UTC fire three hours earlier.
     assert daily.is_due(utc(2025, 6, 2, 0, 0), utc(2025, 6, 1, 12, 0)) is True
+
+
+# --- the calendar cadences -------------------------------------------------
+
+MONTHLY = CADENCES["monthly"]
+PROGRESS = CADENCES["progress"]
+
+
+@pytest.mark.parametrize("last_run, now, due", [
+    (utc(2025, 6, 1), utc(2025, 6, 30, 23, 59), False),
+    (utc(2025, 6, 30, 23, 59), utc(2025, 7, 1, 0, 1), True),
+    # A year apart in the same month is still a rollover, not a no-op.
+    (utc(2025, 6, 1), utc(2026, 6, 1), True),
+    # December to January crosses a year as well as a month.
+    (utc(2025, 12, 31), utc(2026, 1, 1), True),
+])
+def test_monthly_rollover_detection(last_run, now, due):
+    assert MONTHLY.is_due(now, last_run) is due
+
+
+def test_monthly_floors_to_the_first_of_the_month():
+    assert MONTHLY.floor(utc(2025, 2, 17, 9, 30, 15)) == utc(2025, 2, 1)
+    assert MONTHLY.floor(utc(2025, 2, 1)) == utc(2025, 2, 1)
+
+
+@pytest.mark.parametrize("year", [2024, 2025])  # leap and common
+@pytest.mark.parametrize("month", range(1, 13))
+def test_stepping_a_month_lands_on_the_next_first_and_back_again(year, month):
+    """A month is 28 to 31 days, so neither direction can be a fixed timedelta."""
+    start = MONTHLY.floor(utc(year, month, 17))
+
+    end = MONTHLY.end_of(start)
+
+    assert end == MONTHLY.floor(start + timedelta(days=40))
+    assert MONTHLY.previous_start(end) == start
+
+
+def test_february_is_not_the_nominal_window():
+    """`window` is the longest a month can be, and is never used as arithmetic."""
+    assert MONTHLY.window == timedelta(days=31)
+    assert MONTHLY.end_of(utc(2025, 2, 1)) - utc(2025, 2, 1) == timedelta(days=28)
+    assert MONTHLY.end_of(utc(2024, 2, 1)) - utc(2024, 2, 1) == timedelta(days=29)
+
+
+@pytest.mark.parametrize("name", ["hourly", "daily", "weekly"])
+def test_the_fixed_length_cadences_still_step_by_their_window(name):
+    """The default stepping has to be exactly what it was before months existed."""
+    cadence = CADENCES[name]
+    moment = cadence.floor(utc(2025, 6, 4, 15, 30))
+
+    assert cadence.end_of(moment) == moment + cadence.window
+    assert cadence.previous_start(moment) == moment - cadence.window
+
+
+def test_only_the_calendar_cadences_read_the_keyframe_track():
+    assert [name for name, c in CADENCES.items() if c.source == "keyframe"] == ["monthly", "progress"]
+    assert [name for name, c in CADENCES.items() if c.anchored] == ["progress"]
+
+
+def test_progress_turns_over_monthly_but_covers_whole_days():
+    """The trigger is the 1st; the coverage runs to yesterday, so a project that
+    started on the 10th has a video that week rather than in three weeks."""
+    assert PROGRESS.is_due(utc(2025, 7, 1), utc(2025, 6, 15)) is True
+    assert PROGRESS.is_due(utc(2025, 6, 20), utc(2025, 6, 15)) is False
+    assert PROGRESS.floor(utc(2025, 6, 15, 18, 30)) == utc(2025, 6, 15)

@@ -29,37 +29,84 @@ duration_seconds = 60
 output_fps = 30
 # Refuse to render anything shorter than this many frames.
 min_frames = 60
-# Which timelapses to produce. Any of: hourly, daily, weekly.
+# Which timelapses to produce. Any of: hourly, daily, weekly, monthly, progress.
+#
+# hourly/daily/weekly sample the captured stills. monthly and progress instead
+# read the keyframe track -- one still per day, see [keyframe] -- because a month
+# of stills does not fit on any sane disk. `monthly` is one calendar month at a
+# frame a day; `progress` is every keyframe ever captured in one video, refreshed
+# on the 1st. Those two are what a construction record is made of.
 cadences = hourly,daily,weekly
 # Wall clock the cadences roll over on, as an IANA zone name. UTC means a
 # daily closes at midnight UTC; set your own zone to have it close at your
 # midnight instead. Stored filenames stay UTC either way.
 timezone = UTC
+# Per-cadence overrides of output_fps and min_frames. The baselines above are
+# tuned for a window holding thousands of stills and are wrong for one frame a
+# day in both directions -- at 30 fps a 31-frame month plays in one second, and a
+# 60-frame minimum would refuse to render a month that can never hold more than
+# 31 -- so monthly and progress use their own defaults (6 fps, and 5 and 10
+# frames) rather than inheriting. Set these only to override that.
+#output_fps.monthly = 6
+#min_frames.monthly = 5
+# Even out the camera's auto-exposure between frames a day apart. Only ever
+# applied to the keyframe-sourced renders: in an hourly, frames are seconds apart
+# and the changing light IS the content.
+deflicker = true
 # How many renders may run at once across ALL channels. Every channel rolls over
 # at the same instant, and each 1080p ffmpeg peaks around 250 MB, so on a small
 # guest this is the difference between renders finishing and the OOM killer
 # taking them. Raise it only if there is RAM per render to spare.
 max_concurrent_renders = 1
 
+[keyframe]
+# The daily construction-progress frame: one still per channel per day, hardlinked
+# out of the capture window into a track that is kept for years. Only read when a
+# keyframe-sourced cadence (monthly, progress) is enabled.
+#
+# Local wall-clock time to take it at, on the [timelapse] timezone. Noon is the
+# default because a constant sun angle is what makes a months-long timelapse
+# watchable, and noon exists unambiguously in every zone -- which midnight does
+# not. Changing it after the fact does not move the keyframes already taken.
+at = 12:00
+# How far from `at` a stored still may be and still count as that day's frame. No
+# still within this of the time (the camera was down over noon) and that day is
+# simply absent from the video. Must be longer than interval_seconds.
+tolerance_minutes = 30
+
 [image_capture_library]
 # Where images and videos are written. Needs a lot of room; see docs/Storage-Planning.md.
 root = /var/lib/timelapsed
 # Delete captured stills older than this. 0 keeps them forever, which will fill the disk.
-# Must be GREATER than the longest cadence window: weekly renders need 7 days of stills.
+# Must be GREATER than the longest STILL-sourced cadence window: weekly renders
+# need 7 days of stills. monthly and progress do not read this track and so do not
+# constrain it.
 image_retention_days = 8
+# Delete promoted keyframes older than this. 0 keeps them forever, which is the
+# right answer: six channels at 231 KB a day is about 500 MB a YEAR, and they are
+# the one thing in the library that cannot be rebuilt -- once the still behind a
+# keyframe is pruned, that day is gone for good. Anything shorter than 32 days
+# stops a monthly render working at all.
+keyframe_retention_days = 0
 # Delete rendered videos older than this. 0 keeps them forever, and per-cadence
 # overrides win over the baseline. Timelapse footage compresses badly (frames are
 # minutes apart), so a full 60-second render is ~140 MB and daily is the cadence
-# that actually eats disk. Bound hourly and daily; keep weekly as the archive.
+# that actually eats disk. Bound hourly and daily; keep the rest as the archive.
+# Leave progress at 0: its start is day one of the project, so an age-based prune
+# would delete the current video. Each render supersedes the last instead.
 timelapse_retention_days.hourly = 7
 timelapse_retention_days.daily = 90
 timelapse_retention_days.weekly = 0
+timelapse_retention_days.monthly = 0
+timelapse_retention_days.progress = 0
 # Hard floor on free space, in GB. Retention bounds how OLD files get, not how
 # many BYTES they take, so it cannot promise the disk stays writable if the
 # channel count, image size or video archive grows. Drop below this floor and
 # the daemon deletes past retention until it is met again, sacrificing in this
 # order: stills no render still needs, hourly videos, stills an upcoming render
-# needs, daily videos, and weekly videos last. 0 disables the floor entirely.
+# needs, daily videos, progress videos, monthly videos, and weekly videos last.
+# Keyframes are never taken -- they are unrecoverable, and half a percent of the
+# disk. 0 disables the floor entirely.
 min_free_disk_gb = 5
 
 [web]

@@ -14,6 +14,8 @@ main process  (timelapsed.timelapsed:run)
         └── render-weekly-1   (short-lived, one per cadence per channel)
             render-daily-1
             render-hourly-1
+            render-monthly-1
+            render-progress-1
 
 timelapsed-analyzer  (timelapsed.analyzer:run)      -- optional, off by default
   │  reads the stills the capture workers wrote, from a per-channel watermark
@@ -51,10 +53,15 @@ accommodates this.
     image/
       20250601_120000_UTC.jpg
       20250601_120010_UTC.jpg
+    keyframe/                                 ← one per local day, hardlinked from image/
+      20250531_150000_UTC.jpg
+      20250601_150000_UTC.jpg
     timelapse/
       hourly_20250601_110000_UTC-20250601_120000_UTC.mp4
       daily_20250531_120000_UTC-20250601_120000_UTC.mp4
       weekly_20250525_120000_UTC-20250601_120000_UTC.mp4
+      monthly_20250501_030000_UTC-20250601_030000_UTC.mp4
+      progress_20250310_150000_UTC-20250601_030000_UTC.mp4
   2/
     ...
   index/                                      ← recognition only; absent unless enabled
@@ -104,11 +111,18 @@ during one write, or one broken render must not take down the daemon.
 Cadences are not timers; they are **clock rollovers**. Each worker remembers when it last ran a
 cadence and compares calendar fields:
 
-| Cadence | Fires when | Window |
-| --- | --- | --- |
-| `hourly` | `(date, hour)` differs from the last run | 1 hour |
-| `daily` | `date` differs | 24 hours |
-| `weekly` | ISO `(year, week)` differs — so, Monday | 7 days |
+| Cadence | Fires when | Window | Reads |
+| --- | --- | --- | --- |
+| `hourly` | `(date, hour)` differs from the last run | 1 hour | stills |
+| `daily` | `date` differs | 24 hours | stills |
+| `weekly` | ISO `(year, week)` differs — so, Monday | 7 days | stills |
+| `monthly` | `(year, month)` differs — so, the 1st | one calendar month | keyframes |
+| `progress` | `(year, month)` differs | everything so far | keyframes |
+
+`window` on the last two is **nominal** — 31 days, the longest a month can be. It is read only to
+order the cadences and to bound backfill; the arithmetic goes through `Cadence.previous_start` and
+`Cadence.end_of`, which know that February is 28 days (29 in a leap year). `timedelta(days=31)` as
+actual arithmetic would drift off the calendar within two months and skip February entirely.
 
 Using ISO week numbers rather than "7 days since last time" means the weekly video always covers a
 Monday-to-Monday week, and the year boundary is handled correctly (29 Dec 2025 and 1 Jan 2026 are
@@ -122,12 +136,12 @@ re-render everything; each cadence waits for its next genuine rollover.
 A rollover is the *trigger*; it is not the answer to "what should be rendered". That question is
 answered by comparing what is on disk against the clock:
 
-* Windows are **aligned to the clock** — the top of the hour, midnight UTC, Monday — so a period has
-  one canonical name no matter what second the render actually fired on.
+* Windows are **aligned to the clock** — the top of the hour, midnight, Monday, the 1st — so a
+  period has one canonical name no matter what second the render actually fired on.
 * A period is **already done** if a video of that cadence exists whose start falls inside it.
-* A period is **renderable** if it holds at least `min_frames` stills.
-* Everything else, back as far as retention still holds stills, is **missing** — and missing windows
-  are submitted newest first, at most `MAX_WINDOWS_PER_RENDER` per pass.
+* A period is **renderable** if it holds at least that cadence's `min_frames`.
+* Everything else, back as far as the cadence's own source track still holds frames, is **missing** —
+  and missing windows are submitted newest first, at most `MAX_WINDOWS_PER_RENDER` per pass.
 
 The window that just closed is simply the newest missing one, so the common case is unchanged. What
 this buys is that every other way a window can go missing now heals itself: a render killed by the
@@ -135,23 +149,73 @@ OOM killer, a `systemctl restart` landing mid-ffmpeg (renders are children of th
 with it), or a render skipped because the previous one of that cadence was still going. Each worker
 also runs one sweep at startup rather than waiting for the next rollover to notice.
 
+### The exception: an anchored render
+
+`progress` breaks the second rule, and has to. Its window starts at the oldest keyframe there is and
+that start never moves, so "does a stored video start inside this period" is true forever after the
+first render and the video would never be refreshed again.
+
+So an anchored cadence is judged on its **end** instead: the render is outstanding while nothing
+already stored reaches as far forward as the period that just closed. Each new render therefore
+covers everything the previous one did and more, which is also why age-based retention is wrong for
+it — pruning on a start that is day one of the project deletes the current video. `prune_superseded`
+drops the previous file after each successful render instead, so there is exactly one, and it is
+always current.
+
+## The keyframe track
+
+The month-long renders cannot read the stills. `image_retention_days` is 8, and raising it to 32 to
+feed a monthly video would mean ~380 GB of stills for six channels on a 200 GB disk.
+
+So one still per channel per local day is **promoted**: hardlinked from `image/` into `keyframe/`
+before retention can reach it. Because it is a hardlink on the same filesystem, promotion costs one
+inode and no bytes, and when retention unlinks the still eight days later the keyframe is simply the
+other name the inode still has. Six channels at 231 KB a day is about **500 MB a year**.
+
+Three details carry the design:
+
+* **Local noon, not a fixed interval.** A construction timelapse lives or dies on a constant sun
+  angle, so the frame is anchored to a wall-clock time (`[keyframe] at`, on the `[timelapse]`
+  timezone) and the nearest stored still within `tolerance_minutes` is the one taken. No still close
+  enough — the camera was down over noon — and that day is simply absent.
+* **Named for the instant it was promoted for**, not for the still's real capture time. That makes
+  promotion idempotent by filename and puts frames exactly 24 hours apart, so the video reads as one
+  frame a day rather than as jitter. The cost is that the name can be up to `tolerance_minutes` off
+  the true capture time.
+* **Missing-work-driven, like the renders.** `pending_keyframes` compares the local days in the
+  retention window against what is on disk, so a promotion lost to a crash or a restart heals on the
+  next pass. It runs hourly and once at startup, before the prune — a still must never be pruned in
+  the same pass it was due to be promoted in.
+
+The bound is honest and short: promotion can only reach back as far as the stills survive. **History
+before the daemon started running this way is not recoverable from the library**, because the stills
+that would have filled it are already gone.
+
+Keyframes are the one artefact here that no amount of CPU can rebuild — a monthly video can always
+be re-rendered, a pruned still cannot be re-promoted — so they are the only thing the free-space
+reclaim will never touch. At half a percent of the disk, sacrificing them could not save it anyway.
+
 ## Rendering
 
 `generate_timelapse` does four things:
 
-1. **Select the window.** All stills with a timestamp in `[start, end]`, oldest first.
+1. **Select the window.** All frames with a timestamp in `[start, end]`, oldest first, from the
+   cadence's own track — the stills, or the keyframes.
 2. **Sample down to the target frame count.** `output_fps × duration_seconds` frames, picked at
    even intervals across the whole list. This is what makes the output length predictable: a
    60-second video at 30 fps is always 1,800 frames whether the window held 720 stills or 120,000.
    If fewer stills exist than the target, all of them are used and the video is simply shorter.
-3. **Stage them** as `input-%015d.jpg`, which is the sequence pattern ffmpeg's image2 demuxer wants,
+3. **Stage them** as `input-%015d.<ext>`, which is the sequence pattern ffmpeg's image2 demuxer wants
+   — one extension for all of them, taken from the first frame, because a channel answering PNG
+   would otherwise stage names the pattern cannot match —
    in a scratch directory **inside the library** (`{root}/.render`) rather than `/tmp`. Same
    filesystem means `os.link` works, so staging 1,800 frames copies no bytes at all; `/tmp` is a
    different mount even when it is the same disk, and hardlinks do not cross mounts. Leftovers from
    a killed render are cleared at startup.
 4. **Run ffmpeg**: `libx264`, `-preset veryfast`, `-crf 23`, `-pix_fmt yuv420p` for universal
    playback, and `-movflags +faststart` so the viewer can begin playing before the file finishes
-   downloading.
+   downloading. Keyframe-sourced renders also get `-vf deflicker`, and are padded up to 24 fps on
+   the way out because a 6 fps container makes some players stutter.
 
 Below `min_frames` the render is skipped with a warning rather than producing a video that flashes
 past in a third of a second.

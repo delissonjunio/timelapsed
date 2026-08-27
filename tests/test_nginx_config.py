@@ -47,6 +47,12 @@ def stocked_library(library: ImageCaptureLibrary, tmp_path: Path) -> ImageCaptur
         ("1", "daily", 1),
         ("1", "weekly", 7),
         ("12", "daily", 2),
+        # The keyframe-sourced cadences. Included because the location regex is
+        # deliberately cadence-agnostic and nothing else proves it: a pattern
+        # naming the three original cadences would 404 these in production while
+        # every other test stayed green.
+        ("1", "monthly", 31),
+        ("1", "progress", 400),
     ]:
         starts = BASE_TIME - timedelta(days=days_ago)
         library.store_timelapse(channel_id, source, cadence, starts, starts + timedelta(hours=1))

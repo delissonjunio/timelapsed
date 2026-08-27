@@ -19,7 +19,7 @@ sudo apt install ffmpeg      # Debian/Ubuntu
 ## Running the tests
 
 ```bash
-.venv/bin/python -m pytest              # all 112
+.venv/bin/python -m pytest              # all 351
 .venv/bin/python -m pytest tests/test_image_processor.py -v
 .venv/bin/python -m pytest -k cadence
 ```
@@ -35,13 +35,19 @@ random port and drive it with `urllib`.
 
 | File | Covers |
 | --- | --- |
-| `test_config.py` | INI parsing, path precedence, defaults, cadence validation, the retention/cadence warning |
-| `test_image_capture_library.py` | Filename round-tripping, chronological sort, window queries, nearest-match lookup, pruning |
+| `test_config.py` | INI parsing, path precedence, defaults, cadence validation, the retention/cadence warnings, the shipped template |
+| `test_image_capture_library.py` | Filename round-tripping, chronological sort, window queries, nearest-match lookup, pruning, the reclaim ladder |
+| `test_keyframes.py` | Daily promotion, the hardlink surviving a prune, calendar-month windows, the cumulative render |
 | `test_image_processor.py` | Frame sampling maths, real renders, frame counts verified with `ffprobe`, temp-directory cleanup |
 | `test_nvr_capture_agent.py` | URL construction, digest auth, timeouts, retries, non-image rejection, password never logged |
-| `test_cadences.py` | Hour/day/ISO-week rollover, including the year boundary |
+| `test_cadences.py` | Hour/day/ISO-week/calendar-month rollover, the year boundary, stepping across unequal months |
 | `test_daemon.py` | The capture loop with a frozen clock, failure tolerance, pruning, render scheduling, picklability |
 | `test_web.py` | Catalogue filtering, HTTP routes, Range requests, path traversal |
+| `test_analysis_pipeline.py` | Detection, event grouping, re-identification, plate voting |
+| `test_analysis_index.py` | The recognition index: schema, queries, retention |
+| `test_identities.py` | Naming and merging identities |
+| `test_web_recognition.py` | The recognition routes and the activity lanes |
+| `test_nginx_config.py` | The generated nginx config: routes, headers, what stays proxied |
 
 The clock is frozen in `test_daemon.py` by patching `timelapsed.timelapsed.datetime` and driving
 `time.sleep`, so a test covering a week of rollovers runs in milliseconds.
@@ -55,9 +61,10 @@ timelapsed/
   config.py                 INI loading, cadence parsing, validate_config()
   schema.py                 Config, VideoResolution, Cadence, the CADENCES registry
   nvr_capture_agent.py      HTTP snapshot fetching
-  image_capture_library.py  filesystem store: naming, queries, pruning
+  image_capture_library.py  filesystem store: naming, queries, promotion, pruning
   image_processor.py        frame selection and ffmpeg invocation
   web.py                    the viewer (standard library only, plus the recognition API)
+  library_page.py           the people and plates page
   analyzer.py               the recognition daemon: run(), run_once(), prune()
   analysis/
     index.py                SQLite schema and queries
@@ -81,24 +88,45 @@ and `pipeline.py` wires them together without either knowing where crops live.
 
 ## Adding a cadence
 
-Cadences are data, not code branches. To add, say, a monthly render:
+Cadences are data, not code branches. A `Cadence` is a name, a nominal window, a rollover
+predicate, a floor, and then a handful of defaulted fields for the cases that do not fit "a period
+is exactly `window` long, sampled from the stills".
 
-1. Add a rollover predicate in `schema.py`:
+To add a fortnightly render, in `schema.py`:
 
-   ```python
-   def _month_rolled_over(now: datetime, last_run: datetime) -> bool:
-       return (now.year, now.month) != (last_run.year, last_run.month)
-   ```
+```python
+def _fortnight_rolled_over(now: datetime, last_run: datetime) -> bool:
+    return (now.isocalendar().year, now.isocalendar().week // 2) != \
+           (last_run.isocalendar().year, last_run.isocalendar().week // 2)
 
-2. Register it:
+CADENCES["fortnightly"] = Cadence(
+    "fortnightly", timedelta(days=14), _fortnight_rolled_over, _floor_to_fortnight,
+)
+```
 
-   ```python
-   CADENCES["monthly"] = Cadence("monthly", timedelta(days=30), _month_rolled_over)
-   ```
+For that shape, nothing else changes. `validate_config` starts warning when `image_retention_days`
+is too low to feed it, the daemon schedules it, and the viewer gets a lane, a colour lookup and a
+filter chip from the registry — the cadence list is injected into the page rather than written into
+it. Add a case to `test_cadences.py`, and a CSS custom property named after the cadence at
+`web.py:198`, which `test_every_registered_cadence_has_a_lane_colour` will otherwise fail on.
 
-Nothing else changes. `validate_config` will automatically start warning when
-`image_retention_days` is too low to feed it, the daemon will schedule it, and the viewer will
-offer it as a filter chip. Add a case to `test_cadences.py`.
+The defaulted fields exist for the cadences that are not that shape:
+
+| Field | Default | When you need it |
+| --- | --- | --- |
+| `source` | `"image"` | Reading the keyframe track instead of the stills. Anything longer than `image_retention_days` has to. |
+| `step_back` / `step_forward` | `± window` | Periods of unequal length. A month is 28 to 31 days, so `window` becomes nominal and the arithmetic goes through these. |
+| `min_frames` / `output_fps` | the `[timelapse]` baselines | See `_parse_render_overrides` in `config.py`: a keyframe cadence does **not** inherit the baselines, because they are written explicitly into the shipped ini and are wrong for one frame a day. |
+| `anchored` | `False` | A cumulative render, whose start is pinned to the oldest frame and never moves. Read the `anchored` branch of `pending_render_windows` before adding another. |
+
+An `anchored` cadence needs care in three places, all of which have a named regression test:
+
+* **Done-ness is on the end, not the start.** `rendered_window_starts` would latch true after the
+  first render and never fire again. It uses `rendered_windows` instead.
+* **Age-based retention deletes it.** Its start is day one of the project, so `prune` would take the
+  current video. The capture loop skips anchored cadences and `prune_superseded` drops the previous
+  file after each successful render instead.
+* **`validate_config` warns** if you configure `timelapse_retention_days.<name>` for it anyway.
 
 ## Conventions
 

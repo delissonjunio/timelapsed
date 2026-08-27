@@ -1,11 +1,12 @@
 import logging
-from datetime import timedelta
+from datetime import time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from timelapsed.config import get_config, validate_config
+from timelapsed.schema import CADENCES
 
 FULL_CONFIG = """
 [nvr]
@@ -220,3 +221,190 @@ def test_an_unknown_timezone_is_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Unknown timelapse timezone"):
         get_config((str(path),))
+
+
+# --- the keyframe track and the calendar cadences ---------------------------
+
+KEYFRAME_CONFIG = MINIMAL_CONFIG.replace(
+    "duration_seconds = 30",
+    "duration_seconds = 30\n"
+    "cadences = hourly, daily, weekly, monthly, progress\n"
+    "timezone = America/Sao_Paulo\n"
+    "output_fps = 30\n"
+    "min_frames = 60\n",
+).replace(
+    "root = /var/lib/timelapsed",
+    "root = /var/lib/timelapsed\n\n[keyframe]\nat = 09:30\ntolerance_minutes = 45\n",
+)
+
+
+def test_keyframe_settings_have_working_defaults(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", MINIMAL_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.keyframe_at == time(12, 0)  # local noon
+    assert config.keyframe_tolerance == timedelta(minutes=30)
+    assert config.keyframe_retention is None  # 0 days means keep forever
+    assert config.deflicker_keyframe_renders is True
+
+
+def test_keyframe_settings_are_read(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", KEYFRAME_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.keyframe_at == time(9, 30)
+    assert config.keyframe_tolerance == timedelta(minutes=45)
+
+
+@pytest.mark.parametrize("raw", ["25:00", "noon", "12", "12:00:00"])
+def test_an_unparseable_keyframe_time_is_a_startup_error(tmp_path: Path, raw):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG.replace(
+            "root = /var/lib/timelapsed",
+            "root = /var/lib/timelapsed\n\n[keyframe]\nat = " + raw + "\n",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unknown keyframe time"):
+        get_config((str(path),))
+
+
+def test_the_calendar_cadences_do_not_inherit_the_render_baselines(tmp_path: Path):
+    """The shipped ini writes `output_fps = 30` and `min_frames = 60` explicitly.
+
+    Inheriting those would play a 31-frame month in one second and then refuse to
+    render it at all, so a keyframe cadence falls back to its own defaults.
+    """
+    path = write_config(tmp_path / "timelapsed.ini", KEYFRAME_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.output_fps_for("weekly") == 30
+    assert config.min_frames_for("weekly") == 60
+    assert config.output_fps_for("monthly") == 6
+    assert config.min_frames_for("monthly") == 5
+
+
+def test_an_explicit_per_cadence_render_override_still_wins(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        KEYFRAME_CONFIG.replace(
+            "min_frames = 60\n",
+            "min_frames = 60\nmin_frames.monthly = 20\noutput_fps.monthly = 12\n",
+        ),
+    )
+
+    config = get_config((str(path),))
+
+    assert config.min_frames_for("monthly") == 20
+    assert config.output_fps_for("monthly") == 12
+
+
+def test_a_keyframe_cadence_does_not_stretch_the_protected_window(tmp_path: Path):
+    """The regression guard for the two things `longest_cadence_window` feeds.
+
+    A 31-day monthly window would make `validate_config` demand 32 days of stills
+    -- ~380 GB for six channels -- and would hand `reclaim` a protected window so
+    long that its first and cheapest tier, stills no render will ever read again,
+    is permanently empty.
+    """
+    path = write_config(tmp_path / "timelapsed.ini", KEYFRAME_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert [c.name for c in config.timelapse_cadences] == [
+        "hourly", "daily", "weekly", "monthly", "progress"
+    ]
+    assert config.longest_cadence_window == timedelta(days=7)
+    assert config.longest_image_cadence.name == "weekly"
+    assert not any("monthly" in warning for warning in validate_config(config))
+
+
+def _with_calendar_cadences(config):
+    config.image_retention = timedelta(days=8)
+    names = ["hourly", "daily", "weekly", "monthly", "progress"]
+    config.timelapse_cadences = [CADENCES[name] for name in names]
+    config.timelapse_retention = {name: None for name in names}
+    config.timelapse_output_fps_by_cadence = {"monthly": 6, "progress": 6}
+    config.timelapse_min_frames_by_cadence = {"monthly": 5, "progress": 10}
+    return config
+
+
+def test_validate_is_quiet_with_the_calendar_cadences_enabled(config):
+    assert validate_config(_with_calendar_cadences(config)) == []
+
+
+def test_validate_warns_when_keyframes_expire_before_a_month_is_up(config):
+    _with_calendar_cadences(config).keyframe_retention = timedelta(days=10)
+
+    assert any("keyframe_retention_days" in warning for warning in validate_config(config))
+
+
+def test_validate_warns_when_the_keyframe_tolerance_is_below_the_capture_interval(config):
+    config = _with_calendar_cadences(config)
+    config.capture_interval = timedelta(minutes=10)
+    config.keyframe_tolerance = timedelta(minutes=1)
+
+    assert any("tolerance_minutes" in warning for warning in validate_config(config))
+
+
+def test_validate_warns_when_a_month_would_flash_past(config):
+    config = _with_calendar_cadences(config)
+    config.timelapse_output_fps_by_cadence = {"monthly": 30, "progress": 6}
+
+    assert any("output_fps for the monthly" in warning for warning in validate_config(config))
+
+
+def test_validate_warns_when_a_month_could_never_reach_min_frames(config):
+    config = _with_calendar_cadences(config)
+    config.timelapse_min_frames_by_cadence = {"monthly": 31, "progress": 10}
+
+    assert any("February" in warning for warning in validate_config(config))
+
+
+def test_validate_warns_when_the_progress_video_is_given_an_age_based_retention(config):
+    """Its start is day one of the project, so pruning on age deletes the current one."""
+    config = _with_calendar_cadences(config)
+    config.timelapse_retention["progress"] = timedelta(days=90)
+
+    assert any("supersedes" in warning for warning in validate_config(config))
+
+
+# --- the shipped template ---------------------------------------------------
+
+EXAMPLE_INI = Path(__file__).resolve().parent.parent / "timelapsed.ini.example"
+
+
+def test_the_shipped_template_loads_and_validates_clean(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", EXAMPLE_INI.read_text())
+
+    config = get_config((str(path),))
+
+    assert [c.name for c in config.timelapse_cadences] == ["hourly", "daily", "weekly"]
+    assert config.keyframe_at == time(12, 0)
+    assert config.keyframe_retention is None
+    assert validate_config(config) == []
+
+
+def test_the_shipped_template_validates_clean_with_the_calendar_cadences_on(tmp_path: Path):
+    """`install.sh` copies this file verbatim, so it writes `output_fps = 30` and
+    `min_frames = 60` into /etc. If the calendar cadences inherited those, turning
+    them on would play a month in one second and then refuse to render it."""
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        EXAMPLE_INI.read_text().replace(
+            "cadences = hourly,daily,weekly", "cadences = hourly,daily,weekly,monthly,progress"
+        ),
+    )
+
+    config = get_config((str(path),))
+
+    assert config.output_fps_for("monthly") == 6
+    assert config.output_fps_for("weekly") == 30
+    assert config.min_frames_for("monthly") == 5
+    assert config.min_frames_for("weekly") == 60
+    assert config.longest_cadence_window == timedelta(days=7)
+    assert validate_config(config) == []

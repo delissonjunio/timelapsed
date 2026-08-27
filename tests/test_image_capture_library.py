@@ -314,3 +314,159 @@ def test_images_after_ignores_files_that_are_not_stills(library, populate_images
 
 def test_images_after_on_an_unknown_channel_is_empty(library):
     assert library.images_after("nope", None, BASE_TIME, limit=100) == []
+# --- the keyframe track ----------------------------------------------------
+
+def test_retrieve_images_within_reads_the_track_it_is_asked_for(library, populate_keyframes):
+    promoted = populate_keyframes("1", count=5, end=BASE_TIME, keep_stills=False)
+
+    keyframes = library.retrieve_images_within(
+        "1", promoted[0], promoted[-1], target_name="keyframe"
+    )
+
+    assert len(keyframes) == 5
+    assert library.retrieve_images_within("1", promoted[0], promoted[-1]) == []
+
+
+def test_frame_entries_hands_back_times_and_paths_together(library, populate_keyframes):
+    promoted = populate_keyframes("1", count=3, end=BASE_TIME)
+
+    entries = library.frame_entries("1", "keyframe")
+
+    assert [timestamp for timestamp, _ in entries] == promoted
+    assert all(path.is_file() for _, path in entries)
+
+
+def test_promoting_twice_leaves_one_keyframe(library, jpeg_bytes):
+    still = library.store_image("1", "jpg", jpeg_bytes, BASE_TIME)
+
+    library.store_keyframe("1", still, BASE_TIME)
+    library.store_keyframe("1", still, BASE_TIME)
+
+    assert library.image_timestamps("1", "keyframe") == [BASE_TIME]
+
+
+def test_a_keyframe_can_be_named_for_a_different_instant_than_its_still(library, jpeg_bytes):
+    """It is named for the noon it was promoted for, so frames land 24h apart."""
+    still = library.store_image("1", "jpg", jpeg_bytes, BASE_TIME + timedelta(minutes=17))
+
+    keyframe = library.store_keyframe("1", still, BASE_TIME)
+
+    assert library.image_timestamps("1", "keyframe") == [BASE_TIME]
+    assert keyframe.stat().st_ino == still.stat().st_ino
+
+
+def test_keyframes_are_pruned_on_their_own_retention(library, populate_keyframes):
+    populate_keyframes("1", count=10, end=BASE_TIME, keep_stills=False)
+
+    deleted = library.prune("1", "keyframe", timedelta(days=4), BASE_TIME)
+
+    assert deleted == 5
+    assert min(library.image_timestamps("1", "keyframe")) >= BASE_TIME - timedelta(days=4)
+
+
+# --- anchored renders ------------------------------------------------------
+
+def test_rendered_windows_keeps_the_end_that_rendered_window_starts_throws_away(
+    library, tmp_path: Path
+):
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 100)
+    start, end = BASE_TIME - timedelta(days=90), BASE_TIME
+    library.store_timelapse("1", source, "progress", start, end)
+
+    assert library.rendered_windows("1", "progress") == [(start, end)]
+    assert library.rendered_window_starts("1", "progress") == [start]
+
+
+def test_prune_superseded_keeps_the_video_that_reaches_furthest(library, tmp_path: Path):
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 100)
+    start = BASE_TIME - timedelta(days=90)
+    for days in (10, 40, 70):
+        library.store_timelapse("1", source, "progress", start, start + timedelta(days=days))
+    library.store_timelapse("1", source, "weekly", start, start + timedelta(days=7))
+
+    deleted = library.prune_superseded("1", "progress")
+
+    assert deleted == 2
+    assert library.rendered_windows("1", "progress") == [(start, start + timedelta(days=70))]
+    assert len(library.rendered_windows("1", "weekly")) == 1
+
+
+def test_prune_superseded_is_a_no_op_on_a_single_video(library, tmp_path: Path):
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 100)
+    library.store_timelapse("1", source, "progress", BASE_TIME - timedelta(days=90), BASE_TIME)
+
+    assert library.prune_superseded("1", "progress") == 0
+    assert len(library.rendered_windows("1", "progress")) == 1
+
+
+# --- reclaim, once stills have a second name -------------------------------
+
+@pytest.fixture
+def promoted_library(stocked_library):
+    """Every still in the stocked library also promoted, as a live channel would be."""
+    for channel_id in ("1", "2"):
+        for timestamp, path in stocked_library.frame_entries(channel_id, "image"):
+            stocked_library.store_keyframe(channel_id, path, timestamp)
+    return stocked_library
+
+
+def test_reclaim_never_takes_keyframes(promoted_library, monkeypatch):
+    """They are the one thing here no amount of CPU can rebuild.
+
+    A pruned still cannot be re-promoted, and at ~500 MB a year against a steady
+    state near 100 GB, sacrificing them buys under half a percent of the disk
+    while destroying the beginning of the record.
+    """
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    promoted_library.reclaim(["1", "2"], 10_000_000, timedelta(days=7), BASE_TIME)
+
+    for channel_id in ("1", "2"):
+        assert len(_surviving(promoted_library, channel_id, "keyframe")) == 12
+
+
+def test_reclaim_does_not_count_bytes_a_hardlink_still_holds(promoted_library, monkeypatch):
+    """Unlinking a promoted still frees nothing: the inode lives on as the keyframe.
+
+    Counting those bytes would stop the ladder at the first tier while the floor
+    it just claimed to have reached was never actually met.
+    """
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    # 3000 bytes is fewer than the 16 expendable stills hold, so on an unpromoted
+    # library the ladder stops in tier one with every video untouched.
+    reclaimed = promoted_library.reclaim(["1", "2"], 3000, timedelta(days=7), BASE_TIME)
+
+    assert reclaimed >= 3000
+    # It had to walk past the stills into the videos, because unlinking a
+    # promoted still bought nothing. Count the bytes and the ladder would have
+    # stopped in tier one with all 36 videos untouched.
+    assert len(_surviving(promoted_library, "1", "timelapse")) < 36
+
+
+def test_reclaim_spends_the_regenerable_videos_before_the_weekly_archive(
+    stocked_library, tmp_path: Path, monkeypatch
+):
+    """Monthly and progress videos can be re-rendered from keyframes. A weekly cannot:
+    its stills were pruned months ago."""
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 1000)
+    for channel_id in ("1", "2"):
+        for age_days in range(12):
+            taken_at = BASE_TIME - timedelta(days=age_days)
+            for cadence in ("monthly", "progress"):
+                stocked_library.store_timelapse(
+                    channel_id, source, cadence, taken_at, taken_at + timedelta(hours=1)
+                )
+    monkeypatch.setattr(icl_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0, total=0, used=0))
+
+    # Everything except part of the weekly archive: 24 stills and 120 videos.
+    stocked_library.reclaim(["1", "2"], 128_000, timedelta(days=7), BASE_TIME)
+
+    for channel_id in ("1", "2"):
+        assert _surviving(stocked_library, channel_id, "timelapse", "monthly") == []
+        assert _surviving(stocked_library, channel_id, "timelapse", "progress") == []
+        assert len(_surviving(stocked_library, channel_id, "timelapse", "weekly")) < 12

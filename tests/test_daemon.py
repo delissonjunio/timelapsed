@@ -2,6 +2,7 @@
 import multiprocessing
 import time
 from datetime import datetime, timedelta, timezone
+from datetime import time as time_of_day
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -59,22 +60,30 @@ def fast_worker(monkeypatch):
         monkeypatch.setattr("timelapsed.timelapsed.datetime", FrozenDatetime)
 
         submitted = []
-        rendered: dict[str, list[datetime]] = {}
+        rendered: dict[str, list[tuple[datetime, datetime]]] = {}
 
         def record(self, cadence, windows):
             for start_time, end_time in windows:
                 submitted.append((cadence.name, self.channel_id, start_time, end_time))
-                rendered.setdefault(cadence.name, []).append(start_time)
+                rendered.setdefault(cadence.name, []).append((start_time, end_time))
             return bool(windows)
 
         monkeypatch.setattr(RenderScheduler, "submit", record)
         # A real render leaves a video behind, and that video is how the next
         # pass knows the window is done. Nothing renders here, so stand in for it
         # or every rollover would re-submit every window it has already seen.
+        # Both accessors: an anchored cadence is judged on the end, not the start.
+        monkeypatch.setattr(
+            ImageCaptureLibrary,
+            "rendered_windows",
+            lambda self, channel_id, cadence_name: sorted(rendered.get(cadence_name, [])),
+        )
         monkeypatch.setattr(
             ImageCaptureLibrary,
             "rendered_window_starts",
-            lambda self, channel_id, cadence_name: sorted(rendered.get(cadence_name, [])),
+            lambda self, channel_id, cadence_name: sorted(
+                starts for starts, _ in rendered.get(cadence_name, [])
+            ),
         )
         monkeypatch.setattr(RenderScheduler, "shutdown", lambda self, timeout=30.0: None)
 
@@ -405,3 +414,80 @@ def test_pending_windows_on_utc_are_unchanged_by_the_default(config, library):
         datetime(2025, 6, 1, tzinfo=timezone.utc),
         datetime(2025, 6, 2, tzinfo=timezone.utc),
     )
+
+
+# --- keyframe promotion in the capture loop --------------------------------
+
+def _with_keyframe_cadences(config, *names):
+    config.timelapse_cadences = [CADENCES[name] for name in names]
+    config.timelapse_retention = {name: None for name in names}
+    config.keyframe_at = time_of_day(12, 0)  # BASE_TIME is 12:00 UTC
+    config.keyframe_retention = None
+    return config
+
+
+def test_worker_promotes_the_daily_keyframe(config, library, fast_worker):
+    _with_keyframe_cadences(config, "hourly", "monthly", "progress")
+
+    fast_worker(config, library, FakeCaptureAgent(), cycles=3)
+
+    assert library.image_timestamps("1", "keyframe") == [BASE_TIME]
+
+
+def test_a_config_with_no_keyframe_cadence_never_promotes(config, library, fast_worker):
+    """A plain hourly/daily/weekly deployment must not pay for a track it never reads."""
+    fast_worker(config, library, FakeCaptureAgent(), cycles=3)
+
+    assert not (library.root_path / "1" / "keyframe").exists()
+
+
+def test_startup_promotes_before_it_looks_for_missing_renders(
+    config, library, fast_worker, jpeg_bytes
+):
+    """The renders scheduled on the first pass read the keyframe track, so the
+    promotion has to already have happened by then.
+
+    This is also the restart story: renders are children of the unit, so a
+    restart mid-ffmpeg kills them, and the worker's first act is to look for what
+    is missing rather than wait for the next rollover.
+    """
+    _with_keyframe_cadences(config, "progress")
+    config.timelapse_min_frames_by_cadence = {"progress": 3}
+    config.image_retention = timedelta(days=10)
+    for day in range(5):
+        library.store_image("1", "jpg", jpeg_bytes, BASE_TIME - timedelta(days=day))
+
+    submitted = fast_worker(config, library, FakeCaptureAgent(), cycles=2)
+
+    assert len(library.image_timestamps("1", "keyframe")) == 5
+    assert [name for name, *_ in submitted] == ["progress"]
+
+
+def test_the_progress_video_is_not_pruned_on_age(config, library, fast_worker, tmp_path):
+    """Its start is day one of the project, so an age-based prune would delete the
+    current video and keep nothing. It is superseded on each render instead."""
+    _with_keyframe_cadences(config, "progress")
+    config.timelapse_retention = {"progress": timedelta(days=1)}
+    source = tmp_path / "render.mp4"
+    source.write_bytes(b"v" * 100)
+    library.store_timelapse("1", source, "progress", BASE_TIME - timedelta(days=90), BASE_TIME)
+
+    fast_worker(config, library, FakeCaptureAgent(), cycles=3)
+
+    # Read the directory, not `rendered_windows`: the fixture stubs that out.
+    survivors = list((library.root_path / "1" / "timelapse").iterdir())
+    assert [path.stem.split("_")[0] for path in survivors] == ["progress"]
+
+
+def test_keyframes_are_pruned_on_their_own_retention_by_the_worker(
+    config, library, fast_worker, jpeg_bytes
+):
+    _with_keyframe_cadences(config, "monthly")
+    config.keyframe_retention = timedelta(days=3)
+    for day in range(8):
+        still = library.store_image("1", "jpg", jpeg_bytes, BASE_TIME - timedelta(days=day))
+        library.store_keyframe("1", still, BASE_TIME - timedelta(days=day))
+
+    fast_worker(config, library, FakeCaptureAgent(), cycles=3)
+
+    assert min(library.image_timestamps("1", "keyframe")) >= BASE_TIME - timedelta(days=3)
