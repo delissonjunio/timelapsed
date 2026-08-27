@@ -64,7 +64,31 @@ comes back.
 | `output_fps` | no | `30` | Playback frame rate. `24`–`30` looks natural; higher just costs bitrate. |
 | `min_frames` | no | `60` | Refuse to render fewer frames than this. At 30 fps, 60 frames is a 2-second video. |
 | `cadences` | no | `hourly,daily,weekly` | Which timelapses to produce. Any subset of `hourly`, `daily`, `weekly`. An unknown name is a startup error. |
+| `timezone` | no | `UTC` | IANA zone name the cadences roll over on, e.g. `America/Sao_Paulo`. An unknown name is a startup error. |
 | `max_concurrent_renders` | no | `1` | How many renders may run at once across **all** channels. |
+
+### Which midnight a daily closes at
+
+`timezone` decides the wall clock a period is measured on. On the default `UTC` a daily covers
+midnight to midnight UTC; set `America/Sao_Paulo` and it covers midnight to midnight in Sao Paulo,
+which is 03:00 UTC to 03:00 UTC. Either way it is a full, contiguous 24 hours — the window slides,
+it does not shrink, so consecutive dailies still meet exactly. `hourly` is unaffected outside the
+half-hour zones, and `weekly` still turns over on Monday, just a local one.
+
+Stored filenames stay UTC regardless. The library stamps them with `%Z` and reads them back as UTC,
+and `parse_timelapse_filename` splits the window on `-`, so a zone abbreviated `-03` would not
+survive the round trip. Only the choice of period moves; the timestamps written to disk do not.
+
+Rollovers are detected, not scheduled: the daemon notices the clock has entered a new period on its
+next capture cycle, so a render lands within one `interval_seconds` of the boundary rather than
+exactly on it.
+
+**Changing this setting re-renders recent history.** Windows are offered by what is missing, and a
+day rendered on the old boundaries does not fill a window on the new ones, so the daemon will work
+back through what it can still see — bounded by `image_retention_days`, the cadence's own retention
+and a 30-day ceiling, at four windows per pass. The videos made on the old alignment stay until
+retention expires them, so the viewer shows both for a while. Nothing is lost and no window is
+skipped; it just costs some ffmpeg time. Set it once, before the archive matters.
 
 `duration_seconds × output_fps` is the target frame count. The renderer picks that many stills,
 evenly spaced across the whole window. If the window holds fewer, all are used and the video comes
@@ -169,6 +193,7 @@ duration_seconds = 60
 output_fps = 30
 min_frames = 60
 cadences = hourly,daily,weekly
+timezone = UTC
 max_concurrent_renders = 1
 
 [image_capture_library]

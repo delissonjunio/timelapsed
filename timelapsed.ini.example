@@ -31,6 +31,10 @@ output_fps = 30
 min_frames = 60
 # Which timelapses to produce. Any of: hourly, daily, weekly.
 cadences = hourly,daily,weekly
+# Wall clock the cadences roll over on, as an IANA zone name. UTC means a
+# daily closes at midnight UTC; set your own zone to have it close at your
+# midnight instead. Stored filenames stay UTC either way.
+timezone = UTC
 # How many renders may run at once across ALL channels. Every channel rolls over
 # at the same instant, and each 1080p ffmpeg peaks around 250 MB, so on a small
 # guest this is the difference between renders finishing and the OOM killer

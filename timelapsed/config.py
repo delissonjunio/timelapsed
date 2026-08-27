@@ -1,13 +1,17 @@
 import configparser
 import logging
-from datetime import timedelta
+from datetime import timedelta, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from timelapsed.schema import CADENCES, Cadence, Config, VideoResolution
 
 CONFIG_PATHS = ("/etc/timelapsed.ini", "~/.timelapsed.ini", "./timelapsed.ini")
 
 DEFAULT_CADENCES = "hourly,daily,weekly"
+# UTC keeps rollovers deterministic and DST-free. Set a real zone when the
+# videos are for people, who expect a "daily" to start at their own midnight.
+DEFAULT_TIMEZONE = "UTC"
 DEFAULT_IMAGE_RETENTION_DAYS = 8
 # Timelapse footage compresses badly, so a full 60-second render is ~140 MB and
 # daily is the expensive cadence. Bound hourly and daily, keep weekly forever.
@@ -46,6 +50,18 @@ def _parse_timelapse_retention(
         days = parser.getint(section, f"timelapse_retention_days.{cadence.name}", fallback=fallback)
         retention[cadence.name] = timedelta(days=days) if days > 0 else None
     return retention
+
+
+def _parse_timezone(raw: str) -> tzinfo:
+    """The wall clock cadence rollovers are judged against, as an IANA zone name."""
+    name = raw.strip()
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(
+            f"Unknown timelapse timezone: {name!r}. Use an IANA zone name such as "
+            f"'UTC' or 'America/Sao_Paulo'."
+        ) from error
 
 
 def _parse_cadences(raw: str) -> list[Cadence]:
@@ -121,6 +137,7 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         timelapse_output_fps=parser.getint("timelapse", "output_fps", fallback=30),
         timelapse_min_frames=parser.getint("timelapse", "min_frames", fallback=60),
         timelapse_cadences=cadences,
+        render_timezone=_parse_timezone(parser.get("timelapse", "timezone", fallback=DEFAULT_TIMEZONE)),
         max_concurrent_renders=max(
             1, parser.getint("timelapse", "max_concurrent_renders", fallback=DEFAULT_MAX_CONCURRENT_RENDERS)
         ),

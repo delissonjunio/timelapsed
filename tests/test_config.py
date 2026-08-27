@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -187,3 +188,35 @@ def test_timelapse_retention_defaults_are_per_cadence(tmp_path: Path):
     assert config.retention_for("hourly") == timedelta(days=7)
     assert config.retention_for("daily") == timedelta(days=90)
     assert config.retention_for("weekly") is None
+
+
+def test_timezone_defaults_to_utc(tmp_path: Path):
+    """Absent config, rollovers stay on UTC: deterministic, and free of DST."""
+    path = write_config(tmp_path / "timelapsed.ini", MINIMAL_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.render_timezone == ZoneInfo("UTC")
+
+
+def test_timezone_is_read_as_an_iana_zone(tmp_path: Path):
+    source = FULL_CONFIG.format(root=tmp_path / "library").replace(
+        "cadences = weekly, hourly, daily",
+        "cadences = weekly, hourly, daily\ntimezone = America/Sao_Paulo",
+    )
+    path = write_config(tmp_path / "timelapsed.ini", source)
+
+    config = get_config((str(path),))
+
+    assert config.render_timezone == ZoneInfo("America/Sao_Paulo")
+
+
+def test_an_unknown_timezone_is_rejected(tmp_path: Path):
+    source = FULL_CONFIG.format(root=tmp_path / "library").replace(
+        "cadences = weekly, hourly, daily",
+        "cadences = weekly, hourly, daily\ntimezone = Mars/Olympus_Mons",
+    )
+    path = write_config(tmp_path / "timelapsed.ini", source)
+
+    with pytest.raises(ValueError, match="Unknown timelapse timezone"):
+        get_config((str(path),))

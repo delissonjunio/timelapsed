@@ -1,5 +1,6 @@
 """Rollover logic for the hourly / daily / weekly renders."""
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -8,6 +9,9 @@ from timelapsed.schema import CADENCES
 
 def utc(*args) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
+
+
+SAO_PAULO = ZoneInfo("America/Sao_Paulo")  # UTC-3, no DST since 2019
 
 
 @pytest.mark.parametrize("name, expected_window", [
@@ -58,3 +62,18 @@ def test_a_long_outage_makes_every_cadence_due():
     now = utc(2025, 6, 1)
 
     assert all(cadence.is_due(now, last_run) for cadence in CADENCES.values())
+
+
+def test_rollovers_follow_the_wall_clock_they_are_given():
+    """The predicates read the zone their datetimes carry, which is what lets the
+    daemon close a "daily" at local midnight instead of at midnight UTC."""
+    daily = CADENCES["daily"]
+    last_run = utc(2025, 6, 1, 12, 0).astimezone(SAO_PAULO)  # 09:00 on the 1st, locally
+
+    # Midnight UTC is 21:00 on the 1st in Sao Paulo: still the same local day.
+    assert daily.is_due(utc(2025, 6, 2, 0, 0).astimezone(SAO_PAULO), last_run) is False
+    # 03:00 UTC is the local midnight, and that is where the day turns over.
+    assert daily.is_due(utc(2025, 6, 2, 3, 0).astimezone(SAO_PAULO), last_run) is True
+
+    # The same two instants judged in UTC fire three hours earlier.
+    assert daily.is_due(utc(2025, 6, 2, 0, 0), utc(2025, 6, 1, 12, 0)) is True

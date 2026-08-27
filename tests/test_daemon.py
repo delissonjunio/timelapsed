@@ -2,6 +2,7 @@
 import multiprocessing
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -152,6 +153,24 @@ def test_worker_renders_daily_and_weekly_with_the_right_windows(config, library,
     assert windows["daily"] == timedelta(days=1)
     assert windows["weekly"] == timedelta(days=7)
     assert any(name == "weekly" for name, *_ in submitted)
+
+
+def test_worker_rolls_the_day_over_on_the_configured_timezone(config, library, fast_worker):
+    """In Sao Paulo (UTC-3) the daily must close at 03:00 UTC, not at 00:00 UTC."""
+    config.render_timezone = ZoneInfo("America/Sao_Paulo")
+    config.timelapse_cadences = [CADENCES["daily"]]
+    config.capture_interval = timedelta(hours=1)
+    config.timelapse_min_frames = 1
+    start = datetime(2025, 6, 1, 22, 0, tzinfo=timezone.utc)  # 19:00 locally
+
+    # 22:00, 23:00, 00:00, 01:00, 02:00, 03:00, 04:00 UTC
+    submitted = fast_worker(config, library, FakeCaptureAgent(), cycles=7, start=start)
+
+    daily = [entry for entry in submitted if entry[0] == "daily"]
+    assert len(daily) == 1
+    # Fired at the local midnight, and the window handed to the render is UTC.
+    assert daily[0][3] == datetime(2025, 6, 2, 3, 0, tzinfo=timezone.utc)
+    assert daily[0][2] == datetime(2025, 6, 1, 3, 0, tzinfo=timezone.utc)
 
 
 def test_only_enabled_cadences_are_rendered(config, library, fast_worker):
@@ -354,3 +373,35 @@ def test_scheduler_shutdown_terminates_stragglers(config, library):
 
     scheduler._processes["daily"].join(timeout=5)
     assert not scheduler._processes["daily"].is_alive()
+
+
+def test_pending_windows_floors_on_the_configured_timezone_but_returns_utc(config, library):
+    """The period is the local day; the bounds handed back are UTC, because that
+    is what the stored filenames are stamped with."""
+    config.render_timezone = ZoneInfo("America/Sao_Paulo")
+    config.timelapse_min_frames = 1
+    now = datetime(2025, 6, 2, 3, 0, 5, tzinfo=timezone.utc)  # 00:00 locally
+    _store_frames(library, "1", now - timedelta(days=1), now, spacing=timedelta(hours=1))
+
+    windows = pending_render_windows(library, config, "1", CADENCES["daily"], now)
+
+    # 03:00 UTC to 03:00 UTC is midnight to midnight in Sao Paulo.
+    assert windows[0] == (
+        datetime(2025, 6, 1, 3, tzinfo=timezone.utc),
+        datetime(2025, 6, 2, 3, tzinfo=timezone.utc),
+    )
+    assert all(begin.tzinfo is timezone.utc and end.tzinfo is timezone.utc for begin, end in windows)
+
+
+def test_pending_windows_on_utc_are_unchanged_by_the_default(config, library):
+    """The default zone must leave the UTC-aligned behaviour exactly as it was."""
+    config.timelapse_min_frames = 1
+    now = datetime(2025, 6, 2, 0, 0, 5, tzinfo=timezone.utc)
+    _store_frames(library, "1", now - timedelta(days=1), now, spacing=timedelta(hours=1))
+
+    windows = pending_render_windows(library, config, "1", CADENCES["daily"], now)
+
+    assert windows[0] == (
+        datetime(2025, 6, 1, tzinfo=timezone.utc),
+        datetime(2025, 6, 2, tzinfo=timezone.utc),
+    )

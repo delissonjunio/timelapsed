@@ -63,6 +63,7 @@ def config(tmp_path: Path) -> Config:
         timelapse_output_fps=30,
         timelapse_min_frames=10,
         timelapse_cadences=[CADENCES["hourly"], CADENCES["daily"], CADENCES["weekly"]],
+        render_timezone=timezone.utc,
         max_concurrent_renders=1,
         image_capture_library_root=tmp_path / "capture",
         image_retention=timedelta(days=7),

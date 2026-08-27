@@ -144,17 +144,29 @@ def pending_render_windows(
     bounds = [span for span in (config.image_retention, config.retention_for(cadence.name)) if span is not None]
     horizon = min(bounds) if bounds else MAX_BACKFILL_HORIZON
 
+    # Periods are floored on the configured wall clock, so a "daily" is the local
+    # day rather than the UTC one. Each bound is converted straight back to UTC:
+    # `rendered` and `stills` are UTC, and the render is stored under a filename
+    # stamped with %Z that parse_timelapse_filename splits on '-', which a zone
+    # abbreviated "-03" would not survive.
+    zone = config.render_timezone
+    local_now = now.astimezone(zone)
+
     # The period containing `now` is still filling up, so the newest candidate is
     # the one before it.
-    oldest_start = cadence.floor(max(now - horizon, stills[0]))
-    period_start = cadence.floor(now) - cadence.window
+    oldest_start = cadence.floor(max(local_now - horizon, stills[0].astimezone(zone)))
+    period_start = cadence.floor(local_now) - cadence.window
 
     windows: list[tuple[datetime, datetime]] = []
     while period_start >= oldest_start and len(windows) < limit:
-        period_end = period_start + cadence.window
-        already_rendered = _count_within(rendered, period_start, period_end) > 0
-        if not already_rendered and _count_within(stills, period_start, period_end) >= config.timelapse_min_frames:
-            windows.append((period_start, period_end))
+        # Stepping by the window walks local wall clock, so on a DST transition
+        # day the period is an hour short or long of `cadence.window`. Nothing
+        # is skipped, the video is just that much shorter or longer.
+        start = period_start.astimezone(timezone.utc)
+        end = (period_start + cadence.window).astimezone(timezone.utc)
+        already_rendered = _count_within(rendered, start, end) > 0
+        if not already_rendered and _count_within(stills, start, end) >= config.timelapse_min_frames:
+            windows.append((start, end))
         period_start -= cadence.window
 
     return windows
@@ -239,9 +251,11 @@ def capture_continuously(
     scheduler = RenderScheduler(config, library, channel_id, render_slot)
 
     # Seeded with the current time so a restart does not re-render a cadence that
-    # is already up to date; each one fires on its next genuine rollover.
+    # is already up to date; each one fires on its next genuine rollover. Held on
+    # the configured wall clock, since that is what the rollover checks compare.
     last_run_at: dict[str, datetime] = {
-        cadence.name: datetime.now(tz=timezone.utc) for cadence in config.timelapse_cadences
+        cadence.name: datetime.now(tz=timezone.utc).astimezone(config.render_timezone)
+        for cadence in config.timelapse_cadences
     }
     last_pruned_at: datetime | None = None
 
@@ -265,16 +279,21 @@ def capture_continuously(
         except Exception:
             logger.exception("Capture cycle failed for channel %s, continuing", channel_id)
 
+        # Rollovers are judged on the configured wall clock, so a "daily" closes
+        # at local midnight. Only the decision moves: the windows themselves come
+        # back from pending_render_windows in UTC.
+        local_now = now.astimezone(config.render_timezone)
+
         try:
             due = [
                 cadence for cadence in config.timelapse_cadences
-                if cadence.is_due(now, last_run_at[cadence.name])
+                if cadence.is_due(local_now, last_run_at[cadence.name])
             ]
             if due:
                 # Scanned once for all of them: at midnight every cadence is due.
                 stills = library.image_timestamps(channel_id)
                 for cadence in due:
-                    last_run_at[cadence.name] = now
+                    last_run_at[cadence.name] = local_now
                     scheduler.submit(
                         cadence,
                         pending_render_windows(library, config, channel_id, cadence, now, stills=stills),

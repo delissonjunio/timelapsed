@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Callable
 
@@ -15,7 +15,9 @@ class Cadence:
     """A recurring timelapse: how far back it looks, and when it is due.
 
     `is_due` compares the current time against the last time this cadence ran and
-    answers whether the clock has rolled over into a new period.
+    answers whether the clock has rolled over into a new period. It reads whatever
+    wall clock the datetimes it is handed carry, so passing them in the configured
+    `render_timezone` is what makes "daily" mean a local day rather than a UTC one.
     """
 
     name: str
@@ -77,6 +79,10 @@ class Config:
     timelapse_output_fps: int
     timelapse_min_frames: int
     timelapse_cadences: list[Cadence]
+    # Wall clock the cadence rollovers are judged against. A render is named for
+    # the period it covers, so this decides whether "daily" closes at midnight
+    # UTC or at midnight where the cameras actually are.
+    render_timezone: tzinfo
     # How many renders may run at once across every channel. ffmpeg is the
     # memory-hungry part of this daemon, so this is the guest's RAM budget
     # expressed as a process count.
