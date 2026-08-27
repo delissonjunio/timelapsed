@@ -162,6 +162,11 @@ The viewer has **no authentication**. Bind it to `0.0.0.0` only when Tailscale i
 access control, or bind to `127.0.0.1` and put a proxy in front. Never port-forward it from your
 router. See [Viewing Timelapses](Viewing-Timelapses.md).
 
+If you ran `install.sh --with-nginx`, these two are managed for you. nginx takes over whichever port
+was configured here — `8080` unless you changed it — and the setup script rewrites this section to
+`127.0.0.1` one port up. Change either with `LISTEN_PORT=… UPSTREAM_PORT=… sudo deploy/nginx-setup.sh`
+rather than editing here: the next upgrade re-renders the nginx side, and the two would disagree.
+
 ## `[analysis]`
 
 Recognition: people, vehicles and plates found in the stills capture already wrote. Off by

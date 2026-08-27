@@ -28,6 +28,78 @@ Videos use `preload="none"`, so opening a page with fifty videos on it costs one
 fifty video downloads. Playback starts quickly because renders are written with
 `-movflags +faststart`.
 
+## Putting nginx in front
+
+Optional, and worth it if you watch the same footage more than once or the guest is tight on RAM:
+
+```bash
+sudo bash deploy/install.sh --with-nginx
+```
+
+nginx takes port `8080` — the one Tailscale Serve and the firewall rules already point at — and the
+viewer moves to `127.0.0.1:8081`. Requests split there:
+
+| Path | Served by | Why |
+| --- | --- | --- |
+| `/video/{channel}/{file}.mp4` | nginx, straight off the disk | Bytes, and nothing else |
+| everything else | the Python viewer, proxied | The page, the JSON APIs, ffmpeg-scaled thumbnails and crops |
+
+Nothing about the URLs changes, so bookmarks, Tailscale Serve and `/healthz` all keep working. The
+flag is sticky: once `/etc/nginx/sites-available/timelapsed` exists, `install.sh` and `update.sh`
+keep it configured and re-render it from `deploy/nginx-timelapsed.conf` on each upgrade.
+
+### What it actually buys
+
+In the order the difference is noticeable:
+
+* **Conditional requests.** This is the big one. The Python viewer sends no `ETag`, no
+  `Last-Modified` and no `Cache-Control`, so re-opening yesterday's daily downloads all ~140 MB of
+  it again. nginx answers the second visit with a `304`, and a render is immutable once written so
+  the cache is never wrong.
+* **Page cache.** Python reads a video into userspace 256 KB at a time, pulling the whole file
+  through the guest's page cache and evicting the stills the next ffmpeg wants. The nginx location
+  uses `directio` above 16 MB, so a 140 MB render is read without disturbing the cache at all. On a
+  2 GB guest running renders at `max_concurrent_renders = 1`, that is the difference that matters.
+* **Threads.** `ThreadingHTTPServer` spawns one OS thread per connection. A browser scrubbing a
+  timeline opens several while every camera tile is polling a thumbnail; nginx serves the lot from
+  one worker with no per-connection memory.
+* **gzip** on the page and the JSON APIs, which the viewer does not do.
+
+**What it does not buy is a faster single stream.** Over Tailscale the WireGuard tunnel is the
+ceiling long before Python's copy loop is, and `sendfile` cannot make a tunnel wider. If your
+complaint is that one video takes a while to start over a slow link, this will not fix it — shorten
+`duration_seconds` or drop `resolution` instead.
+
+### Checking it works
+
+```bash
+curl -sI localhost:8080/healthz                            # still ok, via the proxy
+curl -sI localhost:8080/video/1/weekly_….mp4 | grep -i etag  # nginx sets one, Python does not
+sudo tail -f /var/log/nginx/timelapsed.access.log
+```
+
+An `ETag` on a video response means nginx served it. If videos come back without one, nginx fell
+back to the viewer — almost always because it cannot read the library:
+
+```bash
+sudo -u www-data test -r /var/lib/timelapsed/1/timelapse/*.mp4 || sudo chmod -R g+rX /var/lib/timelapsed
+```
+
+`nginx-setup.sh` checks this at install time and warns, but it will not chmod a library with a
+hundred thousand stills in it on your behalf.
+
+### Going back
+
+```bash
+sudo rm /etc/nginx/sites-enabled/timelapsed /etc/nginx/sites-available/timelapsed
+sudo systemctl reload nginx
+sudoedit /etc/timelapsed.ini      # [web] back to host = 0.0.0.0, port = 8080
+sudo systemctl restart timelapsed-web
+```
+
+Removing the file in `sites-available` is what makes it non-sticky; leave it and the next
+`install.sh` will put it back.
+
 ## Publishing it with Tailscale Serve
 
 This is the recommended setup. It gives you a real HTTPS certificate, a stable hostname, and no

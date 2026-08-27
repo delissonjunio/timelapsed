@@ -204,6 +204,15 @@ phone included, with a real certificate and no port forwarding.
 > **Do not use `tailscale funnel` here.** Funnel publishes to the public internet and the viewer has
 > no authentication. Anyone with the URL could watch your cameras.
 
+Optionally put nginx in front, so rendered videos come off the disk instead of through Python. The
+published port stays `8080`, so this command and the firewall rules below are unaffected:
+
+```bash
+sudo bash /opt/timelapsed/deploy/install.sh --with-nginx
+```
+
+See [Viewing Timelapses](Viewing-Timelapses.md) for what it is and is not worth.
+
 Verify from another tailnet device:
 
 ```bash

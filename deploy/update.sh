@@ -33,6 +33,13 @@ else
     sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/
     sudo systemctl daemon-reload
+
+    # Only where nginx is already in front. Re-rendered every upgrade so an edit
+    # to the checked-in template actually reaches the guest.
+    if [[ -f /etc/nginx/sites-available/timelapsed ]]; then
+        echo "==> Refreshing the nginx site"
+        sudo "${INSTALL_DIR}/deploy/nginx-setup.sh"
+    fi
 fi
 
 echo "==> Restarting"

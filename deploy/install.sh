@@ -4,8 +4,10 @@
 # Run as root ON THE GUEST, not on the Proxmox host:
 #
 #   sudo bash deploy/install.sh
+#   sudo bash deploy/install.sh --with-nginx   # serve videos from nginx
 #
-# Idempotent: safe to re-run to upgrade an existing install.
+# Idempotent: safe to re-run to upgrade an existing install. --with-nginx is
+# sticky — once the site exists, re-running without the flag keeps it.
 #
 # The intended layout is a git checkout living at /opt/timelapsed, so upgrading
 # is `git pull` in place followed by a restart — see deploy/update.sh. When this
@@ -21,6 +23,18 @@ SERVICE_USER=${SERVICE_USER:-timelapsed}
 # Who owns the checkout, and so who can `git pull` without sudo.
 REPO_OWNER=${REPO_OWNER:-${SUDO_USER:-root}}
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+
+# Already set up once, so keep it set up: a bare re-run must not silently move
+# the viewer back onto the public port and leave nginx proxying to nothing.
+WITH_NGINX=${WITH_NGINX:-0}
+[[ -f /etc/nginx/sites-available/timelapsed ]] && WITH_NGINX=1
+
+for argument in "$@"; do
+    case "${argument}" in
+        --with-nginx) WITH_NGINX=1 ;;
+        *) echo "error: unknown option ${argument}" >&2; exit 1 ;;
+    esac
+done
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: run this as root (sudo bash deploy/install.sh)" >&2
@@ -122,6 +136,12 @@ if grep -qE '^\s*enabled\s*=\s*(true|yes|1)\s*$' "${CONFIG_PATH}" 2>/dev/null; t
     systemctl restart timelapsed-analyzer
 else
     echo "==> Recognition disabled ([analysis] enabled), skipping model download"
+fi
+
+# Last, because it moves the viewer off the port it was just configured with.
+if [[ ${WITH_NGINX} -eq 1 ]]; then
+    LIBRARY_DIR="${LIBRARY_DIR}" CONFIG_PATH="${CONFIG_PATH}" SERVICE_USER="${SERVICE_USER}" \
+        "${REPO_DIR}/deploy/nginx-setup.sh"
 fi
 
 if [[ ${CONFIG_IS_NEW} -eq 1 ]]; then

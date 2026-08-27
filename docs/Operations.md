@@ -194,6 +194,36 @@ An empty JSON array means no videos have been rendered yet — that is a capture
 a viewer problem. If `/healthz` fails but the service is running, check `host` and `port` in the
 config.
 
+With nginx in front, `8080` is nginx and the viewer is on `127.0.0.1:8081`. A `502` from `8080`
+means nginx is up and the viewer is not:
+
+```bash
+systemctl status nginx timelapsed-web
+curl -s localhost:8081/healthz          # the viewer directly, bypassing nginx
+sudo tail /var/log/nginx/timelapsed.error.log
+```
+
+### Videos play but are no faster than before
+
+Only relevant with nginx in front. It means nginx is falling back to the viewer for every video
+rather than serving them itself, which the config does deliberately so that a permissions mistake
+costs speed instead of playback.
+
+```bash
+curl -sI localhost:8080/video/1/weekly_….mp4 | grep -i 'etag\|server'
+```
+
+nginx sets an `ETag`; the viewer does not. If there is none, look for a `403` in
+`/var/log/nginx/timelapsed.error.log` and give nginx read access:
+
+```bash
+sudo chmod -R g+rX /var/lib/timelapsed
+```
+
+The other cause is the library having moved without the site file following it — the root is baked
+into `alias` at install time. `sudo /opt/timelapsed/deploy/nginx-setup.sh` re-reads it from the
+config and re-renders.
+
 ### Recognition is not finding anything
 
 Only relevant with `[analysis] enabled = true`. Full detail in

@@ -18,6 +18,8 @@ NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image
                              └──hourly──▶ prune stills past retention
                                                                        ▼
                                                             web viewer :8080
+                                                     (optionally behind nginx, which
+                                                      serves the .mp4 files itself)
 ```
 
 ## What it does, precisely

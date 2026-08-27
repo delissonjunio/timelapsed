@@ -65,6 +65,10 @@ min_free_disk_gb = 5
 [web]
 # The built-in viewer. Bind to 0.0.0.0 and put Tailscale Serve in front of it,
 # or bind to 127.0.0.1 if something else is proxying. There is no authentication.
+#
+# `install.sh --with-nginx` rewrites these two to 127.0.0.1:8081 and gives nginx
+# the public 8080, so that rendered videos come off the disk instead of through
+# Python. See docs/Viewing-Timelapses.md.
 host = 0.0.0.0
 port = 8080
 

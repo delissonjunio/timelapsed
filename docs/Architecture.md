@@ -175,5 +175,25 @@ from a server that doesn't advertise `Accept-Ranges`, and without them scrubbing
 Video paths are resolved and then checked to still be inside the library root, so `..` traversal
 returns 404.
 
+### Optionally, nginx takes the bytes
+
+`install.sh --with-nginx` moves the viewer to `127.0.0.1:8081` and gives nginx the public port.
+nginx then serves `/video/{channel}/{file}.mp4` straight off the disk and proxies everything else —
+the page, the JSON APIs, the ffmpeg-scaled thumbnails, the detection crops — back to Python.
+
+The split is drawn at "is this file already on disk". Renders are; nothing else is.
+
+The win is not throughput: over Tailscale the WireGuard tunnel is the ceiling long before Python's
+256 KB copy loop is. It is that the viewer sends no validators, so every revisit re-downloads a
+140 MB file that has not changed and never will, and that reading those 140 MB through userspace
+evicts the stills the next ffmpeg wants out of a 2 GB guest's page cache. nginx answers the revisit
+with a `304` and reads the file with `directio`, touching neither.
+
+Two paths mean two chances to drift. The location regex in `deploy/nginx-timelapsed.conf` has to
+agree with the URLs `TimelapseEntry.as_dict` builds and with the traversal rules
+`TimelapseCatalogue.resolve_video` enforces, and nothing at runtime would notice if it stopped —
+a mismatch reads as "videos are slow again". `tests/test_nginx_config.py` parses the regex out of
+the site file and checks it against both.
+
 **There is no authentication.** The viewer is designed to sit behind Tailscale, where the network
 itself is the access control. Do not port-forward it. See [Viewing Timelapses](Viewing-Timelapses.md).
