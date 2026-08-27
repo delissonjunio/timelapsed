@@ -23,6 +23,19 @@ DEFAULT_MINIMUM_FREE_DISK_GB = 5.0
 # channel render its rollover at once is how a small guest meets the OOM killer.
 DEFAULT_MAX_CONCURRENT_RENDERS = 1
 
+# Recognition defaults. The thresholds are measured, not guessed; the workings
+# are in docs/Recognition-Feasibility.md.
+DEFAULT_ANALYSIS_SCORE_THRESHOLD = 0.5
+DEFAULT_ANALYSIS_THREADS = 2
+# Frames per channel per pass. Bounded so one busy channel cannot starve the
+# others during a backfill.
+DEFAULT_ANALYSIS_BATCH_SIZE = 200
+DEFAULT_ANALYSIS_DETECTION_RETENTION_DAYS = 30
+DEFAULT_ANALYSIS_EVENT_RETENTION_DAYS = 365
+DEFAULT_ANALYSIS_REID_THRESHOLD = 0.8
+DEFAULT_ANALYSIS_REID_WINDOW_HOURS = 12
+DEFAULT_ANALYSIS_PLATE_CONFIDENCE = 0.7
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,6 +134,11 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
 
     cadences = _parse_cadences(parser.get("timelapse", "cadences", fallback=DEFAULT_CADENCES))
 
+    library_root = Path(parser["image_capture_library"]["root"]).expanduser()
+    analysis_root = Path(
+        parser.get("analysis", "root", fallback=str(library_root / "index"))
+    ).expanduser()
+
     return Config(
         nvr_url=parser["nvr"]["url"].rstrip("/"),
         nvr_username=parser["nvr"]["username"],
@@ -142,7 +160,7 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
             1, parser.getint("timelapse", "max_concurrent_renders", fallback=DEFAULT_MAX_CONCURRENT_RENDERS)
         ),
 
-        image_capture_library_root=Path(parser["image_capture_library"]["root"]).expanduser(),
+        image_capture_library_root=library_root,
         image_retention=_optional_days(
             parser, "image_capture_library", "image_retention_days", fallback=DEFAULT_IMAGE_RETENTION_DAYS
         ),
@@ -155,6 +173,48 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
 
         web_host=parser.get("web", "host", fallback="0.0.0.0"),
         web_port=parser.getint("web", "port", fallback=8080),
+
+        analysis_enabled=parser.getboolean("analysis", "enabled", fallback=False),
+        # Everything recognition writes lives under one directory, deliberately
+        # outside the per-channel image and timelapse trees so the library's own
+        # pruning and reclaim never walk it.
+        analysis_index_path=analysis_root / "index.sqlite3",
+        analysis_crop_root=analysis_root / "crops",
+        analysis_model_root=Path(
+            parser.get("analysis", "model_root", fallback=str(analysis_root / "models"))
+        ).expanduser(),
+        analysis_score_threshold=parser.getfloat(
+            "analysis", "score_threshold", fallback=DEFAULT_ANALYSIS_SCORE_THRESHOLD
+        ),
+        analysis_threads=max(1, parser.getint(
+            "analysis", "threads", fallback=DEFAULT_ANALYSIS_THREADS
+        )),
+        analysis_batch_size=max(1, parser.getint(
+            "analysis", "batch_size", fallback=DEFAULT_ANALYSIS_BATCH_SIZE
+        )),
+        analysis_detection_retention=_optional_days(
+            parser, "analysis", "detection_retention_days",
+            fallback=DEFAULT_ANALYSIS_DETECTION_RETENTION_DAYS,
+        ),
+        analysis_event_retention=_optional_days(
+            parser, "analysis", "event_retention_days",
+            fallback=DEFAULT_ANALYSIS_EVENT_RETENTION_DAYS,
+        ),
+        analysis_reid_enabled=parser.getboolean("analysis", "reid_enabled", fallback=True),
+        analysis_reid_threshold=parser.getfloat(
+            "analysis", "reid_threshold", fallback=DEFAULT_ANALYSIS_REID_THRESHOLD
+        ),
+        analysis_reid_window=timedelta(hours=parser.getint(
+            "analysis", "reid_window_hours", fallback=DEFAULT_ANALYSIS_REID_WINDOW_HOURS
+        )),
+        analysis_plate_channels=[
+            channel.strip()
+            for channel in parser.get("analysis", "plate_channels", fallback="").split(",")
+            if channel.strip()
+        ],
+        analysis_plate_confidence=parser.getfloat(
+            "analysis", "plate_confidence", fallback=DEFAULT_ANALYSIS_PLATE_CONFIDENCE
+        ),
 
         logging_level=logging.getLevelName(parser.get("general", "logging_level", fallback="INFO").upper()),
     )

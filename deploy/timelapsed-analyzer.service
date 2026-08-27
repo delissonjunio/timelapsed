@@ -1,0 +1,48 @@
+[Unit]
+Description=Timelapsed recognition analyzer
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/Recognition.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timelapsed
+Group=timelapsed
+ExecStart=/opt/timelapsed/.venv/bin/python -m timelapsed.analyzer
+# on-failure, not always: the analyzer exits 0 when [analysis] enabled is false,
+# and Restart=always would spin on that instead of staying stopped.
+Restart=on-failure
+RestartSec=15
+WorkingDirectory=/opt/timelapsed
+
+# Capture is the job that must not miss its interval; recognition is work that
+# can always be caught up later. Nice it below both the capture daemon (10) and
+# leave a core free, so a backfill cannot make the capture loop overrun.
+Nice=15
+CPUWeight=20
+CPUQuota=250%
+IOWeight=20
+
+# ONNX Runtime holds the four models plus its arenas. Measured well under this
+# in steady state; the cap is what stops a leak taking the guest with it.
+MemoryAccounting=true
+MemoryHigh=1200M
+MemoryMax=1600M
+
+# It reads the stills the capture daemon wrote and writes only its own index
+# and crops, both under the library root.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/timelapsed
+
+[Install]
+WantedBy=multi-user.target

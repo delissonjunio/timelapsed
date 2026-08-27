@@ -20,8 +20,9 @@ from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.schema import Config
@@ -279,6 +280,46 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 #axis span::before { content:""; position:absolute; left:50%; top:-4px; height:3px; width:1px; background:var(--line); }
 #empty { color:var(--muted); font-size:.8rem; padding:1rem 0 0 56px; }
 
+/* Activity lanes. Density strips rather than discrete clips: at a 30-day zoom
+   a single sighting is well under a pixel, so what reads is the shading. */
+.lane.activity .track { background:var(--panel-2); }
+.bucket { position:absolute; top:0; bottom:0; pointer-events:none; }
+.lane.activity .label { color:var(--muted); }
+.evt { position:absolute; top:3px; bottom:3px; border-radius:2px; cursor:pointer;
+       opacity:.85; min-width:2px; }
+.evt:hover { opacity:1; outline:1px solid var(--fg); }
+.evt.sel { outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; }
+
+/* Recognition panel, below the camera wall. */
+#recog { border-top:1px solid var(--line); padding:.6rem .5rem; }
+#recog h2 { font-size:.63rem; text-transform:uppercase; letter-spacing:.09em;
+            color:var(--muted); margin:0 0 .5rem; font-weight:600; }
+#recog .tabs { display:flex; gap:.3rem; margin-bottom:.5rem; }
+#recog .tabs button { background:none; border:none; color:var(--muted); font:inherit;
+                      font-size:.7rem; cursor:pointer; padding:.25rem .5rem; border-radius:5px; }
+#recog .tabs button[aria-pressed="true"] { background:#28303f; color:var(--fg); }
+#recog .list { display:flex; flex-direction:column; gap:.3rem; max-height:230px; overflow-y:auto; }
+.ident { display:flex; align-items:center; gap:.5rem; padding:.3rem; border-radius:6px;
+         cursor:pointer; background:var(--panel-2); border:1px solid transparent; }
+.ident:hover { border-color:var(--line); }
+.ident[aria-pressed="true"] { border-color:var(--fg); }
+.ident img { width:34px; height:44px; object-fit:cover; border-radius:4px; background:#000; flex:none; }
+.ident .meta { min-width:0; flex:1; }
+.ident .who { font-size:.75rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ident .when { font-size:.63rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+.ident .rename { background:none; border:none; color:var(--muted); cursor:pointer;
+                 font-size:.7rem; padding:.2rem .35rem; border-radius:4px; flex:none; }
+.ident .rename:hover { color:var(--fg); background:#28303f; }
+.plate { display:flex; align-items:center; gap:.5rem; padding:.3rem; border-radius:6px;
+         background:var(--panel-2); cursor:pointer; border:1px solid transparent; }
+.plate:hover { border-color:var(--line); }
+.plate img { width:56px; height:28px; object-fit:cover; border-radius:3px; background:#000; flex:none; }
+.plate .txt { font-family:ui-monospace,Menlo,monospace; font-size:.78rem; letter-spacing:.04em; }
+.plate .when { font-size:.63rem; color:var(--muted); margin-left:auto;
+               font-variant-numeric:tabular-nums; }
+#recog .note { font-size:.63rem; color:var(--muted); line-height:1.4; margin-top:.5rem; }
+#recog .empty { font-size:.7rem; color:var(--muted); padding:.4rem .3rem; }
+
 @media (max-width:760px) {
   body { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr) auto; }
   header { grid-column:1; }
@@ -299,7 +340,17 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
   <span class="stat" id="stat"></span>
 </header>
 
-<aside id="channels"><h2>Cameras</h2></aside>
+<aside id="channels"><h2>Cameras</h2>
+  <section id="recog" hidden>
+    <h2>Recognition</h2>
+    <div class="tabs">
+      <button id="tab-people" aria-pressed="true">People</button>
+      <button id="tab-plates" aria-pressed="false">Plates</button>
+    </div>
+    <div class="list" id="recog-list"></div>
+    <p class="note" id="recog-note"></p>
+  </section>
+</aside>
 
 <main id="stage">
   <div id="screen"><div id="placeholder">Select a clip on the timeline below.</div></div>
@@ -332,7 +383,10 @@ const RANGES = [["6h", 6 * HOUR], ["24h", DAY], ["7d", 7 * DAY], ["30d", 30 * DA
 const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY];
 
 const channels = JSON.parse(document.getElementById("channels-payload").textContent);
+const HAS_RECOGNITION = JSON.parse(document.getElementById("recognition-payload").textContent);
 const params = new URLSearchParams(location.search);
+const KINDS = ["person", "vehicle"];
+const KIND_LABEL = {person: "people", vehicle: "vehicles"};
 
 const state = {
   channel: params.get("channel") && channels.includes(params.get("channel")) ? params.get("channel") : channels[0] || null,
@@ -340,6 +394,16 @@ const state = {
   utc: true,
   start: 0, end: 0,
   selected: null,
+  // Recognition state is kept apart from ENTRIES on purpose: clip selection is
+  // reference equality against those objects, so anything that re-derives or
+  // re-maps them silently breaks selection and arrow-key stepping.
+  activity: null,
+  events: [],
+  identities: [],
+  plates: [],
+  tab: "people",
+  focusIdentity: null,
+  selectedEvent: null,
 };
 
 const $ = id => document.getElementById(id);
@@ -373,6 +437,7 @@ const pad = n => String(n).padStart(2, "0");
 const clock = p => pad(p.h) + ":" + pad(p.mi);
 const datestr = p => DAYS[p.wd] + " " + p.da + " " + MONTHS[p.mo];
 const fmtFull = ms => { const p = parts(ms); return datestr(p) + " " + p.y + ", " + clock(p) + (state.utc ? " UTC" : ""); };
+const fmtShort = ms => { const p = parts(ms); return datestr(p) + " " + clock(p); };
 
 function setView(span) {
   const all = forChannel();
@@ -480,6 +545,206 @@ function pan(fraction) {
   drawTimeline();
 }
 
+// --- recognition ---
+
+// Activity depends on the viewport, so it is fetched rather than embedded. Pan
+// and zoom fire continuously; without debouncing a drag would queue a request
+// per frame and the answers would arrive out of order.
+let activityTimer = null;
+let activityToken = 0;
+let activityKey = null;
+
+function refreshActivity() {
+  if (!HAS_RECOGNITION || !state.channel) return;
+  const start = Math.floor(state.start / 1000), end = Math.ceil(state.end / 1000);
+  const key = state.channel + "|" + start + "|" + end;
+  // Same window as last time means nothing to fetch. This is also what makes it
+  // safe for drawTimeline to call this unconditionally: the redraw that follows
+  // a fetch asks for the same window and stops here instead of looping.
+  if (key === activityKey) return;
+  activityKey = key;
+
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(async () => {
+    const token = ++activityToken;
+    const query = "channel=" + encodeURIComponent(state.channel) + "&start=" + start + "&end=" + end;
+    try {
+      const [activity, events] = await Promise.all([
+        fetch("/api/activity?" + query + "&buckets=240").then(r => r.json()),
+        fetch("/api/events?" + query + "&limit=800").then(r => r.json()),
+      ]);
+      // A slower earlier request must not overwrite a newer answer.
+      if (token !== activityToken) return;
+      state.activity = activity;
+      state.events = events.map(e => ({...e, s: Date.parse(e.starts), f: Date.parse(e.finishes)}));
+      drawTimeline();
+    } catch (err) {
+      console.warn("activity fetch failed", err);
+    }
+  }, 120);
+}
+
+async function refreshRecognitionPanel() {
+  if (!HAS_RECOGNITION) return;
+  try {
+    const [identities, plates] = await Promise.all([
+      fetch("/api/identities?kind=person").then(r => r.json()),
+      fetch("/api/plates").then(r => r.json()),
+    ]);
+    state.identities = identities;
+    state.plates = plates;
+    drawRecognitionPanel();
+  } catch (err) {
+    console.warn("recognition fetch failed", err);
+  }
+}
+
+function drawActivityLanes(lanes, pct) {
+  if (!HAS_RECOGNITION) return;
+
+  for (const kind of KINDS) {
+    const lane = el("div", "lane activity");
+    lane.append(el("span", "label", KIND_LABEL[kind]));
+    const track = el("div", "track");
+
+    const counts = state.activity ? state.activity[kind] : null;
+    if (counts && counts.length) {
+      const peak = Math.max(...counts, 1);
+      const width = 100 / counts.length;
+      counts.forEach((count, index) => {
+        if (!count) return;
+        const bar = el("div", "bucket");
+        bar.style.left = (index * width) + "%";
+        bar.style.width = width + "%";
+        // Floor the alpha so a single sighting is still visible against the
+        // track, rather than fading to nothing next to a busy bucket.
+        bar.style.background = kind === "person" ? "var(--hourly)" : "var(--daily)";
+        bar.style.opacity = String(0.25 + 0.75 * (count / peak));
+        track.appendChild(bar);
+      });
+    }
+
+    // Individual events sit on top of the density, so a sighting stays
+    // clickable even where the strip is dense.
+    const focused = state.focusIdentity;
+    for (const event of state.events) {
+      if (event.kind !== kind) continue;
+      if (event.f < state.start || event.s > state.end) continue;
+      if (focused !== null && event.identity_id !== focused) continue;
+      const mark = el("div", "evt" + (state.selectedEvent === event.id ? " sel" : ""));
+      mark.style.left = pct(event.s) + "%";
+      mark.style.width = Math.max(pct(event.f) - pct(event.s), 0.2) + "%";
+      mark.style.background = kind === "person" ? "var(--hourly)" : "var(--daily)";
+      mark.title = kind + "  " + fmtFull(event.s) + "  to  " + fmtFull(event.f)
+        + "  (" + event.frame_count + " frames)";
+      mark.onclick = ev => { ev.stopPropagation(); selectEvent(event); };
+      track.appendChild(mark);
+    }
+
+    lane.appendChild(track);
+    lanes.appendChild(lane);
+  }
+}
+
+function selectEvent(event) {
+  state.selectedEvent = event.id;
+  // Jump the player to the clip covering this sighting, so clicking a person on
+  // the activity lane shows the footage rather than just highlighting a bar.
+  const covering = forChannel()
+    .filter(e => e.s <= event.s && e.f >= event.s)
+    .sort((a, b) => (a.f - a.s) - (b.f - b.s))[0];
+  if (covering) select(covering);
+  drawTimeline();
+}
+
+function drawRecognitionPanel() {
+  if (!HAS_RECOGNITION) return;
+  $("recog").hidden = false;
+  const list = $("recog-list");
+  list.innerHTML = "";
+
+  if (state.tab === "people") {
+    if (!state.identities.length) {
+      list.appendChild(el("div", "empty", "Nobody grouped yet."));
+    }
+    for (const identity of state.identities) {
+      const row = el("div", "ident");
+      row.setAttribute("aria-pressed", String(state.focusIdentity === identity.id));
+      const thumb = document.createElement("img");
+      thumb.alt = "";
+      thumb.loading = "lazy";
+      thumb.src = "/crop/event/" + identity.id + ".jpg";
+      thumb.onerror = () => thumb.remove();
+      const meta = el("div", "meta");
+      meta.append(
+        el("div", "who", identity.name || "Unnamed #" + identity.id),
+        el("div", "when", identity.sightings + " sighting"
+          + (identity.sightings === 1 ? "" : "s") + " · " + fmtShort(Date.parse(identity.last_seen))),
+      );
+      const rename = el("button", "rename", "edit");
+      rename.title = "Name this group";
+      rename.onclick = ev => { ev.stopPropagation(); renameIdentity(identity); };
+      row.append(thumb, meta, rename);
+      row.onclick = () => {
+        state.focusIdentity = state.focusIdentity === identity.id ? null : identity.id;
+        drawRecognitionPanel();
+        drawTimeline();
+      };
+      list.appendChild(row);
+    }
+    $("recog-note").textContent = state.identities.length
+      ? "Grouped by clothing and build, not by face — faces are too small on these cameras to identify. Groups do not survive a change of clothes."
+      : "";
+  } else {
+    if (!state.plates.length) {
+      list.appendChild(el("div", "empty", "No plates read yet."));
+    }
+    for (const plate of state.plates) {
+      const row = el("div", "plate");
+      if (plate.crop) {
+        const thumb = document.createElement("img");
+        thumb.alt = "";
+        thumb.loading = "lazy";
+        thumb.src = plate.crop;
+        thumb.onerror = () => thumb.remove();
+        row.appendChild(thumb);
+      }
+      row.append(
+        el("span", "txt", plate.text),
+        el("span", "when", fmtShort(Date.parse(plate.seen_at))),
+      );
+      row.title = plate.votes + " frame" + (plate.votes === 1 ? "" : "s")
+        + " agreed · confidence " + plate.confidence;
+      row.onclick = () => {
+        const at = Date.parse(plate.seen_at);
+        state.start = at - 30 * MIN; state.end = at + 30 * MIN;
+        drawTimeline(); refreshActivity();
+      };
+      list.appendChild(row);
+    }
+    $("recog-note").textContent = state.plates.length
+      ? "Each plate is voted across every frame of one sighting; single frames disagree at this resolution."
+      : "";
+  }
+}
+
+async function renameIdentity(identity) {
+  const name = prompt("Name for this group", identity.name || "");
+  if (name === null) return;
+  try {
+    const response = await fetch("/api/identities/" + identity.id, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: name.trim() || null}),
+    });
+    if (!response.ok) throw new Error(response.statusText);
+    identity.name = name.trim() || null;
+    drawRecognitionPanel();
+  } catch (err) {
+    console.warn("rename failed", err);
+  }
+}
+
 function drawTimeline() {
   clampView();
   const span = state.end - state.start;
@@ -512,6 +777,8 @@ function drawTimeline() {
     lanes.appendChild(lane);
   }
 
+  drawActivityLanes(lanes, pct);
+
   const now = Date.now();
   if (now >= state.start && now <= state.end) {
     const line = document.createElement("div");
@@ -529,6 +796,10 @@ function drawTimeline() {
   });
   $("stat").textContent = entries.length + " clip" + (entries.length === 1 ? "" : "s") + " · "
     + fmtSize(entries.reduce((t, e) => t + e.size_bytes, 0));
+
+  // No-ops unless the viewport actually moved, so every pan, zoom and range
+  // button picks up new activity without each one having to remember to ask.
+  refreshActivity();
 }
 
 function drawAxis(span, pct) {
@@ -653,11 +924,26 @@ setInterval(() => {
   }
 }, THUMB_REFRESH);
 
+if (HAS_RECOGNITION) {
+  for (const [id, tab] of [["tab-people", "people"], ["tab-plates", "plates"]]) {
+    $(id).onclick = () => {
+      state.tab = tab;
+      $("tab-people").setAttribute("aria-pressed", String(tab === "people"));
+      $("tab-plates").setAttribute("aria-pressed", String(tab === "plates"));
+      drawRecognitionPanel();
+    };
+  }
+  // Identities and plates accumulate slowly; polling them at the thumbnail
+  // cadence would be wasted requests.
+  setInterval(() => { if (!document.hidden) refreshRecognitionPanel(); }, 120e3);
+}
+
 drawControls();
 buildChannels();
 setView(DAY);
 drawTimeline();
 drawNowPlaying();
+refreshRecognitionPanel();
 const latest = visible().sort((a, b) => b.s - a.s)[0];
 if (latest) select(latest);
 </script>
@@ -666,7 +952,12 @@ if (latest) select(latest);
 """
 
 
-def render_index(catalogue: TimelapseCatalogue, channel_id: str | None, cadence: str | None) -> bytes:
+def render_index(
+    catalogue: TimelapseCatalogue,
+    channel_id: str | None,
+    cadence: str | None,
+    recognition: "RecognitionReader | None" = None,
+) -> bytes:
     """The viewer shell with the whole catalogue embedded.
 
     Everything is served in one request: the catalogue is small (retention caps
@@ -690,23 +981,113 @@ def render_index(catalogue: TimelapseCatalogue, channel_id: str | None, cadence:
         payload = payload.replace("</", "<\\/")
         return f'<script type="application/json" id="{element_id}">{payload}</script>'
 
+    # Activity is fetched rather than embedded: unlike the catalogue it depends
+    # on the current zoom, so there is nothing sensible to bake into the page.
+    # This flag just tells the page whether those endpoints exist at all.
     page = PAGE_TEMPLATE.replace(
         "<script>\nconst ENTRIES",
         block("payload", [entry.as_dict() for entry in entries])
         + "\n"
         + block("channels-payload", channels)
+        + "\n"
+        + block("recognition-payload", recognition is not None)
         + "\n<script>\nconst ENTRIES",
     )
     return page.encode()
+
+
+class RecognitionReader:
+    """Read access to the recognition index, shared across handler threads.
+
+    The analyzer owns the database; this only reads it, plus the one write the
+    viewer allows (naming an identity). SQLite is happy with concurrent readers
+    under WAL, but a single connection is not, so every call takes a lock. The
+    queries are indexed lookups measured in microseconds, so the contention does
+    not matter and one connection beats a pool of them.
+
+    The index may legitimately not exist yet -- recognition is optional, and the
+    analyzer creates the file on first run -- so `open` reports that rather than
+    failing the whole viewer.
+    """
+
+    def __init__(self, index_path: Path, crops_root: Path):
+        self.index_path = index_path
+        self.crops_root = crops_root.resolve()
+        self._lock = threading.Lock()
+        self._index: AnalysisIndex | None = None
+
+    @classmethod
+    def open(cls, config: Config) -> "RecognitionReader | None":
+        if not config.analysis_enabled:
+            return None
+        if not config.analysis_index_path.exists():
+            logger.warning(
+                "Recognition is enabled but %s does not exist yet. The viewer will "
+                "serve timelapses only until the analyzer has run.",
+                config.analysis_index_path,
+            )
+            return None
+        return cls(config.analysis_index_path, config.analysis_crop_root)
+
+    def _connection(self) -> AnalysisIndex:
+        if self._index is None:
+            self._index = AnalysisIndex(self.index_path, read_only=True)
+        return self._index
+
+    def activity(self, channel: str, start: int, end: int, buckets: int) -> dict:
+        with self._lock:
+            return self._connection().activity(channel, start, end, buckets)
+
+    def events(self, **kwargs) -> list:
+        with self._lock:
+            return self._connection().events(**kwargs)
+
+    def identities(self, kind: str | None = None) -> list[dict]:
+        with self._lock:
+            return self._connection().identities(kind=kind)
+
+    def plates(self, text: str | None = None, channel: str | None = None) -> list[dict]:
+        with self._lock:
+            return self._connection().plates(text=text, channel=channel)
+
+    def rename_identity(self, identity_id: int, name: str | None) -> bool:
+        # The one write. Opened separately so the read connection stays read-only
+        # and a bug in a GET handler cannot mutate anything.
+        with self._lock:
+            with AnalysisIndex(self.index_path) as writable:
+                return writable.rename_identity(identity_id, name)
+
+    def crop_file(self, kind: str, row_id: int) -> Path | None:
+        with self._lock:
+            relative = self._connection().crop_path(kind, row_id)
+        if not relative:
+            return None
+        # The path comes from the database, but resolve-then-check anyway: it is
+        # the same guard resolve_video uses, and it costs nothing.
+        candidate = (self.crops_root / relative).resolve()
+        try:
+            candidate.relative_to(self.crops_root)
+        except ValueError:
+            logger.warning("Refusing crop path outside the crop root: %s", relative)
+            return None
+        return candidate
 
 
 class TimelapseRequestHandler(BaseHTTPRequestHandler):
     server_version = "timelapsed"
     protocol_version = "HTTP/1.1"
 
-    def __init__(self, *args, catalogue: TimelapseCatalogue, thumbnails: ThumbnailCache, **kwargs):
+    def __init__(
+        self,
+        *args,
+        catalogue: TimelapseCatalogue,
+        thumbnails: ThumbnailCache,
+        recognition: "RecognitionReader | None" = None,
+        **kwargs,
+    ):
         self.catalogue = catalogue
         self.thumbnails = thumbnails
+        self.recognition = recognition
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -715,22 +1096,29 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
-        query = dict(
-            pair.split("=", 1) for pair in parsed.query.split("&") if "=" in pair
-        )
+        # parse_qs, not a hand-rolled split: identity names and plate searches
+        # carry spaces and accents, which arrive percent-encoded.
+        query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
 
         try:
             if path == "/":
-                body = render_index(self.catalogue, query.get("channel"), query.get("cadence"))
+                body = render_index(
+                    self.catalogue, query.get("channel"), query.get("cadence"),
+                    recognition=self.recognition,
+                )
                 self._send_bytes(body, "text/html; charset=utf-8")
             elif path == "/api/timelapses":
                 entries = self.catalogue.entries(query.get("channel"), query.get("cadence"))
                 body = json.dumps([entry.as_dict() for entry in entries], indent=2).encode()
                 self._send_bytes(body, "application/json")
+            elif path.startswith("/api/"):
+                self._serve_recognition_api(path, query)
             elif path.startswith("/video/"):
                 self._serve_video(path)
             elif path.startswith("/thumb/"):
                 self._serve_thumbnail(path)
+            elif path.startswith("/crop/"):
+                self._serve_crop(path)
             elif path == "/healthz":
                 self._send_bytes(b"ok\n", "text/plain")
             else:
@@ -741,6 +1129,127 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             logger.exception("Error handling %s", self.path)
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal error")
+
+    def do_POST(self) -> None:
+        """The only writes the viewer accepts: naming and merging identities.
+
+        Everything else here is read-only. Note there is still no authentication
+        -- the viewer relies on Tailscale for that -- so this deliberately
+        touches nothing but the recognition index.
+        """
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            if self.recognition is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "Recognition is not enabled")
+                return
+
+            match = re.fullmatch(r"/api/identities/(\d+)", path)
+            if not match:
+                self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+                return
+
+            payload = self._read_json()
+            if payload is None:
+                return
+            name = payload.get("name")
+            if name is not None:
+                name = str(name).strip()[:120] or None
+
+            if self.recognition.rename_identity(int(match.group(1)), name):
+                self._send_bytes(b'{"ok":true}', "application/json")
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "No such identity")
+        except BrokenPipeError:
+            pass
+        except Exception:
+            logger.exception("Error handling POST %s", self.path)
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal error")
+
+    def _read_json(self) -> dict | None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > 64 * 1024:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Expected a small JSON body")
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except (ValueError, UnicodeDecodeError):
+            self.send_error(HTTPStatus.BAD_REQUEST, "Malformed JSON")
+            return None
+        if not isinstance(payload, dict):
+            self.send_error(HTTPStatus.BAD_REQUEST, "Expected a JSON object")
+            return None
+        return payload
+
+    def _serve_recognition_api(self, path: str, query: dict[str, str]) -> None:
+        if self.recognition is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Recognition is not enabled")
+            return
+
+        def number(name: str, default: int | None = None) -> int | None:
+            raw = query.get(name)
+            try:
+                return int(raw) if raw is not None else default
+            except ValueError:
+                return default
+
+        if path == "/api/activity":
+            channel = query.get("channel")
+            start, end = number("start"), number("end")
+            if not channel or start is None or end is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "channel, start and end are required")
+                return
+            payload = self.recognition.activity(
+                channel, start, end, number("buckets", 240) or 240
+            )
+        elif path == "/api/events":
+            payload = [
+                event.as_dict()
+                for event in self.recognition.events(
+                    channel=query.get("channel"),
+                    kind=query.get("kind"),
+                    start=number("start"),
+                    end=number("end"),
+                    identity_id=number("identity"),
+                    limit=min(number("limit", 500) or 500, 2000),
+                )
+            ]
+        elif path == "/api/identities":
+            payload = self.recognition.identities(kind=query.get("kind"))
+        elif path == "/api/plates":
+            payload = self.recognition.plates(
+                text=query.get("text"), channel=query.get("channel")
+            )
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        self._send_bytes(
+            json.dumps(payload, separators=(",", ":")).encode(),
+            "application/json",
+            cache_control="no-store",
+        )
+
+    def _serve_crop(self, path: str) -> None:
+        """Event and plate crops from the recognition index."""
+        if self.recognition is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Recognition is not enabled")
+            return
+
+        match = re.fullmatch(r"/crop/(event|plate)/(\d+)\.jpg", path)
+        if not match:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        source = self.recognition.crop_file(match.group(1), int(match.group(2)))
+        if source is None or not source.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        body = source.read_bytes()
+        # Immutable once written: a crop belongs to one event and is never
+        # rewritten, unlike the camera thumbnails.
+        self._send_bytes(body, "image/jpeg", cache_control="public, max-age=86400")
 
     def _send_bytes(self, body: bytes, content_type: str, cache_control: str | None = None) -> None:
         self.send_response(HTTPStatus.OK)
@@ -828,7 +1337,12 @@ def build_server(config: Config) -> ThreadingHTTPServer:
     catalogue = TimelapseCatalogue(config.image_capture_library_root)
     # One cache for the whole server: ThreadingHTTPServer builds a handler per
     # request, so per-handler state would never survive to be reused.
-    handler = partial(TimelapseRequestHandler, catalogue=catalogue, thumbnails=ThumbnailCache())
+    handler = partial(
+        TimelapseRequestHandler,
+        catalogue=catalogue,
+        thumbnails=ThumbnailCache(),
+        recognition=RecognitionReader.open(config),
+    )
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 
 

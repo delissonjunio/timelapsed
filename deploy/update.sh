@@ -21,7 +21,7 @@ if [[ "${BEFORE}" == "${AFTER}" ]]; then
 else
     echo "==> ${BEFORE:0:8} -> ${AFTER:0:8}"
     echo "==> Refreshing dependencies"
-    sudo "${INSTALL_DIR}/.venv/bin/pip" install --quiet requests backoff rich python-dateutil
+    sudo "${INSTALL_DIR}/.venv/bin/pip" install --quiet -e "${INSTALL_DIR}"
     echo "==> Reinstalling systemd units"
     sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/

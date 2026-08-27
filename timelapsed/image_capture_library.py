@@ -209,6 +209,27 @@ class ImageCaptureLibrary:
         """
         return [timestamp for timestamp, _ in self._timestamped_paths(channel_id, "image")]
 
+    def images_after(
+        self, channel_id: str, after: datetime | None, until: datetime, limit: int
+    ) -> list[tuple[Path, datetime]]:
+        """Stills captured after `after` and no later than `until`, oldest first.
+
+        For consumers that walk the library forward from where they left off.
+        `until` exists because store_image writes in place with no rename, so the
+        newest file on disk can still be partially written; callers hold back a
+        capture interval rather than reading a truncated JPEG.
+        """
+        found = []
+        for timestamp, path in self._timestamped_paths(channel_id, "image"):
+            if after is not None and timestamp <= after:
+                continue
+            if timestamp > until:
+                break
+            found.append((path, timestamp))
+            if len(found) >= limit:
+                break
+        return found
+
     def rendered_window_starts(self, channel_id: str, cadence_name: str) -> list[datetime]:
         """The start time of every stored video of one cadence, oldest first."""
         return [

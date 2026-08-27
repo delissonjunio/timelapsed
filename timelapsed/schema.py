@@ -100,6 +100,31 @@ class Config:
     web_host: str
     web_port: int
 
+    # Recognition. Runs in its own daemon over the stills capture already wrote,
+    # so none of this affects the capture loop's timing.
+    analysis_enabled: bool
+    analysis_index_path: Path
+    analysis_crop_root: Path
+    analysis_model_root: Path
+    # Below 0.5 the detector reports scenery: a neighbouring building read as a
+    # vehicle on 70% of night frames, a pile of tools as a car indoors. Measured
+    # in docs/Recognition-Feasibility.md; 0.5 removed every one of them.
+    analysis_score_threshold: float
+    analysis_threads: int
+    analysis_batch_size: int
+    analysis_detection_retention: timedelta | None
+    analysis_event_retention: timedelta | None
+    # Body-appearance matching, not face recognition -- faces are too small on
+    # this footage to identify. 0.8 is chosen for precision: it misses most
+    # repeat sightings rather than merging two different people.
+    analysis_reid_enabled: bool
+    analysis_reid_threshold: float
+    analysis_reid_window: timedelta
+    # Plate reading only pays off where plates are big enough to read, which is
+    # one channel here. Empty disables it entirely.
+    analysis_plate_channels: list[str]
+    analysis_plate_confidence: float
+
     logging_level: int
 
     @property

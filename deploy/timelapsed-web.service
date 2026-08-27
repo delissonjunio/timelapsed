@@ -15,6 +15,7 @@ WorkingDirectory=/opt/timelapsed
 
 # The viewer only ever reads the library.
 NoNewPrivileges=true
+
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
@@ -26,6 +27,11 @@ RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
 LockPersonality=true
 ReadOnlyPaths=/var/lib/timelapsed
+# The recognition index is the one exception. SQLite in WAL mode writes the -shm
+# and -wal sidecars even for a read-only connection, so a purely read-only mount
+# here makes every recognition query fail with "attempt to write a readonly
+# database". The viewer's only real write is naming an identity.
+ReadWritePaths=/var/lib/timelapsed/index
 
 [Install]
 WantedBy=multi-user.target

@@ -13,6 +13,12 @@ requests = "^2.32.3"
 backoff = "^2.2.1"
 rich = "^13.9.4"
 python-dateutil = "^2.9.0.post0"
+# Recognition. Deliberately just these three: the libraries that publish these
+# models pull in OpenCV and a torch-adjacent stack, which does not fit a guest
+# that also runs six capture workers and ffmpeg.
+onnxruntime = "^1.20.0"
+numpy = "^2.1.0"
+pillow = "^11.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"
@@ -20,6 +26,7 @@ pytest = "^8.3.4"
 [tool.poetry.scripts]
 timelapsed = "timelapsed.timelapsed:run"
 timelapsed-web = "timelapsed.web:run"
+timelapsed-analyzer = "timelapsed.analyzer:run"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

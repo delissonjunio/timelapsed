@@ -68,5 +68,66 @@ min_free_disk_gb = 5
 host = 0.0.0.0
 port = 8080
 
+[analysis]
+# Recognition: find people and vehicles in the stills capture already wrote,
+# group them into events, and read plates where they are big enough to read.
+# Runs as a separate daemon (timelapsed-analyzer), so it never eats into the
+# capture loop's interval budget. Off by default; it costs ~170 MB of models
+# and about one core-hour per day for six channels at a 10s interval.
+enabled = false
+
+# Where the index, crops and models live. Deliberately outside the per-channel
+# image/ and timelapse/ trees so the library's pruning never walks it.
+# root = /var/lib/timelapsed/index
+
+# Minimum detector confidence. This is the single most important setting here.
+# At 0.35 the detector reports scenery as objects: a neighbouring building seen
+# over the wall scored as a vehicle on 70% of night frames, and a pile of tools
+# on a workshop floor scored as a car. At 0.50 every one of those disappeared.
+# Lower it and you will get phantom events, not extra detail.
+score_threshold = 0.5
+
+# ONNX Runtime threads per model. The analyzer is nice'd below capture, so this
+# is about latency per frame, not about winning the CPU.
+threads = 2
+# Frames per channel per pass, so one busy channel cannot starve the others
+# while a backfill drains.
+batch_size = 200
+
+# How long to keep the index. Events are the durable record and are small;
+# the per-frame detection rows behind them are numerous and disposable.
+# 0 keeps them forever.
+detection_retention_days = 30
+event_retention_days = 365
+
+# Person grouping by body appearance -- NOT face recognition. Faces on cameras
+# mounted for area coverage are ~38px wide here, against the ~80px a face
+# embedding needs, so faces carry no usable identity signal. Bodies are ~347px
+# tall, which is what re-identification models are trained on.
+#
+# What this gives you is "the same person, in the same clothes, today". It does
+# not survive a change of outfit, and it is not identity.
+reid_enabled = true
+# Measured on 423 real body crops from this deployment:
+#   0.7 -> matches 50% of same-person pairs, but wrongly merges 14.6%
+#   0.8 -> matches 27%, wrongly merges 1.2%
+# 0.8 is the default because a group you have named should stay trustworthy:
+# better to miss a sighting than to quietly merge two different people.
+reid_threshold = 0.8
+# Beyond this, appearance is not comparable. Matching across it produces
+# confident nonsense as soon as somebody changes clothes.
+reid_window_hours = 12
+
+# Channels to read plates on, comma separated. Empty disables plate reading.
+# Only worth enabling where plates are actually large enough to read: measured
+# here, one channel yields 52-65px plates and reads them, while others sit at
+# ~40px and produce garbage. See docs/Recognition-Feasibility.md.
+plate_channels =
+# Minimum OCR confidence per read. Below ~0.7 the model returns plausible
+# nonsense on things that are not plates. Reads are also voted across every
+# frame of a sighting and checked against the Brazilian plate layouts, so this
+# is one guard of three.
+plate_confidence = 0.7
+
 [general]
 logging_level = INFO

@@ -68,7 +68,12 @@ fi
 echo "==> Building the virtualenv"
 python3 -m venv "${INSTALL_DIR}/.venv"
 "${INSTALL_DIR}/.venv/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/.venv/bin/pip" install --quiet requests backoff rich python-dateutil
+# Editable, and from pyproject.toml rather than a hand-kept list. This used to be
+# a literal `pip install requests backoff rich ...` duplicated here and in
+# update.sh, which meant adding a dependency to pyproject.toml silently did not
+# reach the guest. Editable keeps the code running from the checkout, so
+# `git pull` still takes effect without a reinstall.
+"${INSTALL_DIR}/.venv/bin/pip" install --quiet -e "${INSTALL_DIR}"
 
 echo "==> Preparing library directory ${LIBRARY_DIR}"
 mkdir -p "${LIBRARY_DIR}"
@@ -102,6 +107,19 @@ systemctl enable --now timelapsed-web-restart.timer
 if systemctl list-unit-files tailscaled.service >/dev/null 2>&1 && \
    systemctl is-enabled tailscaled.service >/dev/null 2>&1; then
     systemctl enable --now tailscale-local-subnet-route.service
+fi
+
+# Recognition is opt-in. Only fetch the ~170 MB of models when the config
+# actually asks for it, so a plain timelapse install stays small.
+if grep -qE '^\s*enabled\s*=\s*(true|yes|1)\s*$' "${CONFIG_PATH}" 2>/dev/null; then
+    echo "==> Fetching recognition models"
+    SERVICE_USER="${SERVICE_USER}" "${REPO_DIR}/deploy/fetch-models.sh" "${LIBRARY_DIR}/index/models"
+    mkdir -p "${LIBRARY_DIR}/index/crops"
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "${LIBRARY_DIR}/index"
+    systemctl enable --now timelapsed-analyzer
+    systemctl restart timelapsed-analyzer
+else
+    echo "==> Recognition disabled ([analysis] enabled), skipping model download"
 fi
 
 if [[ ${CONFIG_IS_NEW} -eq 1 ]]; then
