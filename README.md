@@ -94,7 +94,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 .venv/bin/python -m pytest
 ```
 
-221 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
+227 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
 probing the output with `ffprobe` — and fake only the NVR.
 
 ## License

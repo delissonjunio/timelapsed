@@ -219,15 +219,34 @@ class ImageCaptureLibrary:
         newest file on disk can still be partially written; callers hold back a
         capture interval rather than reading a truncated JPEG.
         """
-        found = []
-        for timestamp, path in self._timestamped_paths(channel_id, "image"):
-            if after is not None and timestamp <= after:
+        channel_path = self._path_for_channel(channel_id, "image")
+        if not channel_path.is_dir():
+            return []
+
+        # Compare stems as strings before parsing any of them. The format is
+        # fixed-width UTC, so lexicographic order is chronological order, and a
+        # caller walking forward discards almost everything it sees. Parsing
+        # first instead costs ~550ms per pass on a full 8-day channel, which the
+        # analyzer would then pay for every channel on every poll, forever.
+        after_stem = _generate_image_filename(after) if after is not None else None
+        until_stem = _generate_image_filename(until)
+
+        stems = []
+        for entry in os.scandir(channel_path):
+            stem = entry.name.rsplit(".", 1)[0]
+            if after_stem is not None and stem <= after_stem:
                 continue
-            if timestamp > until:
-                break
-            found.append((path, timestamp))
-            if len(found) >= limit:
-                break
+            if stem > until_stem:
+                continue
+            stems.append(entry.name)
+
+        found = []
+        for name in sorted(stems)[:limit]:
+            try:
+                timestamp = _parse_image_filename(name.rsplit(".", 1)[0])
+            except ValueError:
+                continue
+            found.append((channel_path / name, timestamp))
         return found
 
     def rendered_window_starts(self, channel_id: str, cadence_name: str) -> list[datetime]:

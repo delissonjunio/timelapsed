@@ -262,3 +262,55 @@ def test_reclaim_skips_when_another_worker_holds_the_lock(stocked_library, monke
         os.close(held)
 
     assert len(_surviving(stocked_library, "1", "image")) == 12
+
+
+# --- images_after ---
+
+
+def test_images_after_walks_forward_from_a_watermark(library, populate_images):
+    timestamps = populate_images("1", count=10, interval=timedelta(seconds=10), end=BASE_TIME)
+
+    found = library.images_after("1", timestamps[3], BASE_TIME, limit=100)
+
+    assert [taken_at for _, taken_at in found] == timestamps[4:]
+
+
+def test_images_after_with_no_watermark_starts_at_the_beginning(library, populate_images):
+    timestamps = populate_images("1", count=5, interval=timedelta(seconds=10), end=BASE_TIME)
+
+    found = library.images_after("1", None, BASE_TIME, limit=100)
+
+    assert [taken_at for _, taken_at in found] == timestamps
+
+
+def test_images_after_stops_at_the_until_bound(library, populate_images):
+    """The newest still on disk may be half-written, so callers hold back."""
+    timestamps = populate_images("1", count=10, interval=timedelta(seconds=10), end=BASE_TIME)
+
+    found = library.images_after("1", None, timestamps[5], limit=100)
+
+    assert [taken_at for _, taken_at in found] == timestamps[:6]
+
+
+def test_images_after_honours_its_limit_and_returns_the_oldest_first(library, populate_images):
+    """Oldest-first matters: the caller advances a watermark past what it got,
+    so returning an arbitrary subset would skip the frames it did not see."""
+    timestamps = populate_images("1", count=20, interval=timedelta(seconds=10), end=BASE_TIME)
+
+    found = library.images_after("1", None, BASE_TIME, limit=5)
+
+    assert [taken_at for _, taken_at in found] == timestamps[:5]
+
+
+def test_images_after_ignores_files_that_are_not_stills(library, populate_images, jpeg_bytes):
+    populate_images("1", count=3, interval=timedelta(seconds=10), end=BASE_TIME)
+    (library.root_path / "1" / "image" / "notes.txt").write_text("not a still")
+    (library.root_path / "1" / "image" / "partial.jpg").write_bytes(jpeg_bytes)
+
+    found = library.images_after("1", None, BASE_TIME, limit=100)
+
+    assert len(found) == 3
+
+
+def test_images_after_on_an_unknown_channel_is_empty(library):
+    assert library.images_after("nope", None, BASE_TIME, limit=100) == []
