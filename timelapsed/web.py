@@ -592,16 +592,24 @@ function step(direction) {
 }
 
 const lanesEl = $("lanes");
+const DRAG_SLOP = 3;
 let drag = null;
 lanesEl.addEventListener("pointerdown", ev => {
-  drag = {x: ev.clientX, start: state.start, end: state.end, moved: false};
-  lanesEl.setPointerCapture(ev.pointerId);
-  lanesEl.classList.add("dragging");
+  drag = {x: ev.clientX, id: ev.pointerId, start: state.start, end: state.end, moved: false};
 });
+// Panning only begins past a few pixels of slop, and the pointer is captured at
+// that same moment. Both matter for clicking a clip: a redraw on every stray
+// pixel would rip the clip out of the DOM before mouseup, and a capture held
+// from pointerdown would retarget the click onto the lane strip itself.
 lanesEl.addEventListener("pointermove", ev => {
   if (!drag) return;
   const dx = ev.clientX - drag.x;
-  if (Math.abs(dx) > 2) drag.moved = true;
+  if (!drag.moved) {
+    if (Math.abs(dx) <= DRAG_SLOP) return;
+    drag.moved = true;
+    lanesEl.setPointerCapture(drag.id);
+    lanesEl.classList.add("dragging");
+  }
   const span = drag.end - drag.start;
   const shift = (dx / lanesEl.clientWidth) * span;
   state.start = drag.start - shift; state.end = drag.end - shift;
