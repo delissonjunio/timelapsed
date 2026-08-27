@@ -3,7 +3,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -72,6 +72,26 @@ def test_activity_returns_a_bucket_series_per_kind(base_url):
     assert len(payload["person"]) == 12
     assert sum(payload["person"]) > 0
     assert sum(payload["vehicle"]) > 0
+
+
+def test_recent_counts_answer_for_every_camera_at_once(base_url, config):
+    """The wall asks one question for the whole wall: what turned up lately."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    with AnalysisIndex(config.analysis_index_path) as index:
+        index.open_event("5", "person", now - 300, 0.9)
+        car = index.open_event("5", "vehicle", now - 120, 0.9)
+        index.add_plate(car, "5", now - 120, "XYZ9K88", 0.9, 4, None)
+
+    payload = get_json(f"{base_url}/api/recent?minutes=60")
+
+    assert payload["5"] == {"person": 1, "vehicle": 1, "plate": 1}
+    # The seeded sightings are on channel 1 and are old, so the window drops it.
+    assert "1" not in payload
+
+
+def test_recent_windows_are_clamped_to_something_sane(base_url):
+    assert get_json(f"{base_url}/api/recent?minutes=0") == get_json(f"{base_url}/api/recent?minutes=1")
+    assert get_json(f"{base_url}/api/recent?minutes=nonsense") == get_json(f"{base_url}/api/recent")
 
 
 def test_activity_requires_a_channel_and_a_window(base_url):

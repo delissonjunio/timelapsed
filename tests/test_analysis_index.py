@@ -207,6 +207,48 @@ def test_plates_are_searchable_by_partial_text(index):
     assert index.plates(text="ZZZ") == []
 
 
+
+# --- the camera wall ---
+
+
+def test_recent_counts_group_people_and_plates_by_channel(index):
+    person = index.open_event("1", "person", BASE, 0.9)
+    index.extend_event(person, BASE + 60, 0.9)
+    car = index.open_event("1", "vehicle", BASE + 120, 0.9)
+    index.add_plate(car, "1", BASE + 120, "ABC1D23", 0.95, 4, None)
+    index.open_event("5", "person", BASE + 200, 0.9)
+
+    counts = index.recent_counts(BASE - 600, BASE + 600)
+
+    assert counts["1"] == {"person": 1, "vehicle": 1, "plate": 1}
+    assert counts["5"] == {"person": 1, "vehicle": 0, "plate": 0}
+
+
+def test_recent_counts_leave_out_channels_with_nothing_in_the_window(index):
+    index.open_event("1", "person", BASE - 86400, 0.9)
+    assert index.recent_counts(BASE - 600, BASE + 600) == {}
+
+
+def test_recent_counts_include_a_sighting_still_running_at_the_window_edge(index):
+    """Someone who arrived before the hour and has not left is in it."""
+    staying = index.open_event("1", "person", BASE - 7200, 0.9)
+    index.extend_event(staying, BASE + 300, 0.9)
+
+    assert index.recent_counts(BASE - 600, BASE + 600)["1"]["person"] == 1
+
+
+def test_recent_counts_hold_one_plate_per_car_however_long_it_stayed(index):
+    """The plate row is already pooled per car, so a parked one counts once."""
+    car = index.open_event("1", "vehicle", BASE, 0.9)
+    plate = index.add_plate(car, "1", BASE, "ABC1D23", 0.95, 4, None)
+    for minute in range(1, 40):
+        index.extend_plate(
+            plate, car, BASE + minute * 60, "ABC1D23", 0.95,
+            minute + 1, minute + 1, None, None, None,
+        )
+
+    assert index.recent_counts(BASE - 600, BASE + 600)["1"]["plate"] == 1
+
 # --- retention ---
 
 

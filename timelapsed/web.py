@@ -15,7 +15,7 @@ import subprocess
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -234,8 +234,28 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 .cam .row { display:flex; align-items:center; gap:.45rem; padding:.4rem .55rem; background:var(--panel-2); }
 .cam .led { width:6px; height:6px; border-radius:50%; background:var(--muted); flex:none; }
 .cam[aria-pressed="true"] .led { background:var(--accent); box-shadow:0 0 6px var(--accent); }
-.cam .n { flex:1; }
+/* One line in a 150px tile: a name that wraps makes the row two lines tall and
+   the wall ragged, so it ellipsises instead. */
+.cam .n { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .cam .c { color:var(--muted); font-size:.72rem; font-variant-numeric:tabular-nums; }
+/* What the camera has seen in the last hour. The tile used to carry its clip
+   count, which answered "is this camera still rendering" -- the same yes on
+   every tile every day. This one changes.
+
+   It sits over the picture rather than beside the name because the name row of
+   a phone tile has about sixty pixels spare, and two counters do not fit in
+   sixty pixels: the name was ellipsised to make room for them. */
+.cam .seen { position:absolute; top:5px; right:5px; display:flex; align-items:center; gap:.45rem;
+             padding:2px 5px; border-radius:6px; background:rgba(5,7,11,.66);
+             font-size:.68rem; font-variant-numeric:tabular-nums; }
+.cam .seen .k { display:flex; align-items:center; gap:.22rem; }
+.cam .seen .k.person { color:var(--person); }
+.cam .seen .k.plate, .cam .seen .k.vehicle { color:var(--vehicle); }
+/* Nothing seen is still worth showing: a dim zero says the camera was watched
+   and the hour was quiet, where a missing chip says only that the wall is
+   inconsistent. */
+.cam .seen .k.none { color:var(--muted); opacity:.55; }
+.cam .seen svg { width:11px; height:11px; display:block; flex:none; }
 
 #stage { display:flex; flex-direction:column; min-height:0; padding:1rem; gap:.75rem; }
 #screen { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; background:#000;
@@ -357,7 +377,11 @@ header .navlink:hover { color:var(--fg); background:var(--panel-2); }
   #channels { border-right:none; border-bottom:1px solid var(--line);
               display:flex; gap:.4rem; overflow-x:auto; padding:.5rem; }
   #channels h2 { display:none; }
-  .cam { width:132px; flex:none; margin-bottom:0; }
+  .cam { width:150px; flex:none; margin-bottom:0; }
+  /* The stat and the library link keep their shape and take another row
+     rather than breaking mid-phrase inside their own pill. */
+  header { flex-wrap:wrap; }
+  header .navlink, header .stat { white-space:nowrap; }
   #screen { flex:none; aspect-ratio:16/9; }
   /* Horizontal drags pan the timeline, vertical ones scroll the page. With the
      desktop `touch-action:none` a swipe that starts on the lanes moves nothing
@@ -415,6 +439,7 @@ const TICKS = [5 * MIN, 15 * MIN, 30 * MIN, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR,
 const channels = JSON.parse(document.getElementById("channels-payload").textContent);
 const HAS_RECOGNITION = JSON.parse(document.getElementById("recognition-payload").textContent);
 const FPS = JSON.parse(document.getElementById("fps-payload").textContent);
+const PLATE_CHANNELS = JSON.parse(document.getElementById("plate-channels-payload").textContent);
 const params = new URLSearchParams(location.search);
 const KINDS = ["person", "vehicle"];
 const KIND_LABEL = {person: "people", vehicle: "vehicles"};
@@ -448,6 +473,32 @@ function el(tag, className, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
+// Line icons, drawn rather than typed: an emoji is a different picture on every
+// platform and half of them are the wrong size next to 11px text.
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICON_PATHS = {
+  person: ["M8 1.6a2.4 2.4 0 1 1 0 4.8 2.4 2.4 0 0 1 0-4.8", "M2.6 14.4c0-3 2.4-5.4 5.4-5.4s5.4 2.4 5.4 5.4"],
+  vehicle: ["M2 9.6l1.4-3.8a1.7 1.7 0 0 1 1.6-1.1h6a1.7 1.7 0 0 1 1.6 1.1L14 9.6",
+            "M1.7 9.6h12.6v2.7H1.7z", "M4.3 12.3v1.3", "M11.7 12.3v1.3"],
+  plate: ["M1.4 4.2h13.2v7.6H1.4z", "M4.2 8h2.2", "M7.4 8h1.4", "M9.8 8h2"],
+};
+function icon(kind) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  for (const d of ICON_PATHS[kind] || []) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
 // Only the known cadences get a colour; anything else falls back, so a stray
 // filename on disk can never inject a CSS value.
 const cadenceColour = name => CADENCES.includes(name) ? "var(--" + name + ")" : "var(--muted)";
@@ -508,18 +559,23 @@ function clampView() {
 function buildChannels() {
   const box = $("channels");
   for (const id of channels) {
-    const n = ENTRIES.filter(e => e.channel === id).length;
     const b = document.createElement("button");
     b.className = "cam";
     b.dataset.channel = id;
 
     const thumb = el("span", "thumb blank");
     thumb.appendChild(newThumbImage(id, () => thumb.classList.remove("blank")));
+    if (HAS_RECOGNITION) thumb.appendChild(seenBox(id));
 
     // textContent throughout: channel ids and cadence names come from filenames
     // on disk, so they are never interpolated into markup.
     const row = el("span", "row");
-    row.append(el("span", "led"), el("span", "n", "Camera " + id), el("span", "c", String(n)));
+    row.append(el("span", "led"), el("span", "n", "Camera " + id));
+    // Without an analyzer there is nothing recent to report, so the tile falls
+    // back to what it can say for itself: how many clips this camera holds.
+    if (!HAS_RECOGNITION) {
+      row.appendChild(el("span", "c", String(ENTRIES.filter(e => e.channel === id).length)));
+    }
 
     b.append(thumb, row);
     b.onclick = () => {
@@ -591,6 +647,58 @@ function newThumbImage(id, onReady) {
   };
   img.src = thumbUrl(id);
   return img;
+}
+
+// The wall's counts: people, and whatever the camera can say about cars. They
+// are counted differently, deliberately. A person chip counts events, so a
+// visitor who arrives and stays is one. A plate chip counts cars, pooled across
+// every read of the same plate, so a car parked the whole hour is also one.
+const SEEN_WINDOW_MINUTES = 60;
+const SEEN_LABELS = {
+  person: ["person", "people"], vehicle: ["vehicle", "vehicles"], plate: ["plate", "plates"],
+};
+
+// A plate count where no plates are read is zero every hour of every day, which
+// reads as "no cars came" rather than as "nobody is reading plates here". Those
+// cameras count vehicles instead, which is what they do see.
+const carKind = id => PLATE_CHANNELS.includes(id) ? "plate" : "vehicle";
+
+function seenBox(id) {
+  const box = el("span", "seen");
+  for (const kind of ["person", carKind(id)]) {
+    const chip = el("span", "k " + kind);
+    chip.dataset.kind = kind;
+    chip.append(icon(kind), el("b", "", "0"));
+    box.appendChild(chip);
+  }
+  paintSeen(box, null);
+  return box;
+}
+
+function paintSeen(box, counts) {
+  for (const chip of box.querySelectorAll(".k")) {
+    const kind = chip.dataset.kind;
+    const n = (counts && counts[kind]) || 0;
+    const [one, many] = SEEN_LABELS[kind];
+    chip.querySelector("b").textContent = String(n);
+    chip.classList.toggle("none", n === 0);
+    chip.title = n + " " + (n === 1 ? one : many) + " in the last hour";
+  }
+}
+
+function refreshSeen() {
+  if (!HAS_RECOGNITION) return;
+  fetch("/api/recent?minutes=" + SEEN_WINDOW_MINUTES)
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    // Leaving the last numbers up beats blanking the wall over one bad request.
+    .catch(() => null)
+    .then(counts => {
+      if (!counts) return;
+      for (const card of document.querySelectorAll(".cam")) {
+        const box = card.querySelector(".seen");
+        if (box) paintSeen(box, counts[card.dataset.channel]);
+      }
+    });
 }
 
 function syncChannels() {
@@ -1335,6 +1443,7 @@ setInterval(() => {
       else thumb.appendChild(next);
     });
   }
+  refreshSeen();
 }, THUMB_REFRESH);
 
 if (HAS_RECOGNITION) $("librarylink").hidden = false;
@@ -1342,6 +1451,7 @@ if (HAS_RECOGNITION) $("librarylink").hidden = false;
 drawControls();
 drawTransport();
 buildChannels();
+refreshSeen();
 
 // ?at= is how the library page hands a sighting back to the viewer: centre the
 // timeline on that moment and start the covering clip there, rather than
@@ -1374,6 +1484,7 @@ def render_index(
     catalogue: TimelapseCatalogue,
     recognition: "RecognitionReader | None" = None,
     fps_by_cadence: dict[str, int] | None = None,
+    plate_channels: list[str] | None = None,
 ) -> bytes:
     """The viewer shell with the whole catalogue embedded.
 
@@ -1426,6 +1537,11 @@ def render_index(
         # no frame rate the media element will admit to. Send it rather than
         # letting the player guess at 30 and land between frames.
         + block("fps-payload", fps_by_cadence or {})
+        + "\n"
+        # Which cameras read plates. Only those get a plate counter on the wall:
+        # elsewhere a plate count is zero every hour of every day, which reads as
+        # "no cars" rather than as "nobody is looking".
+        + block("plate-channels-payload", plate_channels or [])
         + "\n<script>\nconst ENTRIES",
     )
     return page.encode()
@@ -1476,6 +1592,10 @@ class RecognitionReader:
     def events(self, **kwargs) -> list:
         with self._lock:
             return self._connection().events(**kwargs)
+
+    def recent_counts(self, start: int, end: int) -> dict[str, dict[str, int]]:
+        with self._lock:
+            return self._connection().recent_counts(start, end)
 
     def identities(self, kind: str | None = None) -> list[dict]:
         with self._lock:
@@ -1531,12 +1651,14 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         thumbnails: ThumbnailCache,
         recognition: "RecognitionReader | None" = None,
         fps_by_cadence: dict[str, int] | None = None,
+        plate_channels: list[str] | None = None,
         **kwargs,
     ):
         self.catalogue = catalogue
         self.thumbnails = thumbnails
         self.recognition = recognition
         self.fps_by_cadence = fps_by_cadence or {}
+        self.plate_channels = plate_channels or []
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -1574,6 +1696,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     self.catalogue,
                     recognition=self.recognition,
                     fps_by_cadence=self.fps_by_cadence,
+                    plate_channels=self.plate_channels,
                 )
                 self._send_bytes(body, "text/html; charset=utf-8")
             elif path == "/library":
@@ -1688,6 +1811,16 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     limit=min(number("limit", 500) or 500, 2000),
                 )
             ]
+        elif path == "/api/recent":
+            # What each camera has seen lately, for the wall. The window is a
+            # length rather than a pair of instants: it is always relative to
+            # now, and now is the server's -- a phone with a wandering clock
+            # should still be told what the cameras actually saw.
+            minutes = min(max(number("minutes", 60) or 60, 1), 24 * 60)
+            end = int(datetime.now(timezone.utc).timestamp())
+            payload = self.recognition.recent_counts(
+                end - int(timedelta(minutes=minutes).total_seconds()), end
+            )
         elif path == "/api/status":
             # How far analysis has actually reached. Without this an empty
             # activity lane is indistinguishable from a window that simply has
@@ -1826,6 +1959,7 @@ def build_server(config: Config) -> ThreadingHTTPServer:
         thumbnails=ThumbnailCache(),
         recognition=RecognitionReader.open(config),
         fps_by_cadence={name: config.output_fps_for(name) for name in CADENCES},
+        plate_channels=list(config.analysis_plate_channels),
     )
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 

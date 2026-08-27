@@ -379,6 +379,49 @@ class AnalysisIndex:
                 counts[event.kind][bucket] += 1
         return counts
 
+    def recent_counts(self, start: int, end: int) -> dict[str, dict[str, int]]:
+        """People and plates per channel over one window, for the camera wall.
+
+        Two counts of different things, deliberately. A person count is events:
+        one per arrival, so a visitor who stays is one. A plate count is rows in
+        `plate`, which pooling already made one per car rather than per read --
+        a car parked the whole hour is one plate, not four thousand.
+
+        Whole-catalogue rather than per channel: the wall asks for every camera
+        at once, and one grouped scan beats six round trips.
+        """
+        counts: dict[str, dict[str, int]] = {}
+
+        def channel_counts(channel: str) -> dict[str, int]:
+            return counts.setdefault(channel, {"person": 0, "vehicle": 0, "plate": 0})
+
+        # Overlap, as everywhere else: someone who walked in before the window
+        # opened and has not left is in it.
+        for row in self.connection.execute(
+            "SELECT channel, kind, COUNT(*) AS n FROM event "
+            "WHERE ended_at >= ? AND started_at <= ? GROUP BY channel, kind",
+            (start, end),
+        ):
+            if row["kind"] in ("person", "vehicle"):
+                channel_counts(row["channel"])[row["kind"]] = row["n"]
+
+        # `last_seen_at` is a column pooling added, and the viewer opens the
+        # index read-only, so it can be reading one the analyzer has not
+        # migrated yet. Where it is missing a plate is the moment it was first
+        # read, which is what the rows meant before the span existed.
+        columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(plate)")
+        }
+        last_seen = "MAX(captured_at, last_seen_at)" if "last_seen_at" in columns else "captured_at"
+        for row in self.connection.execute(
+            f"SELECT channel, COUNT(*) AS n FROM plate "
+            f"WHERE {last_seen} >= ? AND captured_at <= ? GROUP BY channel",
+            (start, end),
+        ):
+            channel_counts(row["channel"])["plate"] = row["n"]
+
+        return counts
+
     # --- identities ---
 
     def create_identity(self, kind: str, at: int) -> int:

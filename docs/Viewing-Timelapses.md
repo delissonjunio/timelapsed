@@ -21,6 +21,7 @@ It serves:
 | `/api/timelapses` | The same list as JSON. This one does filter: `?channel=` and `?cadence=` narrow the response |
 | `/video/{channel}/{filename}` | The video file, with HTTP Range support |
 | `/thumb/{channel}.jpg` | The latest still for a camera, downscaled for the sidebar |
+| `/api/recent` | What each camera has seen lately, for the wall: `{channel: {person, vehicle, plate}}` over the last `?minutes=` (default 60, clamped to a day). Recognition only |
 | `/library` | People and plates, when recognition is enabled |
 | `/crop/{event\|plate}/{id}.jpg` | A recognition crop |
 | `/healthz` | Returns `ok`, for monitoring |
@@ -39,8 +40,20 @@ width at every zoom level, and the arrow keys — which step within a cadence �
 to. Click it in the lane to play it. The range presets go up to `1y` and `All`, which is what you
 want for a build that has been running for months.
 
+Each camera tile carries what that camera has seen in the last hour, over the top-right of its
+still: people and plates, refreshed on the same thirty-second beat as the thumbnails. The two are
+counted differently on purpose. A person count is *events*, so someone who arrives and stays is one.
+A plate count is *cars*, pooled across every read of the same plate, so a car parked the whole hour
+is also one. A dim zero means the hour was quiet, which is a different statement from a tile with no
+counters — that is what a camera looks like with recognition switched off, and it falls back to its
+clip count. (The tile used to carry only that clip count, which answered "is this camera still
+rendering": the same yes on every tile, every day.)
+
 The page is mobile-first and works in Safari on iOS, which is fussier than most browsers: it needs
-`Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled.
+`Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled. On a phone the
+layout stops trying to fit one screen — the camera strip, the transport and seven lanes are most of
+a phone viewport between them, and what was left for the picture was a sixty-pixel band. It scrolls
+instead, and the video holds 16:9.
 
 ## The player
 
