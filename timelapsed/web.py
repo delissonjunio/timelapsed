@@ -529,10 +529,14 @@ function buildChannels() {
       // Picking a camera by hand is where the link that brought them here has
       // served its purpose, so the query stops describing it and starts
       // describing where they now are.
-      syncUrl(id);
+      const pinned = syncUrl(id);
       state.channel = id;
       state.selected = null;
-      setView(state.end - state.start || DAY);
+      // A deep link opens on an hour either side of one sighting. That window
+      // is part of the pin, so it goes with it -- widening back out rather than
+      // leaving them on an hour of another camera and calling it the timeline.
+      // A zoom the reader set themselves is theirs, and is kept.
+      setView(pinned ? DAY : (state.end - state.start || DAY));
       syncChannels();
       drawTimeline();
       // Land on something playable. The clip covering the moment just being
@@ -565,10 +569,12 @@ function buildChannels() {
 // anything once they have moved off it.
 function syncUrl(channel) {
   state.focusIdentity = null;
+  const pinned = params.has("at") || params.has("identity");
   params.set("channel", channel);
   params.delete("at");
   params.delete("identity");
   history.replaceState(null, "", location.pathname + "?" + params.toString());
+  return pinned;
 }
 
 // onReady fires once the image has decoded, which is when it is safe to put it
