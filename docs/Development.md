@@ -47,6 +47,7 @@ random port and drive it with `urllib`.
 | `test_analysis_index.py` | The recognition index: schema, queries, retention |
 | `test_identities.py` | Naming and merging identities |
 | `test_web_recognition.py` | The recognition routes and the activity lanes |
+| `test_system_status.py` | The library scan, the status arithmetic on top of it, `/status` and `/api/system` |
 | `test_nginx_config.py` | The generated nginx config: routes, headers, what stays proxied |
 
 The clock is frozen in `test_daemon.py` by patching `timelapsed.timelapsed.datetime` and driving
@@ -65,6 +66,8 @@ timelapsed/
   image_processor.py        frame selection and ffmpeg invocation
   web.py                    the viewer (standard library only, plus the recognition API)
   library_page.py           the people and plates page
+  status_page.py            the system status page
+  system_status.py          the status report: library scan, health arithmetic, checks
   analyzer.py               the recognition daemon: run(), run_once(), prune()
   analysis/
     index.py                SQLite schema and queries

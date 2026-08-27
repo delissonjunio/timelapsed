@@ -266,6 +266,34 @@ class AnalysisIndex:
             for row in self.connection.execute("SELECT channel, analysed_through FROM watermark")
         }
 
+    # --- housekeeping ---
+
+    def table_counts(self) -> dict[str, int]:
+        """How many rows each table holds, plus the span the events cover.
+
+        For the status page, which needs a sense of what the index is carrying:
+        `detection` outnumbers `event` by three orders of magnitude and is the
+        one that decides how big the file gets, so seeing the ratio is what
+        makes an over-generous `detection_retention_days` obvious.
+
+        COUNT(*) with no WHERE is an index scan SQLite answers from the smallest
+        index on the table, which at these row counts is milliseconds.
+        """
+        counts = {
+            table: self.connection.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+            for table in ("event", "detection", "plate", "identity", "signature", "watermark")
+        }
+        counts["named_identity"] = self.connection.execute(
+            "SELECT COUNT(*) AS n FROM identity WHERE name IS NOT NULL"
+        ).fetchone()["n"]
+
+        span = self.connection.execute(
+            "SELECT MIN(started_at) AS first, MAX(ended_at) AS last FROM event"
+        ).fetchone()
+        counts["oldest_event"] = span["first"]
+        counts["newest_event"] = span["last"]
+        return counts
+
     # --- events ---
 
     def open_event(self, channel: str, kind: str, at: int, score: float) -> int:

@@ -120,6 +120,7 @@ main { flex:1; overflow-y:auto; padding:1.1rem 1.25rem 2rem; }
   <span class="dot"></span>
   <h1>People &amp; plates</h1>
   <a class="navlink" href="/">&larr; Timeline</a>
+  <a class="navlink" href="/status">System</a>
   <span class="spacer"></span>
   <span class="stat" id="stat"></span>
 </header>

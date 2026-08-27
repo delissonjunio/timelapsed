@@ -356,15 +356,29 @@ the `rsync` is the thing actually protecting them. Worth a cron entry rather tha
 
 ## Monitoring
 
-The simplest useful check is whether new stills are still arriving:
+Start at the viewer's **[system status page](System-Status.md)**, at `/status`. It answers most of
+what is on this page — is the disk filling, is every camera still writing, is analysis keeping up,
+are renders being produced — from one screen, and its checks list is empty on a healthy server.
+
+For an actual alert, the same report is JSON at `/api/system`, and an empty `checks` array is the
+whole probe:
+
+```bash
+# Exits non-zero, and prints what is wrong, when anything is.
+curl -sf localhost:8080/api/system \
+  | jq -e -r 'if (.checks | map(select(.level == "error")) | length) == 0
+              then empty else (.checks[] | "\(.level): \(.title) — \(.detail)"), false end'
+```
+
+Without the viewer running, the simplest useful check is whether new stills are still arriving:
 
 ```bash
 find /var/lib/timelapsed -name '*.jpg' -newermt '-5 minutes' | wc -l
 ```
 
 Zero across all channels means capture has stopped. With Home Assistant on the same network, a
-`command_line` sensor over SSH running that check makes a decent alert. `/healthz` on the viewer
-covers the web service.
+`command_line` sensor over SSH running either check makes a decent alert. `/healthz` on the viewer
+covers the web service itself.
 
 `Restart=always` with `RestartSec=10` means both services come back on their own after a crash or
 an OOM kill, so alerting on "no new images for 15 minutes" catches the cases that matter without

@@ -27,6 +27,8 @@ from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.library_page import render_library
 from timelapsed.schema import CADENCES, Config
+from timelapsed.status_page import render_status
+from timelapsed.system_status import SystemStatusCollector, status_json
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +397,7 @@ header .navlink:hover { color:var(--fg); background:var(--panel-2); }
   <span class="dot"></span>
   <h1>Timelapsed</h1>
   <a class="navlink" id="librarylink" href="/library" hidden>People &amp; plates</a>
+  <a class="navlink" href="/status">System</a>
   <span class="spacer"></span>
   <span class="stat" id="stat"></span>
 </header>
@@ -1612,6 +1615,20 @@ class RecognitionReader:
                 for channel, through in self._connection().watermarks().items()
             }
 
+    def watermark_epochs(self) -> dict[str, int]:
+        """The same watermarks unconverted, for callers doing arithmetic on them.
+
+        `watermarks` formats for the timeline, which wants a string it can hand
+        straight to Date.parse. The status page subtracts them from frame
+        timestamps, so it wants the seconds.
+        """
+        with self._lock:
+            return self._connection().watermarks()
+
+    def table_counts(self) -> dict[str, int]:
+        with self._lock:
+            return self._connection().table_counts()
+
     def rename_identity(self, identity_id: int, name: str | None) -> bool:
         # The one write. Opened separately so the read connection stays read-only
         # and a bug in a GET handler cannot mutate anything.
@@ -1650,6 +1667,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         catalogue: TimelapseCatalogue,
         thumbnails: ThumbnailCache,
         recognition: "RecognitionReader | None" = None,
+        status: SystemStatusCollector | None = None,
         fps_by_cadence: dict[str, int] | None = None,
         plate_channels: list[str] | None = None,
         **kwargs,
@@ -1657,6 +1675,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         self.catalogue = catalogue
         self.thumbnails = thumbnails
         self.recognition = recognition
+        self.status = status
         self.fps_by_cadence = fps_by_cadence or {}
         self.plate_channels = plate_channels or []
         super().__init__(*args, **kwargs)
@@ -1704,6 +1723,15 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     self.send_error(HTTPStatus.NOT_FOUND, "Recognition is not enabled")
                     return
                 self._send_bytes(render_library(), "text/html; charset=utf-8")
+            elif path == "/status":
+                # Not gated on recognition, unlike /library: the disk filling up
+                # and a camera going quiet are the viewer's problems whether or
+                # not anything is analysing the frames.
+                self._send_bytes(render_status(), "text/html; charset=utf-8")
+            elif path == "/api/system":
+                # Ahead of the /api/ catch-all, which answers 404 when
+                # recognition is off -- this endpoint works either way.
+                self._serve_system_status(query)
             elif path == "/api/timelapses":
                 entries = self.catalogue.entries(query.get("channel"), query.get("cadence"))
                 body = json.dumps([entry.as_dict() for entry in entries], indent=2).encode()
@@ -1777,6 +1805,18 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, "Expected a JSON object")
             return None
         return payload
+
+    def _serve_system_status(self, query: dict[str, str]) -> None:
+        if self.status is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Status reporting is not configured")
+            return
+        # `refresh=1` is what the page's own button sends, so someone watching a
+        # backlog drain is not held to the cache's TTL. Everything else, the
+        # page's polling included, takes the cached answer.
+        report = self.status.report(
+            recognition=self.recognition, force=query.get("refresh") in ("1", "true")
+        )
+        self._send_bytes(status_json(report), "application/json", cache_control="no-store")
 
     def _serve_recognition_api(self, path: str, query: dict[str, str]) -> None:
         if self.recognition is None:
@@ -1958,6 +1998,7 @@ def build_server(config: Config) -> ThreadingHTTPServer:
         catalogue=catalogue,
         thumbnails=ThumbnailCache(),
         recognition=RecognitionReader.open(config),
+        status=SystemStatusCollector(config),
         fps_by_cadence={name: config.output_fps_for(name) for name in CADENCES},
         plate_channels=list(config.analysis_plate_channels),
     )

@@ -99,6 +99,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 | [Storage Planning](docs/Storage-Planning.md) | How to pick a capture interval and size the disk |
 | [Proxmox Deployment](docs/Proxmox-Deployment.md) | VM creation through to a running service |
 | [Viewing Timelapses](docs/Viewing-Timelapses.md) | The built-in viewer, Tailscale Serve, Jellyfin |
+| [System Status](docs/System-Status.md) | The `/status` page: storage, capture health, how far behind analysis is |
 | [Recognition](docs/Recognition.md) | People, vehicles and plates on the timeline |
 | [Recognition Feasibility](docs/Recognition-Feasibility.md) | What the cameras can support, measured before building |
 | [Operations](docs/Operations.md) | Logs, common failures, upgrades, backups |
@@ -112,7 +113,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 .venv/bin/python -m pytest
 ```
 
-351 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
+439 tests. They use the real filesystem and the real `ffmpeg` binary — renders are verified by
 probing the output with `ffprobe` — and fake only the NVR.
 
 ## License
