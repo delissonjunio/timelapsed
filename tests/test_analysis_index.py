@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+import sqlite3
+
 import pytest
 
 from tests.conftest import BASE_TIME
@@ -39,6 +41,47 @@ def test_a_newer_schema_is_refused_rather_than_downgraded(tmp_path):
 
     with pytest.raises(RuntimeError, match="newer Timelapsed"):
         AnalysisIndex(path)
+
+
+def test_an_index_written_before_plate_pooling_is_upgraded_in_place(tmp_path):
+    """Schema 1 had no plate span, tally or box. The columns are added to the
+    table that is already there, and the rows in it survive.
+    """
+    path = tmp_path / "index.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        CREATE TABLE event (
+            id INTEGER PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL,
+            started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL,
+            frame_count INTEGER NOT NULL DEFAULT 0, peak_score REAL NOT NULL DEFAULT 0,
+            thumb_path TEXT, identity_id INTEGER
+        );
+        CREATE TABLE plate (
+            id INTEGER PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES event(id),
+            channel TEXT NOT NULL, captured_at INTEGER NOT NULL, text TEXT NOT NULL,
+            confidence REAL NOT NULL, votes INTEGER NOT NULL DEFAULT 1, crop_path TEXT
+        );
+        INSERT INTO event VALUES (1, '1', 'vehicle', 100, 200, 4, 0.9, NULL, NULL);
+        INSERT INTO plate VALUES (1, 1, '1', 150, 'ABC1D23', 0.9, 3, NULL);
+        PRAGMA user_version = 1;
+    """)
+    connection.commit()
+    connection.close()
+
+    # The viewer opens read-only and never migrates, so it has to cope with the
+    # older schema it may be handed.
+    stale = AnalysisIndex(path, read_only=True)
+    assert stale.plates()[0]["reads"] == 3
+    stale.close()
+
+    with AnalysisIndex(path) as upgraded:
+        plates = upgraded.plates()
+        assert len(plates) == 1
+        assert plates[0]["text"] == "ABC1D23"
+        # A row from before the span existed covers the one moment it was read.
+        assert plates[0]["last_seen_at"] == plates[0]["seen_at"]
+        # And with no box on it, nothing new can be pooled into it by position.
+        assert upgraded.plate_tracks("1", 0) == []
 
 
 # --- watermarks ---

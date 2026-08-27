@@ -43,5 +43,14 @@ else
 fi
 
 echo "==> Restarting"
-sudo systemctl restart timelapsed timelapsed-web
-systemctl --no-pager --lines=0 status timelapsed timelapsed-web
+UNITS=(timelapsed timelapsed-web)
+# The analyzer is optional: it is not installed on a capture-only guest, and
+# where [analysis] is off it exits 0 and is meant to stay stopped. Restarting it
+# unconditionally would fail the upgrade on both. It does have to be restarted
+# where it is wanted -- it is the only writer of the recognition index, so it is
+# also the only process that migrates it.
+if systemctl is-enabled --quiet timelapsed-analyzer 2>/dev/null; then
+    UNITS+=(timelapsed-analyzer)
+fi
+sudo systemctl restart "${UNITS[@]}"
+systemctl --no-pager --lines=0 status "${UNITS[@]}"

@@ -100,7 +100,7 @@ main { flex:1; overflow-y:auto; padding:1.1rem 1.25rem 2rem; }
        font-size:.75rem; cursor:pointer; padding:.32rem .7rem; border-radius:6px; }
 .btn:hover { border-color:var(--accent); }
 
-.platerow { display:flex; align-items:center; gap:.8rem; padding:.5rem .6rem;
+.platerow { display:flex; align-items:center; gap:.8rem; padding:.5rem .6rem; width:100%;
             background:var(--panel); border:1px solid var(--line); border-radius:9px;
             cursor:pointer; margin-bottom:.5rem; color:inherit; font:inherit;
             text-align:left; text-decoration:none; }
@@ -140,6 +140,7 @@ const params = new URLSearchParams(location.search);
 const state = {
   tab: params.get("tab") === "plates" ? "plates" : "people",
   identity: Number(params.get("identity")) || null,
+  plate: params.get("plate") || null,
   identities: [],
   plates: [],
   sightings: [],
@@ -162,6 +163,14 @@ function fmt(ms) {
   return DAYS[d.getDay()] + " " + d.getDate() + " " + MONTHS[d.getMonth()]
     + ", " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 }
+const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+
+// A plate row covers a stay, not a moment: a car parked in the driveway is read
+// again for as long as it sits there. Show the span when there is one.
+function span(read) {
+  const from = Date.parse(read.seen_at), to = Date.parse(read.last_seen_at || read.seen_at);
+  return to - from >= 60000 ? fmt(from) + "\\u2013" + clock(to) : fmt(from);
+}
 
 // The point of this page: hand a moment back to the viewer, which seeks the
 // covering clip to it rather than starting from the top of the newest one.
@@ -175,6 +184,7 @@ function syncUrl() {
   const next = new URLSearchParams();
   if (state.tab === "plates") next.set("tab", "plates");
   if (state.identity) next.set("identity", String(state.identity));
+  if (state.plate) next.set("plate", state.plate);
   const query = next.toString();
   history.replaceState(null, "", query ? "?" + query : location.pathname);
 }
@@ -219,7 +229,7 @@ function draw() {
     content.appendChild(el("p", "empty", "Loading\\u2026"));
     return;
   }
-  if (state.tab === "plates") return drawPlates(content);
+  if (state.tab === "plates") return state.plate ? drawPlateReads(content) : drawPlates(content);
   if (state.identity) return drawSightings(content);
   return drawPeople(content);
 }
@@ -314,38 +324,105 @@ function drawSightings(content) {
   content.appendChild(grid);
 }
 
-function drawPlates(content) {
-  $("stat").textContent = state.plates.length + (state.plates.length === 1 ? " read" : " reads");
+// A read is one sighting; a plate is a car. The same car comes and goes all day,
+// so listing raw reads buries the handful of plates that actually went past
+// under a wall of rows repeating one of them. Group first, list on demand.
+function platesByText() {
+  const groups = new Map();
+  for (const read of state.plates) {  // newest first, as the API returns them
+    let group = groups.get(read.text);
+    if (!group) {
+      group = {text: read.text, reads: [], cameras: []};
+      groups.set(read.text, group);
+    }
+    group.reads.push(read);
+    if (!group.cameras.includes(read.channel)) group.cameras.push(read.channel);
+  }
+  return [...groups.values()];
+}
 
-  if (!state.plates.length) {
+const cameraLabel = channels =>
+  (channels.length === 1 ? "Camera " : "Cameras ") + channels.join(", ");
+
+// The row is an <a> when it goes to the video and a <button> when it opens a
+// list, because those are different things and the keyboard should know it.
+function plateRow(node, crop, text, meta) {
+  node.className = "platerow";
+  if (crop) {
+    const img = document.createElement("img");
+    img.alt = ""; img.loading = "lazy"; img.src = crop;
+    img.onerror = () => img.remove();
+    node.appendChild(img);
+  }
+  node.append(el("span", "txt", text), el("span", "meta", meta));
+  return node;
+}
+
+function drawPlates(content) {
+  const groups = platesByText();
+  $("stat").textContent = groups.length + (groups.length === 1 ? " plate" : " plates");
+
+  if (!groups.length) {
     content.appendChild(el("p", "empty",
       "No plates read yet. Plates are only read on the cameras listed in plate_channels, "
       + "and only where they land large enough in frame to resolve."));
     return;
   }
 
-  for (const plate of state.plates) {
-    const at = Date.parse(plate.seen_at);
-    const row = document.createElement("a");
-    row.className = "platerow";
-    row.href = viewerUrl(plate.channel, at);
-    row.title = "Open the video at this moment";
-    if (plate.crop) {
-      const img = document.createElement("img");
-      img.alt = ""; img.loading = "lazy"; img.src = plate.crop;
-      img.onerror = () => img.remove();
-      row.appendChild(img);
+  for (const group of groups) {
+    const latest = group.reads[0];
+    const at = Date.parse(latest.seen_at);
+    const crop = (group.reads.find(read => read.crop) || {}).crop;
+    const meta = group.reads.length
+      + (group.reads.length === 1 ? " sighting \\u00b7 " : " sightings \\u00b7 last ")
+      + span(latest) + " \\u00b7 " + cameraLabel(group.cameras);
+
+    if (group.reads.length === 1) {
+      const row = plateRow(document.createElement("a"), crop, group.text, meta);
+      row.href = viewerUrl(latest.channel, at);
+      row.title = "Open the video at this moment";
+      content.appendChild(row);
+    } else {
+      const row = plateRow(document.createElement("button"), crop, group.text, meta);
+      row.type = "button";
+      row.title = "Show every time this plate was read";
+      row.onclick = () => { state.plate = group.text; syncUrl(); draw(); };
+      content.appendChild(row);
     }
-    row.append(
-      el("span", "txt", plate.text),
-      el("span", "meta", fmt(at) + " \\u00b7 Camera " + plate.channel
-        + " \\u00b7 " + plate.votes + " frames agreed"),
-    );
-    content.appendChild(row);
   }
   content.appendChild(el("p", "note",
-    "Each plate is voted across every frame of one sighting; single frames disagree "
-    + "at this resolution."));
+    "One row per plate; open one to see each time it was seen. A sighting pools "
+    + "every read of a plate that stayed in the same part of the frame, because "
+    + "single frames disagree at this resolution and a car that sits still gives "
+    + "plenty of them."));
+}
+
+function drawPlateReads(content) {
+  const reads = state.plates.filter(read => read.text === state.plate);
+
+  const bar = el("div", "detailbar");
+  const back = el("button", "btn", "\\u2190 All plates");
+  back.onclick = () => { state.plate = null; syncUrl(); draw(); };
+  bar.append(back, el("h2", "", state.plate),
+             el("span", "count", reads.length
+               + (reads.length === 1 ? " sighting" : " sightings")));
+  content.appendChild(bar);
+  $("stat").textContent = state.plate;
+
+  if (!reads.length) {
+    content.appendChild(el("p", "empty", "No reads of this plate are in the index."));
+    return;
+  }
+
+  for (const read of reads) {
+    const at = Date.parse(read.seen_at);
+    const row = plateRow(document.createElement("a"), read.crop, read.text,
+      span(read) + " \\u00b7 Camera " + read.channel
+      + " \\u00b7 " + read.votes + " of " + (read.reads || read.votes) + " reads agreed");
+    row.href = viewerUrl(read.channel, at);
+    row.title = "Open the video at this moment";
+    content.appendChild(row);
+  }
 }
 
 async function renameIdentity(identity) {
@@ -369,6 +446,7 @@ for (const [id, tab] of [["tab-people", "people"], ["tab-plates", "plates"]]) {
   $(id).onclick = () => {
     state.tab = tab;
     if (tab === "plates") state.identity = null;
+    else state.plate = null;
     syncUrl();
     draw();
   };

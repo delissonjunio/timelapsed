@@ -58,6 +58,11 @@ image storage.
    towards the camera gives a better crop every frame, and matching on each one
    would file one visit under several identities.
 
+An event stays open across analyzer passes. It closes when nothing has extended
+it for 60 seconds of *capture* time — measured against the newest frame the
+analyzer has seen, not the wall clock, so a backfill of last week's frames does
+not close everything on sight.
+
 ### Events, not detections
 
 `event` is the durable record and what the timeline draws. `detection` holds the
@@ -67,14 +72,42 @@ against roughly 3,200 detection rows.
 
 ## Plates
 
-Plate reads are **voted across an event, never trusted per frame.** At the sizes
-these cameras produce, single frames disagree — the same car read as `TZT4E17`,
-`TZF4L17`, `TIF4E11` and `TZF4E17` across four consecutive frames. Voting runs
-per character position, so it recovers a plate no single frame read correctly.
+Plate reads are **voted, never trusted per frame.** At the sizes these cameras
+produce, single frames disagree — the same car read as `TZT4E17`, `TZF4L17`,
+`TIF4E11` and `TZF4E17` across four consecutive frames. Voting runs per
+character position, so it recovers a plate no single frame read correctly.
 
 On a real sighting here that produced 40 reads, 37 agreed, at 0.97 confidence.
 
-Three guards, all of which must pass:
+### Voting pools across sightings, using position
+
+Voting only works with reads to vote on, and a sighting that yields one read
+settles nothing. So a plate is pooled with the plate already on record **in the
+same part of the frame**: a car parked in a driveway or waiting at a gate does
+not move, and its plate stays inside the same few pixels for as long as it is
+there, however many times the vehicle detector loses and refinds it.
+
+Two conditions, both required:
+
+- the plate boxes overlap at 0.3 IoU or better, in **frame** coordinates, and
+- the two texts differ in **at most two characters**. Position alone would pool
+  in whatever parks there next; two reads of one plate differ in a character or
+  two, two different plates in six or seven.
+
+Rows stay poolable for 6 hours after their last read. This is why one row can
+say `48 of 61 reads agreed` when no single sighting offered more than one read.
+
+The evidence lives in the row, not in the analyzer's memory: `plate.tally` holds
+every full-length read as `{text: [count, confidence sum]}`, so a restart
+mid-stay goes on pooling into the same row rather than opening a second one. It
+stays small — a car parked eight hours at a 5s interval is ~5,800 reads but only
+a handful of distinct strings.
+
+A plate row therefore covers a **stay**, not a moment: `captured_at` is when the
+car turned up, `last_seen_at` the most recent read of it. The library page shows
+one row per plate, and opens to the individual stays behind it.
+
+Three guards on the vote itself, all of which must pass:
 
 1. OCR confidence at or above `plate_confidence` (default 0.7).
 2. The model's own region head says Brazil.
@@ -160,7 +193,7 @@ Everything recognition writes lives under `{library root}/index/`:
 /var/lib/timelapsed/index/
   index.sqlite3        the index (WAL; analyzer writes, viewer reads)
   crops/event/{day}/   one representative crop per event
-  crops/plate/{day}/   the clearest plate crop per read
+  crops/plate/{day}/   the clearest plate crop per plate row
   models/              the four ONNX models, ~155 MB
 ```
 
@@ -197,13 +230,38 @@ query 'SELECT channel, datetime(analysed_through, "unixepoch") FROM watermark OR
 query 'SELECT channel, kind, COUNT(*) FROM event GROUP BY channel, kind'
 
 # Plates, most recent first
-query 'SELECT datetime(captured_at,"unixepoch"), channel, text, votes FROM plate ORDER BY captured_at DESC LIMIT 20'
+query 'SELECT datetime(captured_at,"unixepoch"), datetime(last_seen_at,"unixepoch"), channel, text, votes, reads FROM plate ORDER BY last_seen_at DESC LIMIT 20'
+
+# What else did the pooled reads of one plate say?
+query 'SELECT text, tally FROM plate ORDER BY last_seen_at DESC LIMIT 5'
 ```
 
 ```bash
 # Disk
 du -sh /var/lib/timelapsed/index
 ```
+
+### Pooling rows an older build wrote
+
+An index written before pooling landed holds runs of near-identical plate rows:
+the same car, filed once per sighting, read differently each time. Those rows
+carry no plate box, so nothing can be folded into them by position afterwards.
+The one-off collapses them on what they do carry — same channel, close in time,
+text that nearly agrees — and votes across the run:
+
+```bash
+sudo systemctl stop timelapsed-analyzer   # it is the index's only writer
+sudo -u timelapsed cp /var/lib/timelapsed/index/index.sqlite3{,.bak}
+sudo -u timelapsed /opt/timelapsed/.venv/bin/python -m timelapsed.analysis.backfill
+sudo -u timelapsed /opt/timelapsed/.venv/bin/python -m timelapsed.analysis.backfill --apply
+sudo systemctl start timelapsed-analyzer
+```
+
+It reports and changes nothing without `--apply`. The window is `--gap-minutes`
+(30 by default), deliberately far shorter than the six hours live pooling
+allows: without a box to match on, only closeness in time keeps two real visits
+apart. Rows written since pooling landed are left alone — they have a box, and
+the live path already pools them by it.
 
 Or without touching the database at all, since the viewer already exposes it:
 

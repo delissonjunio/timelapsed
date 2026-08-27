@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from tests.conftest import BASE_TIME
-from timelapsed.analysis.index import AnalysisIndex, to_epoch
+from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
 from timelapsed.analysis.models import Detection
 from timelapsed.analysis.pipeline import (
     EventTracker,
@@ -214,6 +214,146 @@ def test_a_plate_is_committed_only_when_its_event_closes(tracker, index):
     assert len(plates) == 1
     assert plates[0]["text"] == "ABC1D23"
     assert plates[0]["votes"] == 2
+
+
+def test_a_car_still_being_seen_keeps_one_event_across_passes(tracker, index):
+    """The bug this guards: a sweep between passes used to close every open
+    event, so one car standing in the driveway was filed as a fresh event -- and
+    a fresh single-frame plate read -- every few seconds.
+    """
+    box = (100, 100, 200, 150)
+    for step in range(4):
+        tracker.update("1", BASE + step * 10, [vehicle(box)])
+        tracker.open_events["1"][0].plate_reads.append(("ABC1D23", 0.9))
+        tracker.close_stale()
+
+    assert len(index.events(channel="1")) == 1
+    assert index.plates() == []  # nothing committed while it is still there
+
+    tracker.update("1", BASE + 300, [])
+    tracker.close_stale()
+    plates = index.plates()
+    assert len(plates) == 1
+    assert plates[0]["votes"] == 4
+
+
+def test_a_quiet_channel_still_commits_its_plate(tracker, index):
+    """Frames only reach `update` for their own channel, so an event on a camera
+    that goes quiet has to be closed by the sweep or it never commits.
+    """
+    tracker.update("5", BASE, [vehicle((100, 100, 200, 150))])
+    tracker.open_events["5"][0].plate_reads = [("ABC1D23", 0.9)]
+
+    tracker.close_stale()
+    assert index.plates() == []  # nothing newer has been seen anywhere yet
+
+    tracker.update("1", BASE + 300, [])  # another channel moves the clock on
+    tracker.close_stale()
+    assert len(index.plates()) == 1
+
+
+def test_a_backfill_does_not_close_events_against_the_wall_clock(tracker, index):
+    """Frames arrive with their own capture times, which during a backfill are
+    hours old. Staleness is measured against those, not against now.
+    """
+    old_time = BASE - 86400
+    tracker.update("1", old_time, [vehicle((100, 100, 200, 150))])
+    tracker.close_stale()
+
+    assert len(tracker.open_events["1"]) == 1
+
+
+def read_plate(tracker, channel, at, box, plate_box, reads):
+    """One sighting: a vehicle seen once, with plate reads and where they sat."""
+    tracker.update(channel, at, [vehicle(box)])
+    event = tracker.open_events[channel][-1]
+    event.plate_reads = list(reads)
+    event.best_plate_box = plate_box
+    return event
+
+
+def test_a_plate_that_stays_put_pools_its_reads_into_one_row(tracker, index):
+    """The point of pooling: a car parked in a driveway is one car, however many
+    times the vehicle detector loses and refinds it. Four sightings that each
+    read the plate once and disagree become one row that four reads voted on.
+    """
+    plate_box = (300, 400, 60, 24)
+    for step, text in enumerate(["JSY1H73", "JSY1H33", "JSY1H23", "JSY1H23"]):
+        read_plate(
+            tracker, "5", BASE + step * 600, (100 + step, 100, 200, 150),
+            plate_box, [(text, 0.9)],
+        )
+        tracker.close_all()
+
+    plates = index.plates()
+    assert len(plates) == 1
+    assert plates[0]["text"] == "JSY1H23"  # the majority, per position
+    assert plates[0]["reads"] == 4
+    assert plates[0]["votes"] == 2
+
+
+def test_pooling_keeps_the_moment_the_car_first_turned_up(tracker, index):
+    plate_box = (300, 400, 60, 24)
+    for step in range(3):
+        read_plate(tracker, "5", BASE + step * 600, (100, 100, 200, 150),
+                   plate_box, [("ABC1D23", 0.9)])
+        tracker.close_all()
+
+    plate = index.plates()[0]
+    assert plate["seen_at"].startswith(from_epoch(BASE).isoformat()[:16])
+    assert plate["last_seen_at"].startswith(from_epoch(BASE + 1200).isoformat()[:16])
+
+
+def test_a_different_car_in_the_same_spot_is_not_pooled_in(tracker, index):
+    """Position alone would merge whatever parks there next. The reads have to
+    nearly agree too, and two different plates do not.
+    """
+    plate_box = (300, 400, 60, 24)
+    read_plate(tracker, "5", BASE, (100, 100, 200, 150), plate_box, [("ABC1D23", 0.9)])
+    tracker.close_all()
+    read_plate(tracker, "5", BASE + 600, (100, 100, 200, 150), plate_box, [("XYZ9A99", 0.9)])
+    tracker.close_all()
+
+    assert sorted(plate["text"] for plate in index.plates()) == ["ABC1D23", "XYZ9A99"]
+
+
+def test_a_plate_somewhere_else_in_frame_is_not_pooled_in(tracker, index):
+    read_plate(tracker, "5", BASE, (100, 100, 200, 150), (300, 400, 60, 24),
+               [("ABC1D23", 0.9)])
+    tracker.close_all()
+    read_plate(tracker, "5", BASE + 600, (900, 100, 200, 150), (1200, 200, 60, 24),
+               [("ABC1D23", 0.9)])
+    tracker.close_all()
+
+    assert len(index.plates()) == 2
+
+
+def test_a_plate_seen_again_days_later_starts_a_new_row(tracker, index):
+    plate_box = (300, 400, 60, 24)
+    read_plate(tracker, "5", BASE, (100, 100, 200, 150), plate_box, [("ABC1D23", 0.9)])
+    tracker.close_all()
+    read_plate(tracker, "5", BASE + 3 * 86400, (100, 100, 200, 150), plate_box,
+               [("ABC1D23", 0.9)])
+    tracker.close_all()
+
+    assert len(index.plates()) == 2
+
+
+def test_pooling_survives_a_restart(tracker, index):
+    """The tally lives in the row, not in the tracker, so a restart mid-stay
+    goes on pooling into the same plate instead of opening a second one.
+    """
+    plate_box = (300, 400, 60, 24)
+    read_plate(tracker, "5", BASE, (100, 100, 200, 150), plate_box, [("ABC1D23", 0.9)])
+    tracker.close_all()
+
+    fresh = EventTracker(index, gap=timedelta(seconds=60))
+    read_plate(fresh, "5", BASE + 600, (100, 100, 200, 150), plate_box, [("ABC1D23", 0.9)])
+    fresh.close_all()
+
+    plates = index.plates()
+    assert len(plates) == 1
+    assert plates[0]["reads"] == 2
 
 
 def test_a_malformed_voted_plate_is_discarded(tracker, index):

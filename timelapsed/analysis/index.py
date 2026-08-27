@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Bumped whenever SCHEMA changes shape. _migrate() reads PRAGMA user_version and
 # applies everything newer, so an existing index is upgraded in place.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 -- A contiguous sighting: one person or one vehicle, from when it appeared to
@@ -84,20 +84,34 @@ CREATE TABLE IF NOT EXISTS signature (
 CREATE INDEX IF NOT EXISTS signature_identity ON signature(identity_id);
 CREATE INDEX IF NOT EXISTS signature_kind     ON signature(kind, captured_at);
 
--- One accepted plate read per event. Individual frames disagree at these plate
--- sizes, so this holds the voted result, not a raw read.
+-- One row per car, not per sighting. Individual frames disagree at these plate
+-- sizes, so this holds the voted result rather than a raw read -- and the vote
+-- pools every read of a plate that kept turning up in the same part of the
+-- frame, which is what a parked or waiting car looks like. `captured_at` is
+-- when it first appeared there, `last_seen_at` the most recent read.
+--
+-- `tally` is what makes pooling survive a restart: the full-length reads seen
+-- so far as {text: [count, confidence sum]}. Adding a sighting is adding to it
+-- and voting again, and it stays small where a list of raw reads would not --
+-- a car parked eight hours at a 5s interval is ~5,800 reads but only a handful
+-- of distinct misreads.
 CREATE TABLE IF NOT EXISTS plate (
-    id          INTEGER PRIMARY KEY,
-    event_id    INTEGER NOT NULL REFERENCES event(id) ON DELETE CASCADE,
-    channel     TEXT    NOT NULL,
-    captured_at INTEGER NOT NULL,
-    text        TEXT    NOT NULL,
-    confidence  REAL    NOT NULL,
-    votes       INTEGER NOT NULL DEFAULT 1, -- frames that agreed on this text
-    crop_path   TEXT
+    id           INTEGER PRIMARY KEY,
+    event_id     INTEGER NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+    channel      TEXT    NOT NULL,
+    captured_at  INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL DEFAULT 0,
+    text         TEXT    NOT NULL,
+    confidence   REAL    NOT NULL,
+    votes        INTEGER NOT NULL DEFAULT 1, -- reads that agreed on this text
+    reads        INTEGER NOT NULL DEFAULT 1, -- full-length reads pooled in total
+    tally        TEXT,                       -- JSON {text: [count, confidence sum]}
+    x INTEGER, y INTEGER, w INTEGER, h INTEGER, -- where the plate sat in frame
+    crop_path    TEXT
 );
 CREATE INDEX IF NOT EXISTS plate_text ON plate(text, captured_at);
 CREATE INDEX IF NOT EXISTS plate_time ON plate(channel, captured_at);
+CREATE INDEX IF NOT EXISTS plate_track ON plate(channel, last_seen_at);
 
 -- How far each channel has been analysed. Restarting picks up here rather than
 -- rescanning, and a channel that falls behind is visible at a glance.
@@ -183,9 +197,52 @@ class AnalysisIndex:
                 f"this build understands {SCHEMA_VERSION}). Refusing to downgrade it."
             )
         with self.connection:
+            # Before SCHEMA, not after: an index it declares may name a column
+            # an older table has not got yet, and creating it would fail.
+            self._add_missing_columns()
             self.connection.executescript(SCHEMA)
             self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         logger.info("Analysis index at %s is at schema %s", self.path, SCHEMA_VERSION)
+
+    def _add_missing_columns(self) -> None:
+        """CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns
+        added to SCHEMA after an index was first written have to be asked for.
+
+        Every one of them is nullable or defaulted, which is the constraint that
+        keeps this a one-liner per column instead of a table rebuild. A table
+        that is not there yet is skipped: SCHEMA is about to create it in full.
+        """
+        wanted = {
+            "plate": {
+                "last_seen_at": "INTEGER NOT NULL DEFAULT 0",
+                "reads": "INTEGER NOT NULL DEFAULT 1",
+                "tally": "TEXT",
+                "x": "INTEGER", "y": "INTEGER", "w": "INTEGER", "h": "INTEGER",
+            },
+        }
+        for table, columns in wanted.items():
+            present = {
+                row["name"]
+                for row in self.connection.execute(f"PRAGMA table_info({table})")
+            }
+            if not present:
+                continue
+            for column, definition in columns.items():
+                if column not in present:
+                    self.connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                    )
+            if table == "plate":
+                # Rows written before the span existed cover a single moment.
+                self.connection.execute(
+                    "UPDATE plate SET last_seen_at = captured_at WHERE last_seen_at = 0"
+                )
+                # ...and the reads behind them are at least the ones that agreed.
+                # The column's default of 1 would otherwise claim a row that 40
+                # frames voted on rests on one read.
+                self.connection.execute(
+                    "UPDATE plate SET reads = votes WHERE votes > reads"
+                )
 
     # --- watermarks ---
 
@@ -473,13 +530,61 @@ class AnalysisIndex:
     def add_plate(
         self, event_id: int, channel: str, at: int, text: str,
         confidence: float, votes: int, crop_path: str | None,
+        box: tuple[int, int, int, int] | None = None,
+        reads: int = 1, tally: str | None = None,
+    ) -> int:
+        x, y, w, h = box if box else (None, None, None, None)
+        with self.connection:
+            cursor = self.connection.execute(
+                "INSERT INTO plate (event_id, channel, captured_at, last_seen_at, text, "
+                "confidence, votes, reads, tally, x, y, w, h, crop_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, channel, at, at, text, confidence, votes, reads, tally,
+                 x, y, w, h, crop_path),
+            )
+        return int(cursor.lastrowid)
+
+    def extend_plate(
+        self, plate_id: int, event_id: int, at: int, text: str, confidence: float,
+        votes: int, reads: int, tally: str, box: tuple[int, int, int, int] | None,
+        crop_path: str | None,
     ) -> None:
+        """Fold another sighting into a plate already on record.
+
+        `captured_at` is left alone: it is when this car first turned up in this
+        spot, and it is what the row links to in the viewer, so it must not walk
+        forward every time the car is seen again.
+        """
+        x, y, w, h = box if box else (None, None, None, None)
         with self.connection:
             self.connection.execute(
-                "INSERT INTO plate (event_id, channel, captured_at, text, confidence, votes, crop_path) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (event_id, channel, at, text, confidence, votes, crop_path),
+                "UPDATE plate SET event_id = ?, last_seen_at = ?, text = ?, confidence = ?, "
+                "votes = ?, reads = ?, tally = ?, "
+                "x = COALESCE(?, x), y = COALESCE(?, y), w = COALESCE(?, w), h = COALESCE(?, h), "
+                "crop_path = COALESCE(?, crop_path) WHERE id = ?",
+                (event_id, at, text, confidence, votes, reads, tally,
+                 x, y, w, h, crop_path, plate_id),
             )
+
+    def plate_tracks(self, channel: str, since: int) -> list[dict]:
+        """Plates last seen on this channel recently, with where they sat.
+
+        Rows written before the plate box was recorded have nothing to match a
+        position against, so they are left out rather than guessed at.
+        """
+        return [
+            {
+                "id": row["id"], "text": row["text"], "tally": row["tally"],
+                "box": (row["x"], row["y"], row["w"], row["h"]),
+                "has_crop": row["crop_path"] is not None,
+            }
+            for row in self.connection.execute(
+                "SELECT id, text, tally, x, y, w, h, crop_path FROM plate "
+                "WHERE channel = ? AND last_seen_at >= ? AND x IS NOT NULL "
+                "ORDER BY last_seen_at DESC",
+                (channel, since),
+            )
+        ]
 
     def plates(self, text: str | None = None, channel: str | None = None, limit: int = 500) -> list[dict]:
         clauses, parameters = [], []
@@ -490,18 +595,31 @@ class AnalysisIndex:
             clauses.append("channel = ?")
             parameters.append(channel)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.connection.execute(
+            f"SELECT * FROM plate {where} ORDER BY captured_at DESC LIMIT ?",
+            (*parameters, limit),
+        ).fetchall()
+        # The viewer opens the index read-only, so it never migrates it. It can
+        # therefore be looking at a schema older than the code it is running --
+        # the analyzer is off, or has not been restarted yet -- and the columns
+        # pooling added would not be there to read.
+        columns = set(rows[0].keys()) if rows else set()
+
+        def value(row, column, fallback):
+            return row[column] if column in columns else fallback
+
         return [
             {
                 "id": row["id"], "event_id": row["event_id"], "channel": row["channel"],
                 "seen_at": from_epoch(row["captured_at"]).isoformat(),
+                "last_seen_at": from_epoch(
+                    value(row, "last_seen_at", 0) or row["captured_at"]
+                ).isoformat(),
                 "text": row["text"], "confidence": round(row["confidence"], 3),
-                "votes": row["votes"],
+                "votes": row["votes"], "reads": value(row, "reads", row["votes"]),
                 "crop": f"/crop/plate/{row['id']}.jpg" if row["crop_path"] else None,
             }
-            for row in self.connection.execute(
-                f"SELECT * FROM plate {where} ORDER BY captured_at DESC LIMIT ?",
-                (*parameters, limit),
-            )
+            for row in rows
         ]
 
     def crop_path(self, kind: str, row_id: int) -> str | None:

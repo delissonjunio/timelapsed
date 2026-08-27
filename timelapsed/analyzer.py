@@ -198,13 +198,22 @@ def run() -> None:
             logger.exception("Analysis pass failed, continuing")
             analysed = 0
 
+        # Commit what has gone quiet, and only that. Events still being seen
+        # stay open across passes: closing them here would file one car sitting
+        # in the driveway as a fresh event -- and a fresh, unvoted plate read --
+        # every pass, which is a read every few seconds in live operation.
+        try:
+            if analysed:
+                analyzer.tracker.close_stale()
+        except Exception:
+            logger.exception("Closing finished events failed, continuing")
+
         # Fold together the identities that online matching split apart. Runs
         # after the batch rather than per frame: it is a whole-set operation, and
         # a fragment created early in a pass often only becomes mergeable once
         # the pass has seen the poses in between.
         try:
             if analysed and analyzer.identity_matcher is not None:
-                analyzer.tracker.close_all()
                 analyzer.identity_matcher.consolidate(config.analysis_reid_merge_threshold)
         except Exception:
             logger.exception("Identity consolidation failed, continuing")
