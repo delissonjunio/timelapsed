@@ -111,3 +111,89 @@ def test_a_higher_threshold_splits_what_a_lower_one_merges(index):
     probe = unit(1, 0, 0.75)  # cosine ~0.8 against the stored signature
     assert IdentityMatcher(index, threshold=0.5).match(probe, BASE)[0] == identity_id
     assert IdentityMatcher(index, threshold=0.95).match(probe, BASE)[0] is None
+
+
+# --- consolidation ---
+
+
+def build_identity(index, matcher, vectors, at=BASE):
+    """Force each vector into its own identity, the way online matching would
+    when consecutive poses do not resemble each other."""
+    ids = []
+    for offset, vector in enumerate(vectors):
+        identity_id = index.create_identity("person", at + offset)
+        event_id = index.open_event("1", "person", at + offset, 0.9)
+        index.add_signature(identity_id, event_id, "body", to_blob(vector), 300.0, at + offset)
+        index.assign_identity(event_id, identity_id)
+        ids.append(identity_id)
+    return ids
+
+
+def test_consolidation_chains_fragments_through_the_poses_between_them(index, matcher):
+    """The real failure: a back view never matches a frontal view directly, but
+    both match the three-quarter views in between. Single linkage is what pulls
+    the whole chain into one person."""
+    chain = [unit(1, 0, 0), unit(1, 0.5, 0), unit(0.5, 1, 0), unit(0, 1, 0)]
+    build_identity(index, matcher, chain)
+    assert len(index.identities()) == 4
+    # The ends are far apart on their own.
+    assert float(chain[0] @ chain[-1]) < 0.75
+
+    matcher.consolidate(0.75)
+
+    identities = index.identities()
+    assert len(identities) == 1
+    assert identities[0]["sightings"] == 4
+
+
+def test_consolidation_leaves_genuinely_different_people_apart(index, matcher):
+    build_identity(index, matcher, [unit(1, 0, 0), unit(0, 1, 0), unit(0, 0, 1)])
+
+    matcher.consolidate(0.9)
+
+    assert len(index.identities()) == 3
+
+
+def test_consolidation_moves_every_sighting_onto_the_survivor(index, matcher):
+    ids = build_identity(index, matcher, [unit(1, 0, 0), unit(1, 0.02, 0)])
+    matcher.consolidate(0.75)
+
+    survivor = index.identities()[0]
+    assert survivor["id"] == min(ids)
+    assert len(index.events(identity_id=survivor["id"])) == 2
+    assert survivor["sightings"] == 2
+
+
+def test_consolidation_keeps_a_name_somebody_typed(index, matcher):
+    """Merging must never silently discard a name."""
+    ids = build_identity(index, matcher, [unit(1, 0, 0), unit(1, 0.02, 0)])
+    index.rename_identity(max(ids), "Delisson")
+
+    matcher.consolidate(0.75)
+
+    identities = index.identities()
+    assert len(identities) == 1
+    assert identities[0]["name"] == "Delisson"
+
+
+def test_consolidation_will_not_merge_across_the_appearance_window(index, matcher):
+    """Identical vectors a week apart are the same shirt, not the same visit."""
+    vector = unit(1, 0, 0)
+    build_identity(index, matcher, [vector], at=BASE)
+    build_identity(index, matcher, [vector], at=BASE + 7 * 86400)
+
+    matcher.consolidate(0.75)
+
+    assert len(index.identities()) == 2
+
+
+def test_consolidation_is_idempotent(index, matcher):
+    build_identity(index, matcher, [unit(1, 0, 0), unit(1, 0.02, 0), unit(1, 0.04, 0)])
+
+    assert matcher.consolidate(0.75) > 0
+    assert matcher.consolidate(0.75) == 0
+    assert len(index.identities()) == 1
+
+
+def test_consolidation_on_an_empty_index_does_nothing(index, matcher):
+    assert matcher.consolidate(0.75) == 0

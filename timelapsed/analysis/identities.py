@@ -97,3 +97,80 @@ class IdentityMatcher:
 
     def kind_to_identity_kind(self) -> str:
         return "person" if self.kind in ("body", "face") else "vehicle"
+
+    def consolidate(self, merge_threshold: float | None = None) -> int:
+        """Merge identities that turned out to be the same person.
+
+        Online matching compares a new sighting against what exists *at that
+        moment*, so it fragments badly: one person crossing a yard bends over,
+        turns their back, is half-occluded by a post, and each of those fails to
+        match the frontal view directly. A full day of one person can end up as
+        a hundred separate identities, which is useless.
+
+        This is the fix, and it works because fragments are not islands. A back
+        view does not match a frontal view, but both match the three-quarter
+        views in between -- so linking anything that matches and taking the
+        transitive closure pulls the whole chain together.
+
+        Single linkage does chain, and chaining is how two genuinely different
+        people could merge. Two things bound it: the merge threshold is higher
+        than nothing at all, and pairs are only considered when the identities
+        overlap within the appearance window, so yesterday's red shirt cannot
+        join today's.
+
+        Returns the number of identities removed by merging.
+        """
+        threshold = self.threshold if merge_threshold is None else merge_threshold
+        grouped = self.index.identity_signatures(self.kind)
+        if len(grouped) < 2:
+            return 0
+
+        spans = self.index.identity_spans(self.kind)
+        window = int(self.window.total_seconds())
+        identity_ids = sorted(grouped)
+        matrices = {
+            identity_id: np.stack([from_blob(blob) for blob in blobs])
+            for identity_id, blobs in grouped.items()
+        }
+
+        parent = {identity_id: identity_id for identity_id in identity_ids}
+
+        def find(node: int) -> int:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        def union(left: int, right: int) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                # Keep the lower id, so the oldest identity survives a merge and
+                # any name attached to it stays put.
+                parent[max(left_root, right_root)] = min(left_root, right_root)
+
+        for index_a, first in enumerate(identity_ids):
+            for second in identity_ids[index_a + 1:]:
+                if find(first) == find(second):
+                    continue
+                first_span, second_span = spans.get(first), spans.get(second)
+                if first_span and second_span:
+                    gap = max(first_span[0], second_span[0]) - min(first_span[1], second_span[1])
+                    if gap > window:
+                        continue
+                # Single linkage: the best-matching pair of crops decides.
+                if float((matrices[first] @ matrices[second].T).max()) >= threshold:
+                    union(first, second)
+
+        merged = 0
+        for identity_id in identity_ids:
+            root = find(identity_id)
+            if root != identity_id:
+                self.index.merge_identities(root, identity_id)
+                merged += 1
+
+        if merged:
+            logger.info(
+                "Consolidated %d identities into %d at threshold %.2f",
+                len(identity_ids), len(identity_ids) - merged, threshold,
+            )
+        return merged

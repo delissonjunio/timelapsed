@@ -112,12 +112,24 @@ event_retention_days = 365
 # What this gives you is "the same person, in the same clothes, today". It does
 # not survive a change of outfit, and it is not identity.
 reid_enabled = true
-# Measured on 423 real body crops from this deployment:
-#   0.7 -> matches 50% of same-person pairs, but wrongly merges 14.6%
-#   0.8 -> matches 27%, wrongly merges 1.2%
-# 0.8 is the default because a group you have named should stay trustworthy:
-# better to miss a sighting than to quietly merge two different people.
+# How similar two crops must be for a new sighting to join an existing group as
+# it arrives. Kept strict: creating a wrong group online is hard to undo.
 reid_threshold = 0.8
+# Matching as sightings arrive fragments badly -- one person bends over, turns
+# away, is half hidden by a post, and each of those fails to match the frontal
+# view. A single person across one day came out as 156 separate groups.
+#
+# This is the pass that puts them back together, after the fact, by linking any
+# two groups that share a similar enough pair of crops. Fragments are not
+# islands: a back view does not match a frontal view, but both match the
+# three-quarter views in between.
+#
+# Measured on this deployment's own footage, 156 groups consolidate to:
+#   0.85 -> 147   0.80 -> 122   0.75 -> 72   0.70 -> 47   0.60 -> 20
+# 0.75 is the default because it is the last value that still tells the two
+# people actually on camera apart -- one in a red shirt and dark trousers, one
+# in a red shirt and blue jeans. At 0.70 those two become one group.
+reid_merge_threshold = 0.75
 # Beyond this, appearance is not comparable. Matching across it produces
 # confident nonsense as soon as somebody changes clothes.
 reid_window_hours = 12

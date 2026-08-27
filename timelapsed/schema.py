@@ -119,6 +119,9 @@ class Config:
     # repeat sightings rather than merging two different people.
     analysis_reid_enabled: bool
     analysis_reid_threshold: float
+    # Online matching fragments one person into many; this is the pass that
+    # puts them back together. See IdentityMatcher.consolidate.
+    analysis_reid_merge_threshold: float
     analysis_reid_window: timedelta
     # Plate reading only pays off where plates are big enough to read, which is
     # one channel here. Empty disables it entirely.

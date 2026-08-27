@@ -90,16 +90,36 @@ when reading it: it answers "the same person, in the same clothes, today", and
 nothing more. It does not survive a change of outfit, which is why matching is
 capped at `reid_window_hours`.
 
-The threshold trades recall for precision. Measured on 423 real body crops:
+### Matching happens twice, and the second time is what makes it work
 
-| `reid_threshold` | Same-person pairs matched | Different people wrongly merged |
+Matching sightings **as they arrive** fragments badly. One person crossing a
+yard bends over, turns their back, and is half-hidden by a post; none of those
+match the frontal view directly. On a single day of real footage that produced
+**156 groups for what was essentially two people**.
+
+So there is a second pass. After each batch the analyzer **consolidates**:
+any two groups sharing a similar enough pair of crops are linked, and the
+transitive closure is taken. This works because fragments are not islands — a
+back view does not match a frontal view, but both match the three-quarter views
+in between, so the chain pulls the whole day together.
+
+Measured on this deployment, 156 groups consolidate down to:
+
+| `reid_merge_threshold` | Groups | Largest |
 |---|---|---|
-| 0.7 | 50% | 14.6% |
-| **0.8** (default) | 27% | 1.2% |
+| 0.85 | 147 | 106 |
+| 0.80 | 122 | 149 |
+| **0.75** (default) | **72** | **202** |
+| 0.70 | 47 | 271 |
+| 0.60 | 20 | 292 |
 
-0.8 is the default because a group you have named should stay trustworthy.
-Expect most sightings to sit in their own group; the panel sorts by sighting
-count so the groups worth naming come first.
+**0.75 is the default because it is the last value that still tells the two
+people actually on camera apart** — one in a red shirt with dark trousers, one
+in a red shirt with blue jeans. At 0.70 those two become a single group. That
+was checked by looking at the crops, not by picking a number off the table.
+
+Consolidation never discards a name: merging keeps the oldest group, and a name
+on either side survives.
 
 ## Setup
 

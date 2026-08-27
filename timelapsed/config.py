@@ -33,6 +33,9 @@ DEFAULT_ANALYSIS_BATCH_SIZE = 200
 DEFAULT_ANALYSIS_DETECTION_RETENTION_DAYS = 30
 DEFAULT_ANALYSIS_EVENT_RETENTION_DAYS = 365
 DEFAULT_ANALYSIS_REID_THRESHOLD = 0.8
+# Consolidation is what makes re-ID usable: matching alone fragmented one
+# person across a day into 156 identities on real footage.
+DEFAULT_ANALYSIS_REID_MERGE_THRESHOLD = 0.75
 DEFAULT_ANALYSIS_REID_WINDOW_HOURS = 12
 DEFAULT_ANALYSIS_PLATE_CONFIDENCE = 0.7
 
@@ -203,6 +206,9 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         analysis_reid_enabled=parser.getboolean("analysis", "reid_enabled", fallback=True),
         analysis_reid_threshold=parser.getfloat(
             "analysis", "reid_threshold", fallback=DEFAULT_ANALYSIS_REID_THRESHOLD
+        ),
+        analysis_reid_merge_threshold=parser.getfloat(
+            "analysis", "reid_merge_threshold", fallback=DEFAULT_ANALYSIS_REID_MERGE_THRESHOLD
         ),
         analysis_reid_window=timedelta(hours=parser.getint(
             "analysis", "reid_window_hours", fallback=DEFAULT_ANALYSIS_REID_WINDOW_HOURS

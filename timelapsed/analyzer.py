@@ -198,6 +198,17 @@ def run() -> None:
             logger.exception("Analysis pass failed, continuing")
             analysed = 0
 
+        # Fold together the identities that online matching split apart. Runs
+        # after the batch rather than per frame: it is a whole-set operation, and
+        # a fragment created early in a pass often only becomes mergeable once
+        # the pass has seen the poses in between.
+        try:
+            if analysed and analyzer.identity_matcher is not None:
+                analyzer.tracker.close_all()
+                analyzer.identity_matcher.consolidate(config.analysis_reid_merge_threshold)
+        except Exception:
+            logger.exception("Identity consolidation failed, continuing")
+
         try:
             now = datetime.now(tz=timezone.utc)
             if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:

@@ -184,7 +184,8 @@ default. See [Recognition](Recognition.md) for what it does, and
 | `detection_retention_days` | no | `30` | How long to keep per-frame detection rows. `0` keeps them forever. |
 | `event_retention_days` | no | `365` | How long to keep events, crops and plates. `0` keeps them forever. |
 | `reid_enabled` | no | `true` | Group repeat sightings of a person by appearance. |
-| `reid_threshold` | no | `0.8` | Cosine similarity required to call two sightings the same person. |
+| `reid_threshold` | no | `0.8` | Similarity required for an arriving sighting to join an existing group. |
+| `reid_merge_threshold` | no | `0.75` | Similarity required to fold two groups together afterwards. |
 | `reid_window_hours` | no | `12` | How far back to look for a match. |
 | `plate_channels` | no | *(empty)* | Channels to read plates on. Empty disables plate reading. |
 | `plate_confidence` | no | `0.7` | Minimum OCR confidence per read. |
@@ -216,8 +217,24 @@ what any embedding needs. Measured on 423 real body crops:
 | `0.7` | 50% | 14.6% |
 | `0.8` | 27% | 1.2% |
 
-The default is 0.8 because a group you have named should stay trustworthy. Most sightings will
-sit alone in their own group; that is the intended trade.
+`reid_threshold` governs matching as sightings arrive, and is kept strict because a wrong group
+created online is awkward to undo. On its own it fragments one person into many: bending over,
+turning away and being half-occluded all fail to match a frontal view, and a single day produced
+**156 groups for two people**.
+
+`reid_merge_threshold` is the pass that repairs that, linking groups that share a similar enough
+pair of crops and taking the transitive closure. On this deployment's footage:
+
+| `reid_merge_threshold` | Groups | Largest |
+| --- | --- | --- |
+| 0.85 | 147 | 106 |
+| 0.80 | 122 | 149 |
+| `0.75` | 72 | 202 |
+| 0.70 | 47 | 271 |
+
+0.75 is the default because it is the last value that still separates the two people actually on
+camera — red shirt with dark trousers, red shirt with blue jeans. At 0.70 they become one group.
+Lower it if you would rather have fewer, broader groups; raise it if two people are being merged.
 
 ## `[general]`
 

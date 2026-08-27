@@ -82,6 +82,7 @@ def config(tmp_path: Path) -> Config:
         analysis_event_retention=timedelta(days=365),
         analysis_reid_enabled=True,
         analysis_reid_threshold=0.8,
+        analysis_reid_merge_threshold=0.75,
         analysis_reid_window=timedelta(hours=12),
         analysis_plate_channels=["1"],
         analysis_plate_confidence=0.7,

@@ -396,6 +396,71 @@ class AnalysisIndex:
             )
         ]
 
+    def identity_signatures(self, kind: str, since: int | None = None) -> dict[int, list[bytes]]:
+        """Every signature, grouped by identity, for the consolidation pass."""
+        if since is None:
+            rows = self.connection.execute(
+                "SELECT identity_id, vector, captured_at FROM signature WHERE kind = ?", (kind,)
+            )
+        else:
+            rows = self.connection.execute(
+                "SELECT identity_id, vector, captured_at FROM signature "
+                "WHERE kind = ? AND captured_at >= ?", (kind, since),
+            )
+        grouped: dict[int, list[bytes]] = {}
+        for row in rows:
+            grouped.setdefault(row["identity_id"], []).append(row["vector"])
+        return grouped
+
+    def identity_spans(self, kind: str) -> dict[int, tuple[int, int]]:
+        """(first, last) signature time per identity, so merging can respect the
+        appearance window rather than joining today's shirt to yesterday's."""
+        return {
+            row["identity_id"]: (row["first_at"], row["last_at"])
+            for row in self.connection.execute(
+                "SELECT identity_id, MIN(captured_at) AS first_at, MAX(captured_at) AS last_at "
+                "FROM signature WHERE kind = ? GROUP BY identity_id", (kind,)
+            )
+        }
+
+    def merge_identities(self, keep_id: int, drop_id: int) -> None:
+        """Fold one identity into another, keeping every sighting and signature.
+
+        The kept name wins unless it has none, so consolidating never silently
+        discards a name somebody typed.
+        """
+        if keep_id == drop_id:
+            return
+        with self.connection:
+            kept = self.connection.execute(
+                "SELECT name FROM identity WHERE id = ?", (keep_id,)
+            ).fetchone()
+            dropped = self.connection.execute(
+                "SELECT name FROM identity WHERE id = ?", (drop_id,)
+            ).fetchone()
+            if kept is None or dropped is None:
+                return
+            if not kept["name"] and dropped["name"]:
+                self.connection.execute(
+                    "UPDATE identity SET name = ? WHERE id = ?", (dropped["name"], keep_id)
+                )
+
+            self.connection.execute(
+                "UPDATE signature SET identity_id = ? WHERE identity_id = ?", (keep_id, drop_id)
+            )
+            self.connection.execute(
+                "UPDATE event SET identity_id = ? WHERE identity_id = ?", (keep_id, drop_id)
+            )
+            self.connection.execute(
+                "UPDATE identity SET "
+                "  sighting_count = (SELECT COUNT(*) FROM signature WHERE identity_id = ?), "
+                "  created_at = MIN(created_at, (SELECT created_at FROM identity WHERE id = ?)), "
+                "  last_seen_at = MAX(last_seen_at, (SELECT last_seen_at FROM identity WHERE id = ?)) "
+                "WHERE id = ?",
+                (keep_id, drop_id, drop_id, keep_id),
+            )
+            self.connection.execute("DELETE FROM identity WHERE id = ?", (drop_id,))
+
     def rename_identity(self, identity_id: int, name: str | None) -> bool:
         with self.connection:
             cursor = self.connection.execute(
