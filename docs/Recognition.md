@@ -157,21 +157,39 @@ rather than per frame. The index itself is a few MB a month.
 
 ## Operations
 
+The `sqlite3` command-line tool is not installed on a stock guest, and the
+venv's Python always is, so these go through it. `query` is defined once:
+
 ```bash
+query() {
+  sudo -u timelapsed /opt/timelapsed/.venv/bin/python -c '
+import sqlite3, sys
+db = sqlite3.connect("file:/var/lib/timelapsed/index/index.sqlite3?mode=ro", uri=True)
+for row in db.execute(sys.argv[1]):
+    print(*row, sep="\t")
+' "$1"
+}
+
 # Is it keeping up? Compare against the newest still on disk.
-sudo -u timelapsed sqlite3 -readonly /var/lib/timelapsed/index/index.sqlite3 \
-  'SELECT channel, datetime(analysed_through, "unixepoch") FROM watermark ORDER BY channel;'
+query 'SELECT channel, datetime(analysed_through, "unixepoch") FROM watermark ORDER BY channel'
 
 # What has it found?
-sudo -u timelapsed sqlite3 -readonly /var/lib/timelapsed/index/index.sqlite3 \
-  'SELECT channel, kind, COUNT(*) FROM event GROUP BY channel, kind;'
+query 'SELECT channel, kind, COUNT(*) FROM event GROUP BY channel, kind'
 
 # Plates, most recent first
-sudo -u timelapsed sqlite3 -readonly /var/lib/timelapsed/index/index.sqlite3 \
-  'SELECT datetime(captured_at,"unixepoch"), channel, text, votes FROM plate ORDER BY captured_at DESC LIMIT 20;'
+query 'SELECT datetime(captured_at,"unixepoch"), channel, text, votes FROM plate ORDER BY captured_at DESC LIMIT 20'
+```
 
+```bash
 # Disk
 du -sh /var/lib/timelapsed/index
+```
+
+Or without touching the database at all, since the viewer already exposes it:
+
+```bash
+curl -s localhost:8080/api/identities
+curl -s localhost:8080/api/plates
 ```
 
 ### Failure modes

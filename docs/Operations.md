@@ -208,9 +208,14 @@ Only relevant with `[analysis] enabled = true`. Full detail in
 | Watermarks hours behind | Backfill still draining, or the guest is CPU-starved |
 
 ```bash
-# how far each channel has been analysed
-sudo -u timelapsed sqlite3 -readonly /var/lib/timelapsed/index/index.sqlite3 \
-  'SELECT channel, datetime(analysed_through, "unixepoch") FROM watermark ORDER BY channel;'
+# how far each channel has been analysed (no sqlite3 CLI on a stock guest,
+# so this goes through the venv's Python, which is always there)
+sudo -u timelapsed /opt/timelapsed/.venv/bin/python -c '
+import sqlite3
+db = sqlite3.connect("file:/var/lib/timelapsed/index/index.sqlite3?mode=ro", uri=True)
+for row in db.execute("SELECT channel, datetime(analysed_through, \'unixepoch\') FROM watermark ORDER BY channel"):
+    print(*row)
+'
 
 # per-pass throughput, logged every pass that did work
 journalctl -u timelapsed-analyzer -S -1h | grep 'ms/frame'
