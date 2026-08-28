@@ -58,5 +58,9 @@ UNITS=(timelapsed timelapsed-web)
 if systemctl is-enabled --quiet timelapsed-analyzer 2>/dev/null; then
     UNITS+=(timelapsed-analyzer)
 fi
+# Same shape as the analyzer: optional, exits 0 where [archive] is unset.
+if systemctl is-enabled --quiet timelapsed-archiver 2>/dev/null; then
+    UNITS+=(timelapsed-archiver)
+fi
 sudo systemctl restart "${UNITS[@]}"
 systemctl --no-pager --lines=0 status "${UNITS[@]}"

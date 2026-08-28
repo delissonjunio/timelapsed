@@ -1,0 +1,47 @@
+[Unit]
+Description=Timelapsed NVR segment archiver
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/NVR-Roadmap.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timelapsed
+Group=timelapsed
+ExecStart=/opt/timelapsed/.venv/bin/python -m timelapsed.archiver
+# on-failure, not always: the archiver exits 0 when no [archive] root is
+# configured, and Restart=always would spin on that instead of staying stopped.
+Restart=on-failure
+RestartSec=15
+WorkingDirectory=/opt/timelapsed
+
+# Bulk downloading is bandwidth work, not CPU work; the only CPU it burns is
+# the copy-remux. Keep it below capture (10) and beside the analyzer (15) so a
+# 17-hour backfill cannot make the capture loop overrun.
+Nice=15
+CPUWeight=20
+IOWeight=20
+
+# It streams one segment at a time to disk; memory is buffers, not data. The
+# cap is what stops a leak taking the guest with it.
+MemoryAccounting=true
+MemoryHigh=384M
+MemoryMax=512M
+
+# It reads the recognition index and writes only the archive tree, both under
+# /var/lib/timelapsed (the archive volume is mounted inside it).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/timelapsed
+
+[Install]
+WantedBy=multi-user.target

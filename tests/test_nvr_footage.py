@@ -9,6 +9,7 @@ from tests.conftest import BASE_TIME
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.nvr_footage import (
     FULL_SWEEP_START,
+    MPEG_PS_MAGIC,
     SEARCH_PAGE_SIZE,
     SWEEP_OVERLAP,
     NVRFootageClient,
@@ -71,6 +72,27 @@ def time_answer(local_time: str) -> str:
     )
 
 
+class StreamResponse:
+    """What session.post(stream=True) hands back: a context manager of chunks."""
+
+    def __init__(self, chunks, status_code=200):
+        self.chunks = chunks
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"{self.status_code}")
+
+    def iter_content(self, _size):
+        return iter(self.chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
 class FakeSession:
     def __init__(self):
         self.auth = None
@@ -88,8 +110,10 @@ class FakeSession:
         self.time_calls += 1
         return FakeResponse(self.time_text)
 
-    def post(self, url, data=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "data": data, "headers": headers, "timeout": timeout})
+    def post(self, url, data=None, headers=None, timeout=None, stream=False):
+        self.calls.append({
+            "url": url, "data": data, "headers": headers, "timeout": timeout, "stream": stream,
+        })
         result = self.responses.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -298,6 +322,40 @@ def test_an_http_error_raises_rather_than_returning_half_a_sweep(client):
 
     with pytest.raises(requests.exceptions.HTTPError):
         list(client.search("5", NOW - timedelta(hours=1), NOW))
+
+
+# --- downloading ---
+
+def test_download_streams_the_segment_to_disk(client, tmp_path):
+    client.session.script(StreamResponse([MPEG_PS_MAGIC + b"video", b"more video"]))
+    destination = tmp_path / "segment.ps"
+    uri = "rtsp://nvr/Streaming/tracks/501?starttime=x&endtime=y&name=ch05_1&size=15"
+
+    written = client.download(uri, destination, deadline_seconds=60)
+
+    assert destination.read_bytes() == MPEG_PS_MAGIC + b"videomore video"
+    assert written == len(MPEG_PS_MAGIC + b"videomore video")
+    call = client.session.calls[0]
+    assert call["url"] == "http://nvr.local/ISAPI/ContentMgmt/download"
+    assert call["stream"] is True
+    # The URI goes into an XML body, so its ampersands must arrive escaped.
+    assert "starttime=x&amp;endtime=y" in call["data"]
+
+
+def test_download_rejects_an_xml_answer_dressed_as_success(client, tmp_path):
+    """The device reports some failures as HTTP 200 with an XML body. The first
+    bytes are the only honest statement of what arrived."""
+    client.session.script(StreamResponse([b'<?xml version="1.0"?><ResponseStatus/>']))
+
+    with pytest.raises(ValueError, match="MPEG-PS"):
+        client.download("rtsp://nvr/x?name=a&size=1", tmp_path / "segment.ps", 60)
+
+
+def test_download_enforces_its_wall_clock_deadline(client, tmp_path):
+    client.session.script(StreamResponse([MPEG_PS_MAGIC + b"drip", b"drip", b"drip"]))
+
+    with pytest.raises(TimeoutError):
+        client.download("rtsp://nvr/x?name=a&size=1", tmp_path / "segment.ps", -1)
 
 
 # --- the indexer ---

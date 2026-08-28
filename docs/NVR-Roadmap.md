@@ -1,14 +1,16 @@
 # NVR Roadmap
 
-**Status: stages 1 and 2 built; stage 3 is next.** The decision landed 2026-08-28: build the
+**Status: stages 1–3 built; stage 4 is next.** The decision landed 2026-08-28: build the
 **full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
 for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
 — the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
 by the `timelapsed` user (thin volume `scsi1` from the `hdd-thin` LVM pool on the Proxmox host,
 growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `ContentMgmt/search`
 into an `nvr_segment` table from inside the analyzer daemon, verified against the live device.
-Stage 2 landed the same day: a footage lane on the timeline, served by `/api/footage`.
-A build session should continue at [Stages](#stages) with the replica variant of stage 3.
+Stage 2 landed the same day: a footage lane on the timeline, served by `/api/footage`. So did
+stage 3 in its replica form: the `timelapsed-archiver` daemon replicates every recorded segment
+into the archive volume. A build session should continue at [Stages](#stages) with stage 4 —
+playing the replica from the viewer.
 
 This page records what the NVR can actually do, measured against the live device, and what it
 would take to use it. It exists so the decision does not have to be re-derived later.
@@ -308,7 +310,7 @@ draws only when the mirror has data, and is deliberately not clickable until sta
 something to do. The lane colour is a fixed CSS variable; nothing from the device reaches CSS.
 The viewer tolerates an index from before schema v3 by answering an empty list.
 
-### Stage 3 — Fetch clips
+### Stage 3 — Fetch clips — **built as the replica (2026-08-28)**
 
 A `clip_fetcher` module: `POST /ISAPI/ContentMgmt/download` with the exact `playbackURI` from
 `nvr_segment`, then `ffmpeg -i clip.ps -c copy -movflags +faststart clip.mp4`.
@@ -322,6 +324,17 @@ A `clip_fetcher` module: `POST /ISAPI/ContentMgmt/download` with the exact `play
 
 Trigger on recognition event close — the point at which the identity is settled and the plate voted
 — so one fetch covers a settled event rather than firing per detection.
+
+As built, per the replica decision: `timelapsed/archiver.py`, a fourth daemon
+(`timelapsed-archiver`), fetches **every** segment the mirror lists rather than a clip per event —
+sequentially (parallelism was measured to buy nothing) and oldest-first, because quota wrap
+deletes oldest. There is no `local_clip` table: the archive is indexed by its filenames —
+`{archive_root}/{channel}/{YYYYMMDD}/{start}_{end}_{device-name}.mp4` — so the recognition index
+keeps its single writer and a crash can only ever lose a scratch file. A segment is fetched only
+once its end is 30 minutes settled (an open segment's end keeps walking), and never fetched at
+all if retention would delete it tomorrow. Configuration is the `[archive]` section; on this
+deployment it points at the 1.4 TB volume. Failures are skipped until restart rather than
+retried per pass, so a segment the device has expired cannot starve the queue.
 
 ### Stage 4 — Play them
 

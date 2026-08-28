@@ -27,6 +27,7 @@ pytest = "^8.3.4"
 timelapsed = "timelapsed.timelapsed:run"
 timelapsed-web = "timelapsed.web:run"
 timelapsed-analyzer = "timelapsed.analyzer:run"
+timelapsed-archiver = "timelapsed.archiver:run"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

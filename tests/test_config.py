@@ -97,6 +97,28 @@ def test_optional_settings_fall_back_to_defaults(tmp_path: Path):
     assert config.logging_level == logging.INFO
 
 
+def test_the_archive_is_off_until_a_root_is_configured(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", MINIMAL_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.archive_root is None
+    assert config.archive_retention is None
+
+
+def test_archive_settings_are_read(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG + "\n[archive]\nroot = /srv/archive\nretention_days = 30\nmin_free_disk_gb = 10\n",
+    )
+
+    config = get_config((str(path),))
+
+    assert config.archive_root == Path("/srv/archive")
+    assert config.archive_retention == timedelta(days=30)
+    assert config.archive_minimum_free_bytes == 10_000_000_000
+
+
 def test_later_paths_override_earlier_ones(tmp_path: Path):
     system = write_config(tmp_path / "system.ini", MINIMAL_CONFIG)
     override = write_config(tmp_path / "override.ini", "[nvr]\nchannels = 7,8\n")

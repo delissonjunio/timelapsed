@@ -311,6 +311,29 @@ pair of crops and taking the transitive closure. On this deployment's footage:
 camera — red shirt with dark trousers, red shirt with blue jeans. At 0.70 they become one group.
 Lower it if you would rather have fewer, broader groups; raise it if two people are being merged.
 
+## `[archive]`
+
+The full-segment replica of what the NVR itself records, kept by the `timelapsed-archiver`
+daemon. Background and measurements are in [NVR-Roadmap](NVR-Roadmap.md).
+
+| Key | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `root` | no | empty | Where the replica lives. **Empty disables the archiver entirely.** |
+| `retention_days` | no | `0` | Days of footage to keep; `0` keeps everything until the floor bites. |
+| `min_free_disk_gb` | no | `50` | Free space on the archive volume below which the oldest whole days are dropped. |
+
+The archiver downloads every recorded segment the footage mirror lists — sequentially, oldest
+first, because the NVR wraps its quota by deleting oldest — remuxes each to MP4 and files it
+under `{root}/{channel}/{YYYYMMDD}/{start}_{end}_{device-name}.mp4`. There is no database of
+what has been archived: the filenames are the index, exactly as they are for stills. It
+requires `[analysis]` to be enabled, because the analyzer daemon maintains the footage mirror
+it reads; segments older than `retention_days` are never fetched in the first place, so a deep
+device history does not turn into a fetch/delete loop.
+
+Point `root` at a volume sized for the job before enabling it — this deployment's NVR records
+roughly 40 GB/day. The floor is generous for the same reason: a day of footage has to be able
+to arrive between reclaim passes without punching through it.
+
 ## `[general]`
 
 | Key | Required | Default | Meaning |

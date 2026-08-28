@@ -192,5 +192,22 @@ plate_channels =
 # is one guard of three.
 plate_confidence = 0.7
 
+[archive]
+# Full-segment replica of what the NVR itself records, kept by the archiver
+# daemon (timelapsed-archiver). It downloads every recorded segment the footage
+# mirror lists -- oldest first, sequentially -- remuxes it to MP4 and files it
+# under {root}/{channel}/{YYYYMMDD}/. Requires [analysis] to be enabled: the
+# analyzer daemon is what maintains the footage mirror this reads.
+#
+# Empty disables it. Point it at a volume sized for the job before enabling:
+# this NVR records ~40 GB/day across six channels.
+root =
+# Days of footage to keep. 0 keeps everything until the free-space floor bites.
+retention_days = 0
+# Free space on the archive volume below which the oldest whole days are
+# dropped, oldest first. Generous because a day of footage is ~40 GB and the
+# floor has to absorb most of one arriving between reclaim passes.
+min_free_disk_gb = 50
+
 [general]
 logging_level = INFO

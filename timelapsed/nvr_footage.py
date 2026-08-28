@@ -11,12 +11,15 @@ again from the start (see `SegmentIndexer.rebuild`). Nothing here needs backing
 up, and nothing here downloads any video: this is the map, not the footage.
 """
 import logging
+import time
 import uuid
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterator
 from urllib.parse import parse_qs, urlparse
+from xml.sax.saxutils import escape
 
 import requests
 from requests.auth import HTTPDigestAuth
@@ -45,6 +48,16 @@ SESSION_RESULT_CAP = 4000
 # A device that answers MORE forever would otherwise spin this loop forever.
 # The result cap means a session is really at most ~63 pages.
 MAX_PAGES_PER_SEARCH = 2000
+
+# Downloads arrive as MPEG-PS, whose pack header this is. The device answers
+# some failures as HTTP 200 with an XML body, so the first bytes are the only
+# honest statement of what actually arrived.
+MPEG_PS_MAGIC = b"\x00\x00\x01\xba"
+DOWNLOAD_CHUNK_BYTES = 256 * 1024
+DOWNLOAD_BODY = """<?xml version="1.0" encoding="utf-8"?>
+<downloadRequest version="1.0">
+    <playbackURI>{uri}</playbackURI>
+</downloadRequest>"""
 
 # `searchResultPostion` is the device's own spelling. The searchID must be a
 # real UUID: anything else is HTTP 400, statusCode 6.
@@ -221,6 +234,44 @@ class NVRFootageClient:
             channel, MAX_PAGES_PER_SEARCH,
         )
         return segments, position
+
+    def download(self, playback_uri: str, destination: Path, deadline_seconds: float) -> int:
+        """Fetch one recorded segment to `destination`. Returns bytes written.
+
+        `ContentMgmt/download`, never RTSP playback -- RTSP resolves, hangs for
+        the full timeout and produces nothing. The URI must be the exact one the
+        search returned: a request without its `name=` and `size=` is rejected.
+
+        The deadline is wall-clock over the whole transfer, because the failure
+        mode worth guarding is a stream that trickles forever, which per-read
+        timeouts never trip. On the deadline the connection is torn down and the
+        partial file left for the caller's scratch handling.
+        """
+        body = DOWNLOAD_BODY.format(uri=escape(playback_uri))
+        written = 0
+        started = time.monotonic()
+        with self.session.post(
+            f"{self.url}/ISAPI/ContentMgmt/download",
+            data=body,
+            headers={"Content-Type": "application/xml"},
+            timeout=self.timeout,
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            with open(destination, "wb") as out:
+                for chunk in response.iter_content(DOWNLOAD_CHUNK_BYTES):
+                    if written == 0 and not chunk.startswith(MPEG_PS_MAGIC):
+                        raise ValueError(
+                            f"Download answered something other than MPEG-PS: {chunk[:120]!r}"
+                        )
+                    out.write(chunk)
+                    written += len(chunk)
+                    if time.monotonic() - started > deadline_seconds:
+                        raise TimeoutError(
+                            f"Download passed its {deadline_seconds:.0f}s deadline "
+                            f"after {written} bytes"
+                        )
+        return written
 
     def _parse_match(self, channel: str, item: ElementTree.Element) -> RecordedSegment | None:
         started = _first_text(item, "startTime")

@@ -34,6 +34,10 @@ DEFAULT_KEYFRAME_RETENTION_DAYS = 0
 DEFAULT_DEFLICKER = True
 # Enough headroom for render scratch space, the journal and an apt upgrade.
 DEFAULT_MINIMUM_FREE_DISK_GB = 5.0
+# The archive's own floor, on its own volume. Generous because the reclaim that
+# enforces it runs between fetches, and a day of footage is ~40 GB: the floor
+# has to absorb most of a day arriving before the next reclaim pass.
+DEFAULT_ARCHIVE_MIN_FREE_DISK_GB = 50.0
 # One ffmpeg at a time. Each 1080p render peaks around 250 MB, so letting every
 # channel render its rollover at once is how a small guest meets the OOM killer.
 DEFAULT_MAX_CONCURRENT_RENDERS = 1
@@ -302,6 +306,20 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         minimum_free_bytes=int(
             max(0.0, parser.getfloat(
                 "image_capture_library", "min_free_disk_gb", fallback=DEFAULT_MINIMUM_FREE_DISK_GB
+            )) * 1_000_000_000
+        ),
+
+        # Empty (or absent) disables the archiver outright: a replica of the
+        # NVR's recordings is only worth keeping on a volume sized for it.
+        archive_root=(
+            Path(raw_archive_root).expanduser()
+            if (raw_archive_root := parser.get("archive", "root", fallback="").strip())
+            else None
+        ),
+        archive_retention=_optional_days(parser, "archive", "retention_days", fallback=0),
+        archive_minimum_free_bytes=int(
+            max(0.0, parser.getfloat(
+                "archive", "min_free_disk_gb", fallback=DEFAULT_ARCHIVE_MIN_FREE_DISK_GB
             )) * 1_000_000_000
         ),
 

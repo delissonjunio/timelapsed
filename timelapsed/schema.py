@@ -190,6 +190,13 @@ class Config:
     # actually keeps the daemon writing when the steady state moves. 0 disables.
     minimum_free_bytes: int
 
+    # Full-segment replica of the NVR's own recordings, kept by the archiver
+    # daemon. None disables it; on the deployed guest the root is its own
+    # volume, so its retention and free-space floor are its own numbers too.
+    archive_root: Path | None
+    archive_retention: timedelta | None
+    archive_minimum_free_bytes: int
+
     web_host: str
     web_port: int
 
