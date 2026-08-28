@@ -213,7 +213,9 @@ on this side.
 ### How deep the device holds
 
 Quota mode is per-channel, so retention is wildly uneven. Earliest recorded segment per channel,
-measured against 2026-08-28:
+measured against 2026-08-28 — though treat the quiet channels' depths as lower bounds: these
+figures were taken before the 4,000-result search cap (see the appendix) was understood, and
+stage 1's first full sweep found ch1 segments reaching back past 2026-03-15:
 
 | ch | earliest segment | depth |
 | --- | --- | --- |
@@ -286,8 +288,9 @@ As built: `timelapsed/nvr_footage.py` holds the search client and the `SegmentIn
 analyzer daemon runs a sweep every 15 minutes (it is the index's one writer). A channel's first
 sweep covers the device's whole history; later ones re-ask only the last hour past the
 `nvr_sweep` watermark, and the upsert extends a segment that was still being written when the
-previous sweep saw it. Building it surfaced a third device quirk, recorded in the
-[appendix](#appendix-isapi-notes): the search API speaks device-local time stamped `Z`.
+previous sweep saw it. Building it surfaced two more device quirks, recorded in the
+[appendix](#appendix-isapi-notes): the search API speaks device-local time stamped `Z`, and it
+silently truncates any search at 4,000 results, so a sweep resumes capped sessions.
 
 ### Stage 2 — Show it
 
@@ -359,6 +362,13 @@ Hard-won specifics for whoever implements this.
 
 * **`searchID` must be a real UUID.** Anything else returns HTTP 400, `statusCode 6`.
 * **`maxResults` caps at 64 per page.** Page with `searchResultPostion` — note the device's spelling.
+* **A search session truncates at 4,000 matches, and lies about it.** The page holding the
+  4,000th match answers `OK` exactly as a genuinely final page does, mid-history, with no other
+  signal (measured 2026-08-28 on ch1). Any code paging one `searchID` to completion silently
+  loses everything after match 4,000. Resume with a **fresh** searchID whose window starts at the
+  last returned segment's `endTime`; results arrive in ascending time order (also measured), so
+  the seam costs one duplicated straddling segment. Treat a session that returned exactly 4,000
+  as truncated — a real 4,000-segment result costs one extra near-empty session.
 * **Downloads are per-recorded-segment.** An arbitrary time range without the `name=` and `size=`
   fields from a search result is rejected. The search index is the unit of fetch, so a clip window
   has to be mapped onto the segments covering it.

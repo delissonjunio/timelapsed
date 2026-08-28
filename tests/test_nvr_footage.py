@@ -185,6 +185,49 @@ def test_more_pages_are_followed_until_the_device_says_ok(client):
     assert request_field(second, "searchResultPostion") == "2"
 
 
+def test_a_capped_session_is_resumed_where_it_stopped(client, monkeypatch):
+    """The device truncates a search at its result cap and stamps the last page
+    OK as if complete, so a session that fills the cap is not believed: a fresh
+    search picks up at the last segment it returned."""
+    monkeypatch.setattr("timelapsed.nvr_footage.SESSION_RESULT_CAP", 3)
+    client.session.script(
+        FakeResponse(search_page("MORE", [
+            match_item("2026-08-27T12:00:00Z", "2026-08-27T12:01:00Z", 1),
+            match_item("2026-08-27T12:02:00Z", "2026-08-27T12:03:00Z", 2),
+        ])),
+        FakeResponse(search_page("OK", [
+            match_item("2026-08-27T12:04:00Z", "2026-08-27T12:05:30Z", 3),
+        ])),
+        FakeResponse(search_page("OK", [
+            match_item("2026-08-27T12:06:00Z", "2026-08-27T12:07:00Z", 4),
+        ])),
+    )
+
+    segments = list(client.search("5", NOW - timedelta(days=1), NOW))
+
+    assert [segment.size_bytes for segment in segments] == [1, 2, 3, 4]
+    resumed = client.session.calls[2]
+    assert request_field(resumed, "searchID") != request_field(client.session.calls[0], "searchID")
+    assert request_field(resumed, "searchResultPostion") == "0"
+    assert request_field(resumed, "startTime") == "2026-08-27T12:05:30Z"
+
+
+def test_a_capped_session_that_cannot_advance_stops_rather_than_spinning(client, monkeypatch):
+    monkeypatch.setattr("timelapsed.nvr_footage.SESSION_RESULT_CAP", 1)
+    same_item = match_item("2026-08-27T12:00:00Z", "2026-08-27T12:01:00Z", 1)
+    client.session.script(
+        FakeResponse(search_page("OK", [same_item])),
+        FakeResponse(search_page("OK", [same_item])),
+    )
+
+    segments = list(client.search("5", datetime(2026, 8, 27, 11, 0, tzinfo=timezone.utc), NOW))
+
+    # The second session re-answers the seam segment and advances nowhere, so
+    # the search stops instead of asking a third time.
+    assert len(segments) == 2
+    assert len(client.session.calls) == 2
+
+
 def test_an_empty_page_ends_the_search_even_if_the_device_says_more(client):
     client.session.script(FakeResponse(search_page("MORE", [])))
 

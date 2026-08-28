@@ -36,8 +36,14 @@ SWEEP_OVERLAP = timedelta(hours=1)
 # Where a channel's first sweep starts. Predates anything the device could
 # still hold; searching a range with nothing in it costs one empty page.
 FULL_SWEEP_START = datetime(2020, 1, 1, tzinfo=timezone.utc)
+# The device answers at most this many matches per searchID, and the last page
+# says OK as if the search were complete -- silent truncation, measured on the
+# real device (a 4,000th match landed mid-history with a straight face). A
+# session that fills the cap is therefore resumed as a fresh search starting at
+# the last segment it returned.
+SESSION_RESULT_CAP = 4000
 # A device that answers MORE forever would otherwise spin this loop forever.
-# The busiest channel's entire history is under a hundred pages.
+# The result cap means a session is really at most ~63 pages.
 MAX_PAGES_PER_SEARCH = 2000
 
 # `searchResultPostion` is the device's own spelling. The searchID must be a
@@ -146,9 +152,41 @@ class NVRFootageClient:
         return self._device_zone
 
     def search(self, channel: str, start: datetime, end: datetime) -> Iterator[RecordedSegment]:
-        """Every recorded segment for this channel overlapping [start, end]."""
+        """Every recorded segment for this channel overlapping [start, end].
+
+        One search session truncates at SESSION_RESULT_CAP while claiming to be
+        complete, so a session that fills the cap is resumed as a fresh search
+        starting where it stopped. That leans on the device answering in
+        ascending time order, which it does (measured); the segment straddling
+        the seam comes back twice, and callers key on (channel, started_at).
+        """
+        window_start = start
+        while True:
+            segments, matched = self._search_session(channel, window_start, end)
+            yield from segments
+            if matched < SESSION_RESULT_CAP or not segments:
+                return
+            resumed_from = segments[-1].ended_at
+            if resumed_from <= window_start:
+                logger.warning(
+                    "Channel %s search filled the device's result cap without advancing "
+                    "past %s; stopping this sweep", channel, window_start.isoformat(),
+                )
+                return
+            window_start = resumed_from
+
+    def _search_session(
+        self, channel: str, start: datetime, end: datetime
+    ) -> tuple[list[RecordedSegment], int]:
+        """One searchID, paged to its end. Returns (segments, raw match count).
+
+        The raw count is what the cap is judged on: a malformed match is skipped
+        from the segments but still counted, or a page of them would make a
+        truncated session look complete.
+        """
         device_zone = self.device_zone()
         search_id = str(uuid.uuid4())
+        segments: list[RecordedSegment] = []
         position = 0
         for _ in range(MAX_PAGES_PER_SEARCH):
             body = SEARCH_BODY.format(
@@ -172,16 +210,17 @@ class NVRFootageClient:
             for item in matches:
                 segment = self._parse_match(channel, item)
                 if segment is not None:
-                    yield segment
+                    segments.append(segment)
 
             position += len(matches)
             status = (_first_text(root, "responseStatusStrg") or "").strip().upper()
             if status != "MORE" or not matches:
-                return
+                return segments, position
         logger.warning(
-            "Channel %s search still answering MORE after %d pages; stopping this sweep",
+            "Channel %s search still answering MORE after %d pages; stopping this session",
             channel, MAX_PAGES_PER_SEARCH,
         )
+        return segments, position
 
     def _parse_match(self, channel: str, item: ElementTree.Element) -> RecordedSegment | None:
         started = _first_text(item, "startTime")
