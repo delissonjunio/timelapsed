@@ -23,6 +23,8 @@ listing, you can debug it.
 * **[Development](Development.md)** — tests and project layout
 * **[NVR Roadmap](NVR-Roadmap.md)** — replicating the NVR's event video into a local archive
   (decided and provisioned, not built)
+* **[Alarm Plan](Alarm-Plan.md)** — alert when a person shows up where and when one shouldn't,
+  LLM-confirmed first (planned, not built)
 
 ## The two things that trip people up
 
