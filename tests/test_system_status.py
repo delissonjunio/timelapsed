@@ -229,6 +229,9 @@ class Reader:
     def table_counts(self) -> dict[str, int]:
         return self.index.table_counts()
 
+    def segment_summary(self) -> dict[str, dict]:
+        return self.index.segment_summary()
+
 
 def test_analysis_lag_is_measured_against_the_newest_frame_not_the_clock(capture, config, index, now):
     capture("1", steady(now, 100, config.capture_interval))
@@ -854,3 +857,55 @@ def test_the_status_page_works_with_recognition_switched_off(config, capture, no
 def test_the_viewer_and_the_library_both_link_to_the_status_page(base_url):
     assert b'href="/status"' in fetch(f"{base_url}/")[1]
     assert b'href="/status"' in fetch(f"{base_url}/library")[1]
+
+
+# --- the archive ---
+
+
+def archive_file(config, channel: str, started: datetime, ended: datetime, name: str, size: int = 512):
+    from timelapsed.archiver import segment_filename
+
+    day = config.archive_root / channel / started.astimezone(timezone.utc).strftime("%Y%m%d")
+    day.mkdir(parents=True, exist_ok=True)
+    (day / segment_filename(started, ended, name)).write_bytes(b"v" * size)
+
+
+def test_the_archive_section_is_off_until_a_root_is_configured(config):
+    report = SystemStatusCollector(config).report()
+
+    assert report["archive"] == {"enabled": False, "channels": []}
+
+
+def test_the_archive_is_measured_against_the_mirror(config, index, tmp_path, now):
+    config.archive_root = tmp_path / "archive"
+    old = now - timedelta(days=2)
+    archive_file(config, "1", old, old + timedelta(minutes=1), "ch01_001")
+    # The mirror lists that segment plus a newer one not yet replicated.
+    index.record_segments("1", [
+        (to_epoch(old), to_epoch(old + timedelta(minutes=1)), 512, "rtsp://nvr/x?name=ch01_001&size=512"),
+        (to_epoch(now - timedelta(hours=1)), to_epoch(now - timedelta(minutes=58)), 900,
+         "rtsp://nvr/x?name=ch01_002&size=900"),
+    ], swept_through=to_epoch(now))
+
+    report = SystemStatusCollector(config).report(recognition=Reader(index))
+    archive = report["archive"]
+    row = next(entry for entry in archive["channels"] if entry["channel"] == "1")
+
+    assert archive["enabled"] and archive["total_files"] == 1
+    assert row["files"] == 1 and row["recorded_segments"] == 2
+    assert row["backlog_segments"] == 1
+    # Behind by the distance from the replicated segment's end to the newest
+    # recording the mirror lists: two days less the hour.
+    assert row["lag_seconds"] == pytest.approx((timedelta(days=2) - timedelta(minutes=59)).total_seconds(), abs=5)
+    assert any("behind the NVR" in check["title"] for check in report["checks"])
+
+
+def test_an_empty_archive_reports_itself_rather_than_failing(config, tmp_path):
+    config.archive_root = tmp_path / "archive"
+
+    report = SystemStatusCollector(config).report()
+    archive = report["archive"]
+
+    assert archive["enabled"] and archive["total_files"] == 0
+    assert all(row["files"] == 0 for row in archive["channels"])
+    assert any(check["title"] == "The archive is empty" for check in report["checks"])

@@ -368,6 +368,7 @@ function draw() {
   content.appendChild(drawStorage(report));
   content.appendChild(drawCapture(report));
   content.appendChild(drawAnalysis(report));
+  content.appendChild(drawArchive(report));
   content.appendChild(drawRenders(report));
   content.appendChild(drawRetention(report));
   content.appendChild(drawHost(report));
@@ -433,6 +434,16 @@ function drawTiles(report) {
   tiles.appendChild(tile("Renders due", count(outstanding),
     report.renders.cadences.join(" \\u00b7 "),
     outstanding === 0 ? "ok" : outstanding > 6 ? "warn" : undefined));
+
+  const archive = report.archive;
+  if (archive && archive.enabled) {
+    const floorBad = archive.disk && archive.disk.floor_met === false;
+    tiles.appendChild(tile("Archive", bytes(archive.total_bytes),
+      archive.backlog_segments
+        ? count(archive.backlog_segments) + " segments to fetch"
+        : count(archive.total_files) + " segments \\u00b7 up to date",
+      floorBad ? "warn" : archive.backlog_segments ? undefined : "ok"));
+  }
 
   return tiles;
 }
@@ -658,6 +669,62 @@ function drawAnalysis(report) {
   ]));
 
   return section("Analysis", box, index);
+}
+
+function drawArchive(report) {
+  const archive = report.archive;
+  if (!archive || !archive.enabled) {
+    const box = panel(["The replica is off"]);
+    box.body.appendChild(el("p", "empty",
+      "No [archive] root is configured, so nothing replicates the NVR's own "
+      + "recordings. The footage the cameras record lives only on the NVR, for "
+      + "as long as its quota keeps it."));
+    return section("Archive", box);
+  }
+
+  const rows = archive.channels.map(row => [
+    cell("Camera " + row.channel),
+    cell(count(row.files), {num: true}),
+    cell(bytes(row.bytes), {num: true}),
+    cell(row.oldest ? stamp(row.oldest) : "\\u2014", {num: true, dim: !row.oldest}),
+    cell(row.newest ? stamp(row.newest) : "\\u2014", {num: true, dim: !row.newest}),
+    cell(row.lag_seconds === null ? "\\u2014" : dur(row.lag_seconds),
+         {num: true, dim: row.lag_seconds === null}),
+    cell(row.backlog_segments === null ? "\\u2014" : count(row.backlog_segments),
+         {num: true, dim: row.backlog_segments === null}),
+  ]);
+
+  const box = panel([
+    el("b", "", count(archive.total_files) + " segments \\u00b7 " + bytes(archive.total_bytes)),
+    archive.backlog_segments
+      ? count(archive.backlog_segments) + " listed by the NVR but not fetched yet"
+      : "everything the NVR lists is replicated",
+  ]);
+  box.body.appendChild(table([
+    {label: "Camera"},
+    {label: "Segments", num: true},
+    {label: "Size", num: true},
+    {label: "Oldest", num: true},
+    {label: "Newest", num: true},
+    {label: "Behind", num: true},
+    {label: "Backlog", num: true},
+  ], rows));
+
+  const disk = archive.disk || {};
+  box.body.appendChild(pairs([
+    ["Volume", archive.root],
+    ["Free", disk.available
+      ? bytes(disk.free_bytes) + " of " + bytes(disk.total_bytes) : "unknown"],
+    ["Floor", bytes(archive.minimum_free_bytes)],
+    ["Retention", archive.retention_seconds === null
+      ? "until the floor bites, oldest days first" : dur(archive.retention_seconds)],
+  ]));
+  box.body.appendChild(el("p", "note",
+    "Behind is the newest recording the NVR reports against the newest segment "
+    + "replicated here \\u2014 large numbers are normal while the initial backfill "
+    + "runs, because it fetches oldest first. Backlog compares the footage "
+    + "mirror's segment count with the files on this volume."));
+  return section("Archive", box);
 }
 
 function drawRenders(report) {

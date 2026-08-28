@@ -1804,6 +1804,14 @@ class RecognitionReader:
                 # No table means no map, which the lane already draws as nothing.
                 return []
 
+    def segment_summary(self) -> dict[str, dict]:
+        with self._lock:
+            try:
+                return self._connection().segment_summary()
+            except sqlite3.OperationalError:
+                # Same pre-mirror-schema tolerance as footage_runs.
+                return {}
+
     def identities(self, kind: str | None = None) -> list[dict]:
         with self._lock:
             return self._connection().identities(kind=kind)

@@ -325,6 +325,26 @@ class AnalysisIndex:
                 (channel, swept_through),
             )
 
+    def segment_summary(self) -> dict[str, dict]:
+        """Per channel: how many segments the mirror lists and the span they cover.
+
+        For the status page, which compares this against what the archiver has
+        actually replicated. One grouped scan of the mirror, epoch seconds out.
+        """
+        return {
+            row["channel"]: {
+                "segments": row["n"],
+                "bytes": row["b"] or 0,
+                "oldest": row["first"],
+                "newest": row["last"],
+            }
+            for row in self.connection.execute(
+                "SELECT channel, COUNT(*) AS n, SUM(size_bytes) AS b, "
+                "MIN(started_at) AS first, MAX(ended_at) AS last "
+                "FROM nvr_segment GROUP BY channel"
+            )
+        }
+
     def clear_segments(self, channel: str) -> None:
         """Forget a channel's segments and its sweep watermark, for a rebuild."""
         with self.connection:

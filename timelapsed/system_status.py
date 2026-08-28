@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from timelapsed.archiver import parse_segment_filename
 from timelapsed.config import validate_config
 from timelapsed.image_capture_library import (
     SCRATCH_DIRECTORY_NAME,
@@ -69,7 +70,7 @@ RATE_HISTORY_SECONDS = 3600.0
 STOPPED_RATE = 0.005
 
 # The systemd units a normal deployment runs, in the order the page shows them.
-KNOWN_UNITS = ("timelapsed", "timelapsed-analyzer", "timelapsed-web")
+KNOWN_UNITS = ("timelapsed", "timelapsed-analyzer", "timelapsed-archiver", "timelapsed-web")
 UNIT_PROPERTIES = (
     "LoadState", "ActiveState", "SubState", "Result", "NRestarts",
     "MemoryCurrent", "ExecMainStartTimestamp", "ActiveEnterTimestamp",
@@ -248,6 +249,62 @@ def scan_timelapses(directory: Path) -> list[RenderedVideo]:
     return found
 
 
+@dataclass(frozen=True)
+class ArchiveChannelScan:
+    files: int = 0
+    bytes: int = 0
+    oldest_start: datetime | None = None
+    newest_end: datetime | None = None
+
+
+def scan_archive_channel(directory: Path) -> ArchiveChannelScan:
+    """One channel of the replica, counted without parsing every filename.
+
+    The archive names files `{start}_{end}_{name}.mp4` with fixed-width stamps,
+    so lexicographic min/max is chronological min/max and only the two boundary
+    names are ever parsed -- the same trick the frame scan plays.
+    """
+    files = total = 0
+    oldest = newest = None
+    try:
+        days = [entry.path for entry in os.scandir(directory) if entry.is_dir()]
+    except OSError:
+        return ArchiveChannelScan()
+
+    for day in days:
+        try:
+            listing = os.scandir(day)
+        except OSError:
+            continue
+        with listing:
+            for entry in listing:
+                if not entry.name.endswith(".mp4"):
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                files += 1
+                total += info.st_size
+                stem = entry.name[:-4]
+                if oldest is None or stem < oldest:
+                    oldest = stem
+                if newest is None or stem > newest:
+                    newest = stem
+
+    oldest_start = newest_end = None
+    try:
+        if oldest is not None:
+            oldest_start = parse_segment_filename(oldest)[0]
+        if newest is not None:
+            newest_end = parse_segment_filename(newest)[1]
+    except ValueError:
+        pass
+    return ArchiveChannelScan(
+        files=files, bytes=total, oldest_start=oldest_start, newest_end=newest_end
+    )
+
+
 def scan_tree(root: Path) -> tuple[int, int]:
     """(files, bytes) under a directory tree. Used for the crop store."""
     files = total = 0
@@ -409,6 +466,7 @@ class SystemStatusCollector:
             "retention": self._retention(now, channels, scans, videos),
             "growth": self._growth(now, channels, scans, videos),
             "analysis": self._analysis(now, channels, scans, watermarks, recognition),
+            "archive": self._archive(now, channels, recognition),
             "config": self._config_summary(),
         }
         report["checks"] = self._checks(report)
@@ -1104,6 +1162,91 @@ class SystemStatusCollector:
             },
         }
 
+    # --- the archive ---
+
+    def _archive(self, now, channels, recognition) -> dict:
+        """The replica against the mirror: what is on disk, and what is not yet.
+
+        Lag is the newest recording the mirror lists against the newest segment
+        replicated -- large during the oldest-first backfill, minutes in steady
+        state. Backlog compares counts, so it stays meaningful on a channel the
+        backfill has not reached at all, where there is no lag to quote.
+        """
+        config = self.config
+        if config.archive_root is None:
+            return {"enabled": False, "channels": []}
+
+        mirror: dict[str, dict] = {}
+        if recognition is not None:
+            try:
+                mirror = recognition.segment_summary()
+            except Exception:
+                logger.exception("Could not read the footage mirror for the status page")
+
+        rows = []
+        total_files = total_bytes = 0
+        for channel in channels:
+            scan = scan_archive_channel(config.archive_root / channel)
+            held = mirror.get(channel, {})
+            newest_recorded = (
+                datetime.fromtimestamp(held["newest"], tz=timezone.utc)
+                if held.get("newest") else None
+            )
+            lag = (
+                (newest_recorded - scan.newest_end).total_seconds()
+                if newest_recorded and scan.newest_end else None
+            )
+            total_files += scan.files
+            total_bytes += scan.bytes
+            rows.append({
+                "channel": channel,
+                "files": scan.files,
+                "bytes": scan.bytes,
+                "oldest": _iso(scan.oldest_start),
+                "newest": _iso(scan.newest_end),
+                "recorded_segments": held.get("segments"),
+                "recorded_bytes": held.get("bytes"),
+                "lag_seconds": lag,
+                "backlog_segments": (
+                    max(held["segments"] - scan.files, 0) if held.get("segments") is not None else None
+                ),
+            })
+
+        # The archive volume's own numbers: it is deliberately not the library's
+        # filesystem, so the main disk tile says nothing about it.
+        disk: dict = {"available": False}
+        try:
+            usage = shutil.disk_usage(config.archive_root)
+            floor = config.archive_minimum_free_bytes
+            disk = {
+                "available": True,
+                "total_bytes": usage.total,
+                "used_bytes": usage.used,
+                "free_bytes": usage.free,
+                "used_fraction": round(usage.used / usage.total, 4) if usage.total else None,
+                "floor_met": usage.free >= floor if floor else None,
+            }
+        except OSError:
+            pass
+
+        return {
+            "enabled": True,
+            "root": str(config.archive_root),
+            "retention_seconds": _seconds(config.archive_retention),
+            "minimum_free_bytes": config.archive_minimum_free_bytes,
+            "disk": disk,
+            "channels": rows,
+            "total_files": total_files,
+            "total_bytes": total_bytes,
+            "worst_lag_seconds": max(
+                (row["lag_seconds"] for row in rows if row["lag_seconds"] is not None),
+                default=None,
+            ),
+            "backlog_segments": sum(
+                row["backlog_segments"] or 0 for row in rows
+            ),
+        }
+
     @staticmethod
     def _index_counts(recognition) -> dict:
         try:
@@ -1233,6 +1376,26 @@ class SystemStatusCollector:
             elif row["state"] == "unstarted" and row["channel"] in self.config.channels:
                 add("info", f"Analysis has not started on camera {row['channel']}",
                     "No watermark has been written for it yet.")
+
+        archive = report["archive"]
+        if archive["enabled"]:
+            archive_disk = archive["disk"]
+            if archive_disk.get("available") and archive_disk.get("floor_met") is False:
+                add("warn", "The archive volume is below its free-space floor",
+                    f"{archive_disk['free_bytes'] / 1e9:.1f} GB free against a "
+                    f"{archive['minimum_free_bytes'] / 1e9:.1f} GB floor. The archiver is "
+                    f"dropping its oldest days to stay writable, which is retention by "
+                    f"disk size doing its job.")
+            if not archive["total_files"]:
+                add("info", "The archive is empty",
+                    "The archiver has not replicated anything yet. Its first pass pulls "
+                    "the NVR's whole history, oldest first.")
+            elif archive["worst_lag_seconds"] is not None and archive["worst_lag_seconds"] > 86400:
+                add("warn", "The archive is behind the NVR",
+                    f"The newest replicated segment trails the newest recording by "
+                    f"{_humanise(archive['worst_lag_seconds'])}. Normal while the "
+                    f"oldest-first backfill runs; if it persists, check "
+                    f"`systemctl status timelapsed-archiver`.")
 
         services = report["services"] or {}
         if services.get("unavailable"):
