@@ -213,26 +213,25 @@ on this side.
 ### How deep the device holds
 
 Quota mode is per-channel, so retention is wildly uneven. Earliest recorded segment per channel,
-measured against 2026-08-28 — though treat the quiet channels' depths as lower bounds: these
-figures were taken before the 4,000-result search cap (see the appendix) was understood, and
-stage 1's first full sweep found ch1 segments reaching back past 2026-03-15:
+from stage 1's first full sweep on 2026-08-28 (the 2026-08-27 measurements understated ch1 and
+ch6 — they were taken before the 4,000-result search cap in the appendix was understood):
 
 | ch | earliest segment | depth |
 | --- | --- | --- |
-| 1 | 2026-06-13 | 76 days |
+| 1 | 2026-02-04 | 205 days |
 | 5 | 2026-08-17 | 11 days |
-| 6 | 2026-08-17 | 11 days |
+| 6 | 2026-06-17 | 72 days |
 | 7 | 2026-07-12 | 47 days |
 | 8 | 2026-08-14 | 14 days |
 | 9 | 2026-07-13 | 46 days |
 
 Two consequences:
 
-* **The edge is slow.** The busiest channels keep ~11 days, so a replica that syncs once a day is
-  never close to losing footage; an hourly poll is generous.
-* **The backfill window is now.** ch5/ch6 history already starts at 2026-08-17; the July depth on
-  the quiet channels can be pulled once and is then safe locally whenever the quota wraps it on the
-  device.
+* **The edge is slow.** The tightest channel (ch5) keeps ~11 days, so a replica that syncs once a
+  day is never close to losing footage; an hourly poll is generous.
+* **The backfill window is now.** ch5's history already starts at 2026-08-17; the deep history on
+  the other channels can be pulled once and is then safe locally whenever the quota wraps it on
+  the device.
 
 ### Sizing against a bought disk
 
