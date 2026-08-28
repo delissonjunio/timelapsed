@@ -21,6 +21,7 @@ from typing import Iterator
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape
 
+import backoff
 import requests
 from requests.auth import HTTPDigestAuth
 
@@ -238,12 +239,24 @@ class NVRFootageClient:
         )
         return segments, position
 
+    @backoff.on_exception(
+        backoff.expo,
+        requests.exceptions.RequestException,
+        max_tries=4,
+        jitter=backoff.full_jitter,
+    )
     def download(self, playback_uri: str, destination: Path, deadline_seconds: float) -> int:
         """Fetch one recorded segment to `destination`. Returns bytes written.
 
         `ContentMgmt/download`, never RTSP playback -- RTSP resolves, hangs for
         the full timeout and produces nothing. The URI must be the exact one the
         search returned: a request without its `name=` and `size=` is rejected.
+
+        Retried with backoff because the device 400s intermittently under
+        back-to-back downloads -- roughly half of a bulk run failed, and every
+        failed URI succeeded on manual replay seconds later. A moment's pause
+        is all it wants. Each retry reopens the destination, so a partial
+        write cannot survive into the next attempt.
 
         The deadline is wall-clock over the whole transfer, because the failure
         mode worth guarding is a stream that trickles forever, which per-read

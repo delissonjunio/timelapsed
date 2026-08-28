@@ -396,6 +396,10 @@ Hard-won specifics for whoever implements this.
   proprietary `IMKH` pseudo-header, with the standard `00 00 01 BA` pack header 32 bytes in.
   ffmpeg skips the wrapper; anything validating the first bytes has to accept both openings.
   Remux with `-c copy`; 0.17s for a 50s clip.
+* **Back-to-back downloads draw intermittent HTTP 400s.** During the bulk replication roughly
+  half the requests were refused — and every refused URI succeeded on manual replay seconds
+  later. Nothing distinguishes a refused request from an accepted one; the device just wants a
+  moment between sessions sometimes. Retry with backoff rather than treating 400 as final.
 * **Keyframes land one per 1.6s** and extract at 32× realtime with `-skip_frame nokey`, so stills
   can be derived from fetched clips almost free.
 * **`alertStream` works** — `multipart/mixed`, ~55 B/s of heartbeats — but is largely redundant

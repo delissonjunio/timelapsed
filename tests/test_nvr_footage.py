@@ -352,6 +352,20 @@ def test_download_accepts_the_hikvision_wrapped_stream(client, tmp_path):
     assert written > 0
 
 
+def test_download_retries_the_transient_400s_the_device_throws(client, tmp_path):
+    """Under back-to-back downloads the device 400s intermittently; the same
+    URI succeeds on replay moments later, so a refusal is retried."""
+    client.session.script(
+        StreamResponse([], status_code=400),
+        StreamResponse([MPEG_PS_MAGIC + b"video"]),
+    )
+
+    written = client.download("rtsp://nvr/x?name=a&size=1", tmp_path / "segment.ps", 60)
+
+    assert written > 0
+    assert len(client.session.calls) == 2
+
+
 def test_download_rejects_an_xml_answer_dressed_as_success(client, tmp_path):
     """The device reports some failures as HTTP 200 with an XML body. The first
     bytes are the only honest statement of what arrived."""
