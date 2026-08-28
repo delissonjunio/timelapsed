@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Bumped whenever SCHEMA changes shape. _migrate() reads PRAGMA user_version and
 # applies everything newer, so an existing index is upgraded in place.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 -- A contiguous sighting: one person or one vehicle, from when it appeared to
@@ -118,6 +118,33 @@ CREATE INDEX IF NOT EXISTS plate_track ON plate(channel, last_seen_at);
 CREATE TABLE IF NOT EXISTS watermark (
     channel         TEXT PRIMARY KEY,
     analysed_through INTEGER NOT NULL
+);
+
+-- One row per segment the NVR itself has recorded, mirrored from
+-- ContentMgmt/search. A rebuildable cache: the device is authoritative for
+-- what it holds, so none of this needs backing up -- dropping the table and
+-- re-sweeping recreates it. Keyed on (channel, started_at) because a segment
+-- still being written keeps the start it opened with while its end walks
+-- forward; re-sweeping the recent past updates the row in place.
+CREATE TABLE IF NOT EXISTS nvr_segment (
+    id           INTEGER PRIMARY KEY,
+    channel      TEXT    NOT NULL,
+    started_at   INTEGER NOT NULL,          -- epoch seconds, UTC
+    ended_at     INTEGER NOT NULL,
+    size_bytes   INTEGER NOT NULL DEFAULT 0,
+    -- The exact URI the device returned. ContentMgmt/download rejects anything
+    -- without the name= and size= a search result carries, so this is stored
+    -- verbatim rather than reconstructed from the times.
+    playback_uri TEXT    NOT NULL,
+    UNIQUE (channel, started_at)
+);
+CREATE INDEX IF NOT EXISTS nvr_segment_time ON nvr_segment(channel, started_at, ended_at);
+
+-- How far each channel's segment sweep has reached, so a poll asks the device
+-- about the recent past rather than its whole history every time.
+CREATE TABLE IF NOT EXISTS nvr_sweep (
+    channel       TEXT PRIMARY KEY,
+    swept_through INTEGER NOT NULL
 );
 """
 
@@ -265,6 +292,79 @@ class AnalysisIndex:
             row["channel"]: row["analysed_through"]
             for row in self.connection.execute("SELECT channel, analysed_through FROM watermark")
         }
+
+    # --- NVR footage ---
+
+    def segment_sweep(self, channel: str) -> int | None:
+        row = self.connection.execute(
+            "SELECT swept_through FROM nvr_sweep WHERE channel = ?", (channel,)
+        ).fetchone()
+        return row["swept_through"] if row else None
+
+    def record_segments(
+        self, channel: str, segments: list[tuple[int, int, int, str]], swept_through: int
+    ) -> None:
+        """Store one sweep's worth of (started_at, ended_at, size_bytes, playback_uri).
+
+        One transaction for the batch and the watermark together: a sweep that
+        dies mid-write leaves the watermark where it was, so the next poll asks
+        the device again rather than trusting half an answer.
+        """
+        with self.connection:
+            self.connection.executemany(
+                "INSERT INTO nvr_segment (channel, started_at, ended_at, size_bytes, playback_uri) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(channel, started_at) DO UPDATE SET "
+                "ended_at = excluded.ended_at, size_bytes = excluded.size_bytes, "
+                "playback_uri = excluded.playback_uri",
+                [(channel, *segment) for segment in segments],
+            )
+            self.connection.execute(
+                "INSERT INTO nvr_sweep (channel, swept_through) VALUES (?, ?) "
+                "ON CONFLICT(channel) DO UPDATE SET swept_through = excluded.swept_through",
+                (channel, swept_through),
+            )
+
+    def clear_segments(self, channel: str) -> None:
+        """Forget a channel's segments and its sweep watermark, for a rebuild."""
+        with self.connection:
+            self.connection.execute("DELETE FROM nvr_segment WHERE channel = ?", (channel,))
+            self.connection.execute("DELETE FROM nvr_sweep WHERE channel = ?", (channel,))
+
+    def segments(
+        self,
+        channel: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        clauses, parameters = [], []
+        if channel:
+            clauses.append("channel = ?")
+            parameters.append(channel)
+        # Overlap, not containment, as with events: a segment straddling the
+        # viewport edge still has to be drawn.
+        if start is not None:
+            clauses.append("ended_at >= ?")
+            parameters.append(start)
+        if end is not None:
+            clauses.append("started_at <= ?")
+            parameters.append(end)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return [
+            {
+                "id": row["id"],
+                "channel": row["channel"],
+                "starts": from_epoch(row["started_at"]).isoformat(),
+                "finishes": from_epoch(row["ended_at"]).isoformat(),
+                "size_bytes": row["size_bytes"],
+                "playback_uri": row["playback_uri"],
+            }
+            for row in self.connection.execute(
+                f"SELECT * FROM nvr_segment {where} ORDER BY started_at DESC LIMIT ?",
+                (*parameters, limit),
+            )
+        ]
 
     # --- housekeeping ---
 

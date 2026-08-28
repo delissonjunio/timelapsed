@@ -24,6 +24,7 @@ from timelapsed.analysis.models import BodyEmbedder, ObjectDetector, PlateReader
 from timelapsed.analysis.pipeline import FrameAnalyzer
 from timelapsed.config import get_config, validate_config
 from timelapsed.image_capture_library import ImageCaptureLibrary
+from timelapsed.nvr_footage import NVRFootageClient, SegmentIndexer
 from timelapsed.schema import Config
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 IDLE_SLEEP_SECONDS = 5
 # Retention runs on this cadence, not every pass.
 PRUNE_INTERVAL = timedelta(hours=6)
+# How often to ask the NVR what footage it holds. The busiest channels keep
+# ~11 days of recordings, so even hourly would never miss anything; this is
+# about how stale the footage lane may be, not about losing segments.
+SEGMENT_SYNC_INTERVAL = timedelta(minutes=15)
 # Frames handled between watermark writes. A crash loses at most this much work,
 # and it keeps the index from taking a write per frame during a long backfill.
 WATERMARK_EVERY = 25
@@ -173,6 +178,15 @@ def run() -> None:
     library = ImageCaptureLibrary(config.image_capture_library_root)
     index = AnalysisIndex(config.analysis_index_path)
 
+    # Lives in this daemon because this daemon is the index's one writer. It
+    # asks the NVR for its search index only -- a few pages of XML -- so it adds
+    # nothing to the snapshot load the capture daemon already puts on it.
+    footage = SegmentIndexer(
+        NVRFootageClient(config.nvr_url, config.nvr_username, config.nvr_password),
+        index,
+        config.channels,
+    )
+
     try:
         analyzer = build_analyzer(config, index)
     except FileNotFoundError as error:
@@ -190,8 +204,20 @@ def run() -> None:
         logger.info("  channel %s analysed through %s", channel, from_epoch(through))
 
     last_pruned_at = None
+    last_swept_at = None
     while not shutting_down:
         started = time.monotonic()
+
+        # Before the analysis pass, so a first start builds the footage map
+        # while the frame backlog is still being chewed through, not after.
+        try:
+            now = datetime.now(tz=timezone.utc)
+            if last_swept_at is None or (now - last_swept_at) >= SEGMENT_SYNC_INTERVAL:
+                last_swept_at = now
+                footage.sync_all(now)
+        except Exception:
+            logger.exception("NVR footage sweep failed, continuing")
+
         try:
             analysed = run_once(config, library, index, analyzer)
         except Exception:

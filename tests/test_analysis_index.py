@@ -21,7 +21,10 @@ def test_schema_is_created_on_first_open(index):
         row["name"]
         for row in index.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    assert {"event", "detection", "identity", "signature", "plate", "watermark"} <= tables
+    assert {
+        "event", "detection", "identity", "signature", "plate", "watermark",
+        "nvr_segment", "nvr_sweep",
+    } <= tables
 
 
 def test_reopening_an_index_keeps_its_rows(tmp_path):

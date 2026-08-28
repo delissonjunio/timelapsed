@@ -1,12 +1,14 @@
 # NVR Roadmap
 
-**Status: decided and provisioned, not yet built.** The decision landed 2026-08-28: build the
+**Status: stage 1 built; stages 2 and 3 are next.** The decision landed 2026-08-28: build the
 **full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
 for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
 — the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
 by the `timelapsed` user (thin volume `scsi1` from the `hdd-thin` LVM pool on the Proxmox host,
-growable). No code has been written; a build session should start at
-[Stages](#stages) with the replica variant of stage 3.
+growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `ContentMgmt/search`
+into an `nvr_segment` table from inside the analyzer daemon, verified against the live device.
+A build session should continue at [Stages](#stages) — stage 2, then the replica variant of
+stage 3.
 
 This page records what the NVR can actually do, measured against the live device, and what it
 would take to use it. It exists so the decision does not have to be re-derived later.
@@ -268,7 +270,7 @@ Structurally, nothing — stages 1 and 2 are identical either way. If the disk i
 
 Each is independently useful and shippable.
 
-### Stage 1 — Index what footage exists
+### Stage 1 — Index what footage exists — **built (2026-08-28)**
 
 Poll `ContentMgmt/search` per channel on a slow timer into a new `nvr_segment` table in the existing
 `index/index.sqlite3` — same database recognition already uses, same WAL discipline, analyzer-writes
@@ -279,6 +281,13 @@ re-queries and repopulates is enough. Nothing here needs backing up.
 
 Cost: near zero, no stored bytes. Yields an exact map of what footage exists, per channel, per
 second.
+
+As built: `timelapsed/nvr_footage.py` holds the search client and the `SegmentIndexer`; the
+analyzer daemon runs a sweep every 15 minutes (it is the index's one writer). A channel's first
+sweep covers the device's whole history; later ones re-ask only the last hour past the
+`nvr_sweep` watermark, and the upsert extends a segment that was still being written when the
+previous sweep saw it. Building it surfaced a third device quirk, recorded in the
+[appendix](#appendix-isapi-notes): the search API speaks device-local time stamped `Z`.
 
 ### Stage 2 — Show it
 
@@ -361,7 +370,12 @@ Hard-won specifics for whoever implements this.
   it needs reconnect-with-backoff and a **read watchdog**; it blocks silently between events, and a
   75-second listen ran 149 seconds because the bound was only checked on chunk arrival.
 * **`-rw_timeout` is not valid for the RTSP demuxer** on the guest's ffmpeg build.
-* **Device clock is NTP-synced** at `-03:00` and matches host UTC. No skew to compensate for.
+* **The search API speaks device-local time stamped `Z`, in both directions.** Asking
+  `ContentMgmt/search` for a window in true UTC answers `NO MATCHES`; the same wall-clock hour
+  written as local-with-Z matches, and results come back stamped local-with-Z too (measured
+  2026-08-28). `/ISAPI/System/time` reports the offset honestly
+  (`<localTime>…-03:00</localTime>`) — read it once and translate every request and every
+  result through it. The clock itself **is** NTP-synced and correct; only the stamps lie.
 * Useful read-only endpoints: `/ISAPI/System/deviceInfo`, `/ISAPI/System/time`,
   `/ISAPI/ContentMgmt/Storage`, `/ISAPI/Streaming/channels`,
   `/ISAPI/ContentMgmt/InputProxy/channels` and `.../channels/status`,
