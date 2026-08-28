@@ -1,14 +1,14 @@
 # NVR Roadmap
 
-**Status: stage 1 built; stages 2 and 3 are next.** The decision landed 2026-08-28: build the
+**Status: stages 1 and 2 built; stage 3 is next.** The decision landed 2026-08-28: build the
 **full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
 for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
 — the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
 by the `timelapsed` user (thin volume `scsi1` from the `hdd-thin` LVM pool on the Proxmox host,
 growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `ContentMgmt/search`
 into an `nvr_segment` table from inside the analyzer daemon, verified against the live device.
-A build session should continue at [Stages](#stages) — stage 2, then the replica variant of
-stage 3.
+Stage 2 landed the same day: a footage lane on the timeline, served by `/api/footage`.
+A build session should continue at [Stages](#stages) with the replica variant of stage 3.
 
 This page records what the NVR can actually do, measured against the live device, and what it
 would take to use it. It exists so the decision does not have to be re-derived later.
@@ -291,7 +291,7 @@ previous sweep saw it. Building it surfaced two more device quirks, recorded in 
 [appendix](#appendix-isapi-notes): the search API speaks device-local time stamped `Z`, and it
 silently truncates any search at 4,000 results, so a sweep resumes capped sessions.
 
-### Stage 2 — Show it
+### Stage 2 — Show it — **built (2026-08-28)**
 
 Add a footage lane to the timeline beside the existing activity lanes, drawn from `nvr_segment`, so
 it is visible which moments can be pulled. Serve it from a new endpoint — **not** `/api/events`,
@@ -299,6 +299,14 @@ which already means recognition events. `/api/footage` is free.
 
 Extend the lane-colour whitelist rather than interpolating names into CSS; the existing XSS posture
 must survive.
+
+As built: `/api/footage?channel&start&end` merges segments server-side into runs at about a
+pixel's resolution of the requested window (`AnalysisIndex.segment_runs`), so the payload tracks
+the zoom level rather than the recording's duty cycle — a busy channel is hundreds of segments a
+day, far more than the lane has pixels. The lane sits between the cadence and activity lanes,
+draws only when the mirror has data, and is deliberately not clickable until stage 3 gives a run
+something to do. The lane colour is a fixed CSS variable; nothing from the device reaches CSS.
+The viewer tolerates an index from before schema v3 by answering an empty list.
 
 ### Stage 3 — Fetch clips
 

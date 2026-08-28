@@ -36,6 +36,17 @@ def seeded_index(config):
         index.add_signature(identity, person, "body", b"\x00" * 16, 300.0, BASE)
         index.assign_identity(person, identity)
         index.rename_identity(identity, "Someone")
+
+        # NVR footage: a close pair that merges at a coarse zoom, and a loner.
+        index.record_segments(
+            "1",
+            [
+                (BASE + 10, BASE + 20, 5_000_000, "rtsp://nvr/tracks/101?name=a&size=5000000"),
+                (BASE + 22, BASE + 30, 3_000_000, "rtsp://nvr/tracks/101?name=b&size=3000000"),
+                (BASE + 600, BASE + 660, 50_000_000, "rtsp://nvr/tracks/101?name=c&size=50000000"),
+            ],
+            swept_through=BASE + 1000,
+        )
         yield index
 
 
@@ -224,6 +235,35 @@ def test_status_reports_how_far_analysis_has_reached(base_url, config):
         index.set_watermark("1", BASE + 3600)
 
     assert get_json(f"{base_url}/api/status") == {"1": "2025-06-01T13:00:00+00:00"}
+
+
+def test_footage_merges_segments_into_runs_at_the_zoom_level(base_url):
+    # A 2,000-second window makes max_gap 2s, so the pair 2s apart merge into
+    # one run and the distant third stands alone.
+    runs = get_json(f"{base_url}/api/footage?channel=1&start={BASE}&end={BASE + 2000}")
+
+    assert len(runs) == 2
+    assert runs[0]["segments"] == 2
+    assert runs[0]["size_bytes"] == 8_000_000
+    assert runs[1]["segments"] == 1
+    # The playback URI stays server-side: the lane needs spans, not the NVR's
+    # internal address.
+    assert "playback_uri" not in runs[0]
+
+
+def test_footage_requires_a_window(base_url):
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        get_json(f"{base_url}/api/footage?channel=1")
+    assert raised.value.code == 400
+
+
+def test_footage_answers_empty_when_the_index_predates_the_mirror(base_url, seeded_index):
+    """The viewer reads the index without migrating it, so it can be handed a
+    schema from before nvr_segment existed. That is no footage, not a 500."""
+    with seeded_index.connection:
+        seeded_index.connection.execute("DROP TABLE nvr_segment")
+
+    assert get_json(f"{base_url}/api/footage?channel=1&start={BASE}&end={BASE + 2000}") == []
 
 
 def test_the_library_page_is_served(base_url):

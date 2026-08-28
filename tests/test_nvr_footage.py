@@ -418,6 +418,31 @@ def test_rebuild_drops_the_mirror_and_sweeps_from_scratch(indexer, index):
     assert start == FULL_SWEEP_START
 
 
+def test_segment_runs_include_straddlers_and_carry_their_totals(index):
+    index.record_segments(
+        "5",
+        [
+            (BASE - 30, BASE + 10, 100, "rtsp://nvr/a"),   # straddles the window start
+            (BASE + 12, BASE + 20, 200, "rtsp://nvr/b"),   # gap 2 from the straddler
+            (BASE + 500, BASE + 510, 400, "rtsp://nvr/c"),  # far away
+        ],
+        swept_through=BASE + 1000,
+    )
+
+    runs = index.segment_runs("5", BASE, BASE + 1000, max_gap=2)
+
+    assert [run["segments"] for run in runs] == [2, 1]
+    assert runs[0]["size_bytes"] == 300
+    assert runs[0]["starts"] == to_iso(BASE - 30)
+    assert runs[1]["finishes"] == to_iso(BASE + 510)
+
+
+def to_iso(epoch):
+    from timelapsed.analysis.index import from_epoch
+
+    return from_epoch(epoch).isoformat()
+
+
 def test_segments_are_queried_by_overlap_not_containment(indexer, index):
     indexer.client.results = [[
         segment("5", NOW - timedelta(minutes=30), NOW - timedelta(minutes=20)),

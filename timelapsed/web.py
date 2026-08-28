@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import re
 import signal
+import sqlite3
 import subprocess
 import threading
 from collections import OrderedDict
@@ -201,7 +202,7 @@ PAGE_TEMPLATE = """<!doctype html>
   --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --fg:#e8ebf1; --muted:#8b93a5;
   --line:#242a37; --accent:#5b9dff;
   --hourly:#5b9dff; --daily:#a78bfa; --weekly:#34d399; --monthly:#f59e0b; --progress:#ec4899;
-  --person:#22d3ee; --vehicle:#a3e635;
+  --person:#22d3ee; --vehicle:#a3e635; --footage:#94a3b8;
 }
 * { box-sizing:border-box; }
 html, body { height:100%; }
@@ -341,6 +342,14 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 #axis span::before { content:""; position:absolute; left:50%; top:-4px; height:3px; width:1px; background:var(--line); }
 #empty { color:var(--muted); font-size:.8rem; padding:1rem 0 0 56px; }
 
+/* The footage lane: what the NVR itself recorded, merged server-side into runs
+   at the current zoom. Slimmer than the clips above it and not clickable --
+   stage 3 is what makes a run fetchable; this lane only answers whether the
+   device holds the moment at all. */
+.seg { position:absolute; top:6px; bottom:6px; border-radius:2px;
+       background:var(--footage); opacity:.55; min-width:2px; }
+.seg:hover { opacity:.85; }
+
 /* Activity lanes. Density strips rather than discrete clips: at a 30-day zoom
    a single sighting is well under a pixel, so what reads is the shading. */
 .lane.activity .track { background:var(--panel-2); }
@@ -464,6 +473,7 @@ const state = {
   // re-maps them silently breaks selection and arrow-key stepping.
   activity: null,
   events: [],
+  footage: [],
   identities: [],
   plates: [],
   focusIdentity: null,
@@ -513,6 +523,10 @@ const thumbUrl = id => "/thumb/" + encodeURIComponent(id) + ".jpg?t=" + Date.now
 const visible = () => forChannel().filter(e => state.show[e.cadence]);
 
 function fmtSize(bytes) {
+  // GB only ever shows on footage runs -- a merged busy day is tens of GB --
+  // but the branch is harmless for the clips that will never reach it.
+  const gb = bytes / 1073741824;
+  if (gb >= 1) return gb.toFixed(1) + " GB";
   const mb = bytes / 1048576;
   return mb >= 1 ? mb.toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB";
 }
@@ -773,15 +787,17 @@ function refreshActivity() {
     const token = ++activityToken;
     const query = "channel=" + encodeURIComponent(state.channel) + "&start=" + start + "&end=" + end;
     try {
-      const [activity, events, status] = await Promise.all([
+      const [activity, events, footage, status] = await Promise.all([
         fetch("/api/activity?" + query + "&buckets=240").then(r => r.json()),
         fetch("/api/events?" + query + "&limit=800").then(r => r.json()),
+        fetch("/api/footage?" + query).then(r => r.json()),
         fetch("/api/status").then(r => r.json()),
       ]);
       // A slower earlier request must not overwrite a newer answer.
       if (token !== activityToken) return;
       state.activity = activity;
       state.events = events.map(e => ({...e, s: Date.parse(e.starts), f: Date.parse(e.finishes)}));
+      state.footage = footage.map(w => ({...w, s: Date.parse(w.starts), f: Date.parse(w.finishes)}));
       const through = status[state.channel];
       state.analysedThrough = through ? Date.parse(through) : null;
       drawTimeline();
@@ -791,6 +807,28 @@ function refreshActivity() {
   }, 120);
 }
 
+
+// What the NVR itself holds, so it is visible which moments could be pulled.
+// Drawn only once there is something to draw: a deployment whose analyzer has
+// not built the footage map yet should not carry a permanently empty lane.
+function drawFootageLane(lanes, pct) {
+  if (!HAS_RECOGNITION || !state.footage.length) return;
+  const lane = el("div", "lane footage");
+  lane.append(el("span", "label", "footage"));
+  const track = el("div", "track");
+  for (const run of state.footage) {
+    if (run.f < state.start || run.s > state.end) continue;
+    const mark = el("div", "seg");
+    mark.style.left = pct(run.s) + "%";
+    mark.style.width = Math.max(pct(run.f) - pct(run.s), 0.15) + "%";
+    mark.title = "NVR footage  " + fmtFull(run.s) + "  to  " + fmtFull(run.f)
+      + "  (" + run.segments + " segment" + (run.segments === 1 ? "" : "s")
+      + ", " + fmtSize(run.size_bytes) + ")";
+    track.appendChild(mark);
+  }
+  lane.appendChild(track);
+  lanes.appendChild(lane);
+}
 
 function drawActivityLanes(lanes, pct) {
   if (!HAS_RECOGNITION) return;
@@ -950,6 +988,7 @@ function drawTimeline() {
     lanes.appendChild(lane);
   }
 
+  drawFootageLane(lanes, pct);
   drawActivityLanes(lanes, pct);
 
   const now = Date.now();
@@ -1602,6 +1641,16 @@ class RecognitionReader:
         with self._lock:
             return self._connection().recent_counts(start, end)
 
+    def footage_runs(self, channel: str, start: int, end: int, max_gap: int) -> list[dict]:
+        with self._lock:
+            try:
+                return self._connection().segment_runs(channel, start, end, max_gap)
+            except sqlite3.OperationalError:
+                # The viewer reads the index without migrating it, so it can be
+                # looking at a schema from before the footage mirror existed.
+                # No table means no map, which the lane already draws as nothing.
+                return []
+
     def identities(self, kind: str | None = None) -> list[dict]:
         with self._lock:
             return self._connection().identities(kind=kind)
@@ -1845,6 +1894,19 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                 return
             payload = self.recognition.activity(
                 channel, start, end, number("buckets", 240) or 240
+            )
+        elif path == "/api/footage":
+            # What the NVR itself holds, for the timeline's footage lane. Not
+            # /api/events, which already means recognition events.
+            channel = query.get("channel")
+            start, end = number("start"), number("end")
+            if not channel or start is None or end is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "channel, start and end are required")
+                return
+            # About a pixel of the lane. Zoomed out, the lane could not show a
+            # smaller gap anyway; zoomed in, the runs fall apart into segments.
+            payload = self.recognition.footage_runs(
+                channel, start, end, max((end - start) // 1000, 1)
             )
         elif path == "/api/events":
             payload = [

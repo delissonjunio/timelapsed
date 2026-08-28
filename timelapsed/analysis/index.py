@@ -366,6 +366,39 @@ class AnalysisIndex:
             )
         ]
 
+    def segment_runs(self, channel: str, start: int, end: int, max_gap: int) -> list[dict]:
+        """The channel's footage over [start, end], merged into runs.
+
+        The device records on events, so a busy day is hundreds of segments --
+        far more than a timeline lane has pixels. Segments closer together than
+        `max_gap` (the caller passes about a pixel's worth of seconds) merge into
+        one run, so the payload tracks the zoom level rather than the recording's
+        duty cycle.
+        """
+        merged: list[list[int]] = []  # [started_at, ended_at, segments, bytes]
+        for row in self.connection.execute(
+            "SELECT started_at, ended_at, size_bytes FROM nvr_segment "
+            "WHERE channel = ? AND ended_at >= ? AND started_at <= ? "
+            "ORDER BY started_at",
+            (channel, start, end),
+        ):
+            if merged and row["started_at"] - merged[-1][1] <= max_gap:
+                last = merged[-1]
+                last[1] = max(last[1], row["ended_at"])
+                last[2] += 1
+                last[3] += row["size_bytes"]
+            else:
+                merged.append([row["started_at"], row["ended_at"], 1, row["size_bytes"]])
+        return [
+            {
+                "starts": from_epoch(run_start).isoformat(),
+                "finishes": from_epoch(run_end).isoformat(),
+                "segments": count,
+                "size_bytes": size,
+            }
+            for run_start, run_end, count, size in merged
+        ]
+
     # --- housekeeping ---
 
     def table_counts(self) -> dict[str, int]:
