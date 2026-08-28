@@ -1,10 +1,18 @@
 # NVR Roadmap
 
-**Status: plan only. Nothing here is implemented.** This page records what the NVR can actually do,
-measured against the live device, and what it would take to use it. It exists so the decision does
-not have to be re-derived later.
+**Status: decided and provisioned, not yet built.** The decision landed 2026-08-28: build the
+**full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
+for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
+— the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
+by the `timelapsed` user (thin volume `scsi1` from the `hdd-thin` LVM pool on the Proxmox host,
+growable). No code has been written; a build session should start at
+[Stages](#stages) with the replica variant of stage 3.
 
-Device figures were measured from VM 302 against `nvr-zermatt` (192.168.18.89) on **2026-08-27**.
+This page records what the NVR can actually do, measured against the live device, and what it
+would take to use it. It exists so the decision does not have to be re-derived later.
+
+Device figures were measured from VM 302 against `nvr-zermatt` (192.168.18.89) on **2026-08-27**;
+the bulk-replication figures were added the same way on **2026-08-28**.
 Re-measure before trusting them; scenes, firmware and detection settings drift.
 
 ## Where this starts
@@ -155,6 +163,107 @@ one still or none. The NVR saw it at 30 fps regardless. So:
 On channels where recognition sees almost nothing (ch7 and ch9 recorded essentially no activity in
 25 hours) NVR motion events are the only signal available, and are worth falling back to.
 
+## Archiving everything, revisited
+
+The rejection of a full archive above is a disk argument, not a transport one — ~47 GB/day against
+a guest disk that cannot hold a week of it. With buying a disk on the table, the bulk path was
+measured properly on **2026-08-28**: same live device, sequential `ContentMgmt/download` driven
+from VM 302.
+
+### Replication throughput holds at scale
+
+The 70× figure above came from five consecutive segments. A full wall-clock hour of ch5
+(2026-08-27 12:00–13:00Z, 16 segments) downloaded back to back:
+
+```
+16 segments   757.5 MB   47.5s   127.6 Mbit/s sustained
+```
+
+No ramp-down over minutes and no per-request penalty worth designing around. Every fetched segment
+probed clean (`hevc`, sane durations) and remuxed to MP4 with `-c copy` as before.
+
+**Parallel downloads buy nothing.** Two simultaneous fetches totalled 125.8 Mbit/s — the same
+ceiling. The ~128 Mbit/s is the path, not the request, so a replica should fetch **sequentially**:
+simpler, and exactly as fast.
+
+At this rate a day of footage lands in ~42 minutes of transfer, and everything the NVR currently
+holds (~950 GB) in roughly 17 hours.
+
+### What a full day weighs
+
+Census of 2026-08-27 (UTC), search paging only, sizes from the `size=` field the device reports:
+
+| ch | segments | bytes |
+| --- | --- | --- |
+| 1 | 0 | 0 |
+| 5 | 429 | 11.4 GB |
+| 6 | 328 | 13.2 GB |
+| 7 | 98 | 2.0 GB |
+| 8 | 422 | 9.8 GB |
+| 9 | 263 | 3.4 GB |
+| **total** | **1,540** | **39.7 GB** |
+
+Consistent with the 48-hour duty estimate above. ch1 contributed nothing — its motion detection is
+off, so there was nothing to record and nothing to pull. **A replica inherits every blind spot of
+the NVR's own recording**; coverage for ch1 means changing the NVR's recording config, not anything
+on this side.
+
+### How deep the device holds
+
+Quota mode is per-channel, so retention is wildly uneven. Earliest recorded segment per channel,
+measured against 2026-08-28:
+
+| ch | earliest segment | depth |
+| --- | --- | --- |
+| 1 | 2026-06-13 | 76 days |
+| 5 | 2026-08-17 | 11 days |
+| 6 | 2026-08-17 | 11 days |
+| 7 | 2026-07-12 | 47 days |
+| 8 | 2026-08-14 | 14 days |
+| 9 | 2026-07-13 | 46 days |
+
+Two consequences:
+
+* **The edge is slow.** The busiest channels keep ~11 days, so a replica that syncs once a day is
+  never close to losing footage; an hourly poll is generous.
+* **The backfill window is now.** ch5/ch6 history already starts at 2026-08-17; the July depth on
+  the quiet channels can be pulled once and is then safe locally whenever the quota wraps it on the
+  device.
+
+### Sizing against a bought disk
+
+At the measured 39.7 GB/day:
+
+| retention | disk |
+| --- | --- |
+| 30 days | 1.2 TB |
+| 90 days | 3.6 TB |
+| 1 year | 14.5 TB |
+
+A 4 TB disk is ~100 days, 8 TB ~200. Tuning the NVR's detection (the region masks and sensitivity
+noted above) would cut all of these roughly 4×, at the price of genuinely not recording some
+motion. The guest's root disk holds under five days of this, which is why the replica got its own
+volume: 1.4 TB at `/var/lib/timelapsed/archive` ≈ **35 days of full replica** at current NVR
+settings. One caution inherited from the hardware: the backing pool spans two used laptop disks
+with no redundancy, chosen deliberately because the trailing ~11 days are refetchable from the
+device — the archive is a second copy, not the only copy, until footage ages off the NVR.
+
+The WAN cost is the same 39.7 GB/day, ~42 minutes of link time daily. The measured throughput says
+the Tailscale path runs direct, not relayed; the link needs nothing.
+
+### What this changes in the stages
+
+Structurally, nothing — stages 1 and 2 are identical either way. If the disk is bought:
+
+* **Stage 3 fetches every segment** that appears in `nvr_segment` instead of a clip per recognition
+  event — sequentially, same bounds, atomicity and semaphore; different trigger and selection.
+* **Stage 4 plays the replica.** A recognition event links to a timestamp in footage that is
+  already local, so the separate clip track and its refetchable-vs-irreplaceable retention tiers
+  collapse into one archive with one retention number.
+* The event-clip design above remains the fallback if the disk purchase does not happen — and the
+  right shape on any future device that records continuously, where fetch-everything stops being
+  affordable.
+
 ## Stages
 
 Each is independently useful and shippable.
@@ -230,6 +339,10 @@ disposable, because nothing can regenerate them.
 3. **Whether to tune NVR detection.** Region masks and smart events would quadruple the device's own
    retention window, but mean genuinely not recording some things — a security-coverage call.
 4. **Whether event playback is enough**, given continuous playback is not available from this device.
+5. **Replica or clips — decided: replica** (2026-08-28), and the disk is installed. That makes
+   decisions 1 and 4 mostly moot: retention becomes one number, and playback covers everything the
+   NVR saw. Decisions 2 and 3 stay open — all channels are cheap enough to replicate, and NVR
+   detection tuning remains worthwhile for stretching both the device's window and the archive's.
 
 ## Appendix: ISAPI notes
 
