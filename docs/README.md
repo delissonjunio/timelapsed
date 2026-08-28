@@ -21,8 +21,10 @@ listing, you can debug it.
 * **[Recognition Feasibility](Recognition-Feasibility.md)** — what these cameras can actually support, measured
 * **[Operations](Operations.md)** — logs, failure modes, upgrades, backups
 * **[Development](Development.md)** — tests and project layout
-* **[NVR Roadmap](NVR-Roadmap.md)** — replicating the NVR's event video into a local archive
-  (decided and provisioned, not built)
+* **[NVR Roadmap](NVR-Roadmap.md)** — replicating the NVR's video into a local archive
+  (built: mirror, footage lane, archiver, playback)
+* **[Second NVR: the Intelbras](Second-NVR-Intelbras.md)** — a Dahua-speaking device, probed and
+  viable; what supporting a second NVR takes (probed, not built)
 * **[Alarm Plan](Alarm-Plan.md)** — alert when a person shows up where and when one shouldn't,
   LLM-confirmed first (planned, not built)
 
