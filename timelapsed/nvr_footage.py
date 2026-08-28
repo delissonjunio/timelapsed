@@ -49,10 +49,13 @@ SESSION_RESULT_CAP = 4000
 # The result cap means a session is really at most ~63 pages.
 MAX_PAGES_PER_SEARCH = 2000
 
-# Downloads arrive as MPEG-PS, whose pack header this is. The device answers
-# some failures as HTTP 200 with an XML body, so the first bytes are the only
-# honest statement of what actually arrived.
+# Downloads arrive as MPEG-PS -- either bare, opening with the standard pack
+# header, or wrapped in Hikvision's proprietary "IMKH" pseudo-header with the
+# pack header 32 bytes in (what the live device actually sends; ffmpeg skips
+# the wrapper). The device answers some failures as HTTP 200 with an XML body,
+# so the first bytes are the only honest statement of what actually arrived.
 MPEG_PS_MAGIC = b"\x00\x00\x01\xba"
+HIKVISION_PS_MAGIC = b"IMKH"
 DOWNLOAD_CHUNK_BYTES = 256 * 1024
 DOWNLOAD_BODY = """<?xml version="1.0" encoding="utf-8"?>
 <downloadRequest version="1.0">
@@ -260,7 +263,7 @@ class NVRFootageClient:
             response.raise_for_status()
             with open(destination, "wb") as out:
                 for chunk in response.iter_content(DOWNLOAD_CHUNK_BYTES):
-                    if written == 0 and not chunk.startswith(MPEG_PS_MAGIC):
+                    if written == 0 and not chunk.startswith((MPEG_PS_MAGIC, HIKVISION_PS_MAGIC)):
                         raise ValueError(
                             f"Download answered something other than MPEG-PS: {chunk[:120]!r}"
                         )

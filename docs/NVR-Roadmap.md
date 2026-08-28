@@ -392,7 +392,10 @@ Hard-won specifics for whoever implements this.
 * **Downloads are per-recorded-segment.** An arbitrary time range without the `name=` and `size=`
   fields from a search result is rejected. The search index is the unit of fetch, so a clip window
   has to be mapped onto the segments covering it.
-* **Downloads arrive as MPEG-PS**, not MP4. Remux with `-c copy`; 0.17s for a 50s clip.
+* **Downloads arrive as MPEG-PS**, not MP4 — and not bare: the stream opens with Hikvision's
+  proprietary `IMKH` pseudo-header, with the standard `00 00 01 BA` pack header 32 bytes in.
+  ffmpeg skips the wrapper; anything validating the first bytes has to accept both openings.
+  Remux with `-c copy`; 0.17s for a 50s clip.
 * **Keyframes land one per 1.6s** and extract at 32× realtime with `-skip_frame nokey`, so stills
   can be derived from fetched clips almost free.
 * **`alertStream` works** — `multipart/mixed`, ~55 B/s of heartbeats — but is largely redundant

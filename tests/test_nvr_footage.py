@@ -342,6 +342,16 @@ def test_download_streams_the_segment_to_disk(client, tmp_path):
     assert "starttime=x&amp;endtime=y" in call["data"]
 
 
+def test_download_accepts_the_hikvision_wrapped_stream(client, tmp_path):
+    """The live device opens its PS with a proprietary IMKH pseudo-header, not
+    the bare pack header; ffmpeg skips it, so the archiver keeps it."""
+    client.session.script(StreamResponse([b"IMKH" + b"\x00" * 28 + MPEG_PS_MAGIC + b"video"]))
+
+    written = client.download("rtsp://nvr/x?name=a&size=1", tmp_path / "segment.ps", 60)
+
+    assert written > 0
+
+
 def test_download_rejects_an_xml_answer_dressed_as_success(client, tmp_path):
     """The device reports some failures as HTTP 200 with an XML body. The first
     bytes are the only honest statement of what arrived."""
