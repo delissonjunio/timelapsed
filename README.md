@@ -11,6 +11,10 @@ Optionally it will also **recognise people, vehicles and number plates** in the 
 captured, and show them on the timeline — see [Recognition](docs/Recognition.md). That part is off
 by default and is the one place a real index exists.
 
+There is also a **live wall** at `/live` — every camera at once, real video, about a second behind —
+fed by [go2rtc](https://github.com/AlexxIT/go2rtc) remuxing the NVR's RTSP streams, with no
+transcoding and no RTSP in this codebase. See [Live](docs/Live.md).
+
 ```
 NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image/20250601_120000_UTC.jpg
                              │
@@ -99,6 +103,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 | [Storage Planning](docs/Storage-Planning.md) | How to pick a capture interval and size the disk |
 | [Proxmox Deployment](docs/Proxmox-Deployment.md) | VM creation through to a running service |
 | [Viewing Timelapses](docs/Viewing-Timelapses.md) | The built-in viewer, Tailscale Serve, Jellyfin |
+| [Live](docs/Live.md) | The live wall: every camera at once over go2rtc |
 | [System Status](docs/System-Status.md) | The `/status` page: storage, capture health, how far behind analysis is |
 | [Recognition](docs/Recognition.md) | People, vehicles and plates on the timeline |
 | [Recognition Feasibility](docs/Recognition-Feasibility.md) | What the cameras can support, measured before building |

@@ -40,6 +40,12 @@ else
         echo "==> Refreshing the nginx site"
         sudo "${INSTALL_DIR}/deploy/nginx-setup.sh"
     fi
+
+    # Same pattern: only where the live wall's relay is already installed.
+    if [[ -f /etc/systemd/system/go2rtc.service ]]; then
+        echo "==> Refreshing go2rtc"
+        sudo "${INSTALL_DIR}/deploy/go2rtc-setup.sh"
+    fi
 fi
 
 echo "==> Restarting"

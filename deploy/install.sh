@@ -4,10 +4,11 @@
 # Run as root ON THE GUEST, not on the Proxmox host:
 #
 #   sudo bash deploy/install.sh
-#   sudo bash deploy/install.sh --with-nginx   # serve videos from nginx
+#   sudo bash deploy/install.sh --with-nginx    # serve videos from nginx
+#   sudo bash deploy/install.sh --with-go2rtc   # live video on /live (needs nginx)
 #
-# Idempotent: safe to re-run to upgrade an existing install. --with-nginx is
-# sticky — once the site exists, re-running without the flag keeps it.
+# Idempotent: safe to re-run to upgrade an existing install. --with-nginx and
+# --with-go2rtc are sticky — once set up, re-running without the flag keeps them.
 #
 # The intended layout is a git checkout living at /opt/timelapsed, so upgrading
 # is `git pull` in place followed by a restart — see deploy/update.sh. When this
@@ -28,10 +29,15 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # the viewer back onto the public port and leave nginx proxying to nothing.
 WITH_NGINX=${WITH_NGINX:-0}
 [[ -f /etc/nginx/sites-available/timelapsed ]] && WITH_NGINX=1
+WITH_GO2RTC=${WITH_GO2RTC:-0}
+[[ -f /etc/systemd/system/go2rtc.service ]] && WITH_GO2RTC=1
 
 for argument in "$@"; do
     case "${argument}" in
         --with-nginx) WITH_NGINX=1 ;;
+        # The /live page reaches go2rtc through the nginx /go2rtc/ proxy, so
+        # asking for one is asking for both.
+        --with-go2rtc) WITH_GO2RTC=1; WITH_NGINX=1 ;;
         *) echo "error: unknown option ${argument}" >&2; exit 1 ;;
     esac
 done
@@ -142,6 +148,16 @@ fi
 if [[ ${WITH_NGINX} -eq 1 ]]; then
     LIBRARY_DIR="${LIBRARY_DIR}" CONFIG_PATH="${CONFIG_PATH}" SERVICE_USER="${SERVICE_USER}" \
         "${REPO_DIR}/deploy/nginx-setup.sh"
+fi
+
+if [[ ${WITH_GO2RTC} -eq 1 && ${CONFIG_IS_NEW} -eq 0 ]]; then
+    CONFIG_PATH="${CONFIG_PATH}" SERVICE_USER="${SERVICE_USER}" \
+        "${REPO_DIR}/deploy/go2rtc-setup.sh"
+elif [[ ${WITH_GO2RTC} -eq 1 ]]; then
+    # go2rtc's config is rendered from the NVR credentials, which are still
+    # placeholders on a first run.
+    echo "==> Skipping go2rtc: ${CONFIG_PATH} still has placeholder credentials."
+    echo "    After editing it, run: sudo bash ${REPO_DIR}/deploy/go2rtc-setup.sh"
 fi
 
 if [[ ${CONFIG_IS_NEW} -eq 1 ]]; then

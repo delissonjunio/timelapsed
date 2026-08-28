@@ -26,6 +26,7 @@ from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
 from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.library_page import render_library
+from timelapsed.live_page import render_live
 from timelapsed.schema import CADENCES, Config
 from timelapsed.status_page import render_status
 from timelapsed.system_status import SystemStatusCollector, status_json
@@ -396,6 +397,7 @@ header .navlink:hover { color:var(--fg); background:var(--panel-2); }
 <header>
   <span class="dot"></span>
   <h1>Timelapsed</h1>
+  <a class="navlink" href="/live">Live</a>
   <a class="navlink" id="librarylink" href="/library" hidden>People &amp; plates</a>
   <a class="navlink" href="/status">System</a>
   <span class="spacer"></span>
@@ -1670,6 +1672,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         status: SystemStatusCollector | None = None,
         fps_by_cadence: dict[str, int] | None = None,
         plate_channels: list[str] | None = None,
+        live_channels: list[str] | None = None,
         **kwargs,
     ):
         self.catalogue = catalogue
@@ -1678,6 +1681,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         self.status = status
         self.fps_by_cadence = fps_by_cadence or {}
         self.plate_channels = plate_channels or []
+        self.live_channels = live_channels or []
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -1717,6 +1721,9 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     fps_by_cadence=self.fps_by_cadence,
                     plate_channels=self.plate_channels,
                 )
+                self._send_bytes(body, "text/html; charset=utf-8")
+            elif path == "/live":
+                body = render_live(self.live_channels, recognition_enabled=self.recognition is not None)
                 self._send_bytes(body, "text/html; charset=utf-8")
             elif path == "/library":
                 if self.recognition is None:
@@ -2001,6 +2008,7 @@ def build_server(config: Config) -> ThreadingHTTPServer:
         status=SystemStatusCollector(config),
         fps_by_cadence={name: config.output_fps_for(name) for name in CADENCES},
         plate_channels=list(config.analysis_plate_channels),
+        live_channels=list(config.channels),
     )
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 

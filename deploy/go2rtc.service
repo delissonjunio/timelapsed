@@ -1,0 +1,31 @@
+[Unit]
+Description=go2rtc stream relay for the timelapsed live wall
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/Live.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timelapsed
+Group=timelapsed
+ExecStart=/usr/local/bin/go2rtc -config /etc/go2rtc.yaml
+Restart=always
+RestartSec=10
+
+# Same posture as the viewer: this process only relays streams. It reads its
+# config and the NVR's RTSP, writes nothing anywhere.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# AF_NETLINK: WebRTC candidate gathering enumerates the host's interfaces.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

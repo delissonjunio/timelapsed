@@ -493,3 +493,44 @@ def test_the_camera_wall_includes_cameras_that_have_not_rendered_yet(stills_url)
 
     # 1 and 2 have renders, 3 only has stills, and all three get a tile.
     assert channels == ["1", "2", "3"]
+
+
+# --- the live wall ---------------------------------------------------------
+
+def live_channels_payload(body: bytes) -> list[str]:
+    marker = b'<script type="application/json" id="channels-payload">'
+    start = body.index(marker) + len(marker)
+    return json.loads(body[start:body.index(b"</script>", start)])
+
+
+def test_live_page_carries_every_configured_channel(base_url):
+    """/live tiles come from [nvr] channels, not from what is on disk.
+
+    The index wall shows cameras that have stored something; a live wall is
+    about what the NVR has *now*, so a camera that has never captured a frame
+    still belongs on it.
+    """
+    status, headers, body = get(base_url + "/live")
+
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/html")
+    assert live_channels_payload(body) == ["1", "2"]
+
+
+def test_live_page_loads_its_player_through_the_proxy_prefix(base_url):
+    """Everything go2rtc reaches the browser under one prefix.
+
+    The player script and the signalling websocket both ride /go2rtc/, which
+    only exists where nginx is proxying it -- test_nginx_config.py pins the
+    other side of this contract.
+    """
+    from timelapsed.live_page import GO2RTC_PATH
+
+    _, _, body = get(base_url + "/live")
+    assert GO2RTC_PATH.encode() in body
+    assert b"video-stream.js" in body
+    assert b"api/ws?src=ch" in body
+
+
+def test_index_links_to_the_live_wall(base_url):
+    assert b'href="/live"' in get(base_url + "/")[2]

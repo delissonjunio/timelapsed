@@ -139,3 +139,29 @@ def test_a_realistic_render_filename_matches(video_location, library, tmp_path):
     assert match
     assert match.group(2) == stored.name
     assert stored.name.startswith("weekly_")
+
+
+def test_live_wall_and_nginx_agree_on_the_go2rtc_prefix():
+    """The /live page loads its player and websocket under GO2RTC_PATH.
+
+    Only nginx answers that prefix -- the Python viewer has no such route --
+    so if the location and the page drift apart, every tile spins forever and
+    nothing at runtime says why.
+    """
+    from timelapsed.live_page import GO2RTC_PATH, render_live
+
+    assert GO2RTC_PATH in render_live(["1"]).decode()
+    assert f"location {GO2RTC_PATH} " in SITE_CONFIG.read_text()
+
+
+def test_go2rtc_location_proxies_websockets():
+    """MSE and WebRTC signalling both arrive as a websocket upgrade."""
+    site = SITE_CONFIG.read_text()
+    location = site[site.index("location /go2rtc/"):]
+    location = location[: location.index("}")]
+
+    # The trailing slash on proxy_pass is what strips the /go2rtc/ prefix
+    # before the request reaches go2rtc, which serves from its own root.
+    assert "proxy_pass http://127.0.0.1:1984/;" in location
+    assert "proxy_set_header Upgrade $http_upgrade;" in location
+    assert 'proxy_set_header Connection "upgrade";' in location
