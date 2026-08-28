@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
+from timelapsed.archiver import parse_segment_filename
 from timelapsed.config import get_config
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.library_page import render_library
@@ -180,6 +181,62 @@ class TimelapseCatalogue:
         base = (self.root_path / channel_id / "timelapse").resolve()
         try:
             candidate = (base / filename).resolve()
+            candidate.relative_to(base)
+        except (ValueError, OSError):
+            return None
+        return candidate if candidate.is_file() else None
+
+
+class ArchiveCatalogue:
+    """What the archiver has replicated, read straight off its filenames.
+
+    No database and no caching: the archive is indexed by its filenames the way
+    the still library is, and the only questions asked of it are tiny --
+    "what covers this moment" is one or two day-directory listings.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+
+    def segments(self, channel: str, start: datetime, end: datetime, limit: int = 500) -> list[dict]:
+        """Archived segments overlapping [start, end], oldest first.
+
+        Walks only the day directories the window touches, plus the day before
+        the window opens -- a segment can straddle midnight, but never more
+        than one (they run minutes, not days).
+        """
+        found = []
+        day = start.date() - timedelta(days=1)
+        while day <= end.date() and len(found) < limit:
+            directory = self.root / channel / day.strftime("%Y%m%d")
+            day += timedelta(days=1)
+            if not directory.is_dir():
+                continue
+            for stored in directory.iterdir():
+                if stored.suffix != ".mp4":
+                    continue
+                try:
+                    started_at, ended_at, _ = parse_segment_filename(stored.stem)
+                except ValueError:
+                    continue
+                if ended_at < start or started_at > end:
+                    continue
+                found.append({
+                    "starts": started_at.isoformat(),
+                    "finishes": ended_at.isoformat(),
+                    "size_bytes": stored.stat().st_size,
+                    "url": f"/archive/{channel}/{directory.name}/{stored.name}",
+                })
+        found.sort(key=lambda segment: segment["starts"])
+        return found[:limit]
+
+    def resolve(self, channel: str, day: str, filename: str) -> Path | None:
+        """Resolve an archived file, refusing anything that escapes the root."""
+        if not re.fullmatch(r"\d{8}", day) or not filename.endswith(".mp4"):
+            return None
+        base = self.root.resolve()
+        try:
+            candidate = (base / channel / day / filename).resolve()
             candidate.relative_to(base)
         except (ValueError, OSError):
             return None
@@ -349,6 +406,14 @@ header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular
 .seg { position:absolute; top:6px; bottom:6px; border-radius:2px;
        background:var(--footage); opacity:.55; min-width:2px; }
 .seg:hover { opacity:.85; }
+.lane.footage .track.clickable { cursor:pointer; }
+.lane.footage .track.clickable:hover { outline:1px solid var(--line); }
+/* The jump from a sighting to its real footage. Dressed like the cadence tag
+   beside it but pressable, because it is the one control in that bar. */
+#nowplaying .footjump { background:var(--footage); color:#07101f; border:none; border-radius:4px;
+  font:inherit; font-size:.65rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+  padding:.15rem .45rem; cursor:pointer; }
+#nowplaying .footjump:hover { filter:brightness(1.15); }
 
 /* Activity lanes. Density strips rather than discrete clips: at a 30-day zoom
    a single sighting is well under a pixel, so what reads is the shading. */
@@ -454,6 +519,7 @@ const channels = JSON.parse(document.getElementById("channels-payload").textCont
 const HAS_RECOGNITION = JSON.parse(document.getElementById("recognition-payload").textContent);
 const FPS = JSON.parse(document.getElementById("fps-payload").textContent);
 const PLATE_CHANNELS = JSON.parse(document.getElementById("plate-channels-payload").textContent);
+const HAS_ARCHIVE = JSON.parse(document.getElementById("archive-payload").textContent);
 const params = new URLSearchParams(location.search);
 const KINDS = ["person", "vehicle"];
 const KIND_LABEL = {person: "people", vehicle: "vehicles"};
@@ -515,8 +581,10 @@ function icon(kind) {
 }
 
 // Only the known cadences get a colour; anything else falls back, so a stray
-// filename on disk can never inject a CSS value.
-const cadenceColour = name => CADENCES.includes(name) ? "var(--" + name + ")" : "var(--muted)";
+// filename on disk can never inject a CSS value. "footage" is the one
+// non-cadence in the whitelist: archived-footage playback wears it.
+const cadenceColour = name => name === "footage" ? "var(--footage)"
+  : CADENCES.includes(name) ? "var(--" + name + ")" : "var(--muted)";
 const forChannel = () => ENTRIES.filter(e => e.channel === state.channel);
 // Cache-busted rather than cached: the still behind it changes every capture.
 const thumbUrl = id => "/thumb/" + encodeURIComponent(id) + ".jpg?t=" + Date.now();
@@ -823,11 +891,76 @@ function drawFootageLane(lanes, pct) {
     mark.style.width = Math.max(pct(run.f) - pct(run.s), 0.15) + "%";
     mark.title = "NVR footage  " + fmtFull(run.s) + "  to  " + fmtFull(run.f)
       + "  (" + run.segments + " segment" + (run.segments === 1 ? "" : "s")
-      + ", " + fmtSize(run.size_bytes) + ")";
+      + ", " + fmtSize(run.size_bytes) + ")"
+      + (HAS_ARCHIVE ? " — click to play" : "");
     track.appendChild(mark);
+  }
+  // With the replica running, the lane is a way in, not just a map: a click
+  // resolves to the archived segment covering that moment and plays it.
+  if (HAS_ARCHIVE) {
+    track.classList.add("clickable");
+    track.onclick = ev => {
+      const box = track.getBoundingClientRect();
+      const at = state.start + ((ev.clientX - box.left) / box.width) * (state.end - state.start);
+      playArchived(at);
+    };
   }
   lane.appendChild(track);
   lanes.appendChild(lane);
+}
+
+// --- the replica ---
+
+// An archived segment dressed as a playable entry. The player's moment
+// mapping is linear in both directions, and archived footage is the one case
+// where it is exact: a second of media is a second of the world.
+function archiveEntry(seg) {
+  return {channel: state.channel, cadence: "footage", starts: seg.starts, finishes: seg.finishes,
+          s: seg.s, f: seg.f, size_bytes: seg.size_bytes, url: seg.url};
+}
+
+async function archivedCovering(atMs) {
+  const at = Math.floor(atMs / 1000);
+  const query = "channel=" + encodeURIComponent(state.channel)
+    + "&start=" + (at - 1) + "&end=" + (at + 1);
+  try {
+    const segments = await fetch("/api/archive?" + query).then(r => r.ok ? r.json() : []);
+    return segments
+      .map(seg => ({...seg, s: Date.parse(seg.starts), f: Date.parse(seg.finishes)}))
+      .find(seg => seg.s <= atMs && atMs <= seg.f) || null;
+  } catch (err) {
+    console.warn("archive lookup failed", err);
+    return null;
+  }
+}
+
+async function playArchived(atMs) {
+  const seg = await archivedCovering(atMs);
+  if (seg) {
+    state.selectedEvent = null;
+    select(archiveEntry(seg), atMs);
+    return;
+  }
+  // The mirror says footage exists but the replica has not caught up to it --
+  // or the click landed in a gap. Either way, say so rather than doing nothing.
+  const box = $("nowplaying");
+  box.textContent = "";
+  box.append(el("span", "when", fmtFull(atMs)),
+             el("span", "", "no archived footage covers this moment yet"));
+}
+
+// The sighting's real footage, one click away, once the replica holds it.
+async function offerFootage(event) {
+  if (!HAS_ARCHIVE) return;
+  const seg = await archivedCovering(event.s);
+  // The reader may have moved on while the lookup was in flight.
+  if (!seg || state.selectedEvent !== event.id) return;
+  const box = $("nowplaying");
+  for (const stale of box.querySelectorAll(".footjump")) stale.remove();
+  const jump = el("button", "footjump", "▶ footage");
+  jump.title = "Play the NVR's recording of this sighting";
+  jump.onclick = () => select(archiveEntry(seg), event.s);
+  box.appendChild(jump);
 }
 
 function drawActivityLanes(lanes, pct) {
@@ -936,9 +1069,11 @@ function selectEvent(event) {
       el("span", "when", fmtFull(event.s) + "  →  " + fmtFull(event.f)),
       el("span", "", "no rendered clip covers this sighting"),
     );
+    offerFootage(event);
     return;
   }
   drawTimeline();
+  offerFootage(event);
 }
 
 
@@ -1529,6 +1664,7 @@ def render_index(
     recognition: "RecognitionReader | None" = None,
     fps_by_cadence: dict[str, int] | None = None,
     plate_channels: list[str] | None = None,
+    archive_enabled: bool = False,
 ) -> bytes:
     """The viewer shell with the whole catalogue embedded.
 
@@ -1586,6 +1722,10 @@ def render_index(
         # elsewhere a plate count is zero every hour of every day, which reads as
         # "no cars" rather than as "nobody is looking".
         + block("plate-channels-payload", plate_channels or [])
+        + "\n"
+        # Whether real footage can be jumped to. Off, the footage lane stays a
+        # map; on, it and every sighting become a way into the replica.
+        + block("archive-payload", archive_enabled)
         + "\n<script>\nconst ENTRIES",
     )
     return page.encode()
@@ -1722,6 +1862,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         fps_by_cadence: dict[str, int] | None = None,
         plate_channels: list[str] | None = None,
         live_channels: list[str] | None = None,
+        archive: ArchiveCatalogue | None = None,
         **kwargs,
     ):
         self.catalogue = catalogue
@@ -1731,6 +1872,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         self.fps_by_cadence = fps_by_cadence or {}
         self.plate_channels = plate_channels or []
         self.live_channels = live_channels or []
+        self.archive = archive
         super().__init__(*args, **kwargs)
 
     def log_message(self, format: str, *args) -> None:
@@ -1769,6 +1911,7 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                     recognition=self.recognition,
                     fps_by_cadence=self.fps_by_cadence,
                     plate_channels=self.plate_channels,
+                    archive_enabled=self.archive is not None,
                 )
                 self._send_bytes(body, "text/html; charset=utf-8")
             elif path == "/live":
@@ -1792,10 +1935,16 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
                 entries = self.catalogue.entries(query.get("channel"), query.get("cadence"))
                 body = json.dumps([entry.as_dict() for entry in entries], indent=2).encode()
                 self._send_bytes(body, "application/json")
+            elif path == "/api/archive":
+                # Ahead of the /api/ catch-all: the archive is independent of
+                # recognition being enabled.
+                self._serve_archive_api(query)
             elif path.startswith("/api/"):
                 self._serve_recognition_api(path, query)
             elif path.startswith("/video/"):
                 self._serve_video(path)
+            elif path.startswith("/archive/"):
+                self._serve_archive_file(path)
             elif path.startswith("/thumb/"):
                 self._serve_thumbnail(path)
             elif path.startswith("/crop/"):
@@ -1999,6 +2148,42 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         # The sidebar cache-busts with a query parameter, so never cache these.
         self._send_bytes(thumbnail, "image/jpeg", cache_control="no-store")
 
+    def _serve_archive_api(self, query: dict[str, str]) -> None:
+        """Archived footage overlapping a window, for the viewer's jumps.
+
+        Asked with tiny windows -- "what covers this click", "what covers this
+        sighting" -- never for lane painting, which /api/footage already does
+        from the mirror at run resolution.
+        """
+        if self.archive is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "The archive is not enabled")
+            return
+        channel = query.get("channel")
+        try:
+            start, end = int(query["start"]), int(query["end"])
+        except (KeyError, ValueError):
+            start = end = None
+        if not channel or start is None or end is None:
+            self.send_error(HTTPStatus.BAD_REQUEST, "channel, start and end are required")
+            return
+        payload = self.archive.segments(channel, from_epoch(start), from_epoch(end))
+        self._send_bytes(
+            json.dumps(payload, separators=(",", ":")).encode(),
+            "application/json",
+            cache_control="no-store",
+        )
+
+    def _serve_archive_file(self, path: str) -> None:
+        if self.archive is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "The archive is not enabled")
+            return
+        parts = path.removeprefix("/archive/").split("/")
+        stored = self.archive.resolve(*parts) if len(parts) == 3 else None
+        if stored is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+        self._stream_file(stored)
+
     def _serve_video(self, path: str) -> None:
         parts = path.removeprefix("/video/").split("/", 1)
         if len(parts) != 2:
@@ -2009,7 +2194,10 @@ class TimelapseRequestHandler(BaseHTTPRequestHandler):
         if video_path is None:
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
+        self._stream_file(video_path)
 
+    def _stream_file(self, video_path: Path) -> None:
+        """One video file with HTTP Range support, shared by /video/ and /archive/."""
         total_size = video_path.stat().st_size
         content_type = mimetypes.guess_type(video_path.name)[0] or "application/octet-stream"
 
@@ -2071,6 +2259,7 @@ def build_server(config: Config) -> ThreadingHTTPServer:
         fps_by_cadence={name: config.output_fps_for(name) for name in CADENCES},
         plate_channels=list(config.analysis_plate_channels),
         live_channels=list(config.channels),
+        archive=ArchiveCatalogue(config.archive_root) if config.archive_root else None,
     )
     return ThreadingHTTPServer((config.web_host, config.web_port), handler)
 

@@ -21,19 +21,28 @@ SITE_CONFIG = Path(__file__).resolve().parent.parent / "deploy" / "nginx-timelap
 # location ~ "<regex>" {
 LOCATION = re.compile(r'^\s*location\s+~\s+"([^"]+)"\s*\{', re.MULTILINE)
 
-PLACEHOLDERS = ("__LIBRARY_ROOT__", "__LISTEN_PORT__", "__UPSTREAM_PORT__")
+PLACEHOLDERS = ("__LIBRARY_ROOT__", "__ARCHIVE_ROOT__", "__LISTEN_PORT__", "__UPSTREAM_PORT__")
+
+
+def _location_for(prefix: str) -> re.Pattern:
+    """The regex nginx matches requests with this prefix against.
+
+    nginx uses PCRE and Python uses its own engine, but these patterns stay
+    inside the subset both agree on: character classes, anchors and captures.
+    """
+    matches = [m for m in LOCATION.findall(SITE_CONFIG.read_text()) if m.startswith(prefix)]
+    assert len(matches) == 1, f"expected one {prefix} location, found {matches}"
+    return re.compile(matches[0])
 
 
 @pytest.fixture(scope="module")
 def video_location() -> re.Pattern:
-    """The regex nginx matches /video/ requests against.
+    return _location_for("^/video/")
 
-    nginx uses PCRE and Python uses its own engine, but this pattern stays
-    inside the subset both agree on: character classes, anchors and captures.
-    """
-    matches = LOCATION.findall(SITE_CONFIG.read_text())
-    assert len(matches) == 1, f"expected one regex location, found {matches}"
-    return re.compile(matches[0])
+
+@pytest.fixture(scope="module")
+def archive_location() -> re.Pattern:
+    return _location_for("^/archive/")
 
 
 @pytest.fixture
@@ -139,6 +148,47 @@ def test_a_realistic_render_filename_matches(video_location, library, tmp_path):
     assert match
     assert match.group(2) == stored.name
     assert stored.name.startswith("weekly_")
+
+
+def test_archive_location_matches_the_urls_the_catalogue_builds(archive_location, tmp_path):
+    """Every URL /api/archive hands out has to be one nginx serves itself."""
+    from datetime import timedelta
+
+    from timelapsed.archiver import segment_filename
+    from timelapsed.web import ArchiveCatalogue
+
+    root = tmp_path / "archive"
+    day = root / "5" / BASE_TIME.strftime("%Y%m%d")
+    day.mkdir(parents=True)
+    stored = day / segment_filename(BASE_TIME, BASE_TIME + timedelta(minutes=2), "ch05_007")
+    stored.write_bytes(b"\0")
+
+    segments = ArchiveCatalogue(root).segments(
+        "5", BASE_TIME - timedelta(hours=1), BASE_TIME + timedelta(hours=1)
+    )
+    assert segments, "the fixture should have stocked a segment"
+    match = archive_location.match(segments[0]["url"])
+    assert match, f"nginx would not serve {segments[0]['url']}"
+    channel, day_name, filename = match.groups()
+    assert root / channel / day_name / filename == stored
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/archive/../../etc/passwd",
+        "/archive/5/../20260828/x.mp4",
+        "/archive/.ssh/20260828/x.mp4",
+        "/archive/5/notaday/x.mp4",
+        "/archive/5/2026082/x.mp4",
+        "/archive/5/20260828/nested/x.mp4",
+        "/archive/5/20260828/x.jpg",
+        "/api/archive",
+        "/video/1/render.mp4",
+    ],
+)
+def test_archive_location_refuses_what_it_should(archive_location, url):
+    assert archive_location.match(url) is None
 
 
 def test_live_wall_and_nginx_agree_on_the_go2rtc_prefix():

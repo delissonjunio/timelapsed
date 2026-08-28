@@ -1,6 +1,6 @@
 # NVR Roadmap
 
-**Status: stages 1–3 built; stage 4 is next.** The decision landed 2026-08-28: build the
+**Status: all four stages built.** The decision landed 2026-08-28: build the
 **full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
 for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
 — the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
@@ -9,8 +9,8 @@ growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `Conten
 into an `nvr_segment` table from inside the analyzer daemon, verified against the live device.
 Stage 2 landed the same day: a footage lane on the timeline, served by `/api/footage`. So did
 stage 3 in its replica form: the `timelapsed-archiver` daemon replicates every recorded segment
-into the archive volume. A build session should continue at [Stages](#stages) with stage 4 —
-playing the replica from the viewer.
+into the archive volume. And stage 4: the viewer plays the replica — the footage lane is
+clickable and every sighting offers a jump to its real footage.
 
 This page records what the NVR can actually do, measured against the live device, and what it
 would take to use it. It exists so the decision does not have to be re-derived later.
@@ -336,7 +336,7 @@ all if retention would delete it tomorrow. Configuration is the `[archive]` sect
 deployment it points at the 1.4 TB volume. Failures are skipped until restart rather than
 retried per pass, so a segment the device has expired cannot starve the queue.
 
-### Stage 4 — Play them
+### Stage 4 — Play them — **built (2026-08-28)**
 
 A clip becomes the highest-value thing a recognition event can link to: from a named person or a
 plate read, jump to the footage. The viewer already implements HTTP Range and nginx now serves
@@ -345,6 +345,16 @@ plate read, jump to the footage. The viewer already implements HTTP Range and ng
 Extend `reclaim()` with clip tiers. Clips still inside the NVR's retention window are the most
 disposable — refetchable. Clips of footage the NVR has since overwritten are the **least**
 disposable, because nothing can regenerate them.
+
+As built, per the replica decision: no clip tiers — the archive has one retention number, so
+`reclaim()` gained nothing. `/api/archive?channel&start&end` answers what the replica holds over
+a (tiny) window, read straight off the archive's filenames; `/archive/{ch}/{day}/{file}` streams
+it, through the same Range machinery as `/video/` in Python and a matching nginx location on the
+guest (rendered only where `[archive]` is configured). In the viewer, the footage lane becomes
+clickable — a click resolves the archived segment covering that moment and plays it in the main
+player, whose linear moment mapping is exact on real footage — and a selected sighting grows a
+"▶ footage" button that jumps from the recognition event to the NVR's own recording of it. A
+moment the replica has not caught up to says so instead of doing nothing.
 
 ## What does not change
 

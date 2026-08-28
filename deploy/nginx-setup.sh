@@ -96,11 +96,20 @@ if ! command -v nginx >/dev/null 2>&1; then
     apt-get install -y -qq nginx
 fi
 
+# The replica is optional; where it is off the whole location block goes, so
+# nginx never serves (or 404-loops) a path the deployment does not have.
+ARCHIVE_DIR=${ARCHIVE_DIR:-$(ini_value archive root)}
+
 echo "==> Rendering ${SITE_AVAILABLE}"
 sed -e "s|__LIBRARY_ROOT__|${LIBRARY_DIR%/}|g" \
+    -e "s|__ARCHIVE_ROOT__|${ARCHIVE_DIR%/}|g" \
     -e "s|__LISTEN_PORT__|${LISTEN_PORT}|g" \
     -e "s|__UPSTREAM_PORT__|${UPSTREAM_PORT}|g" \
     "${REPO_DIR}/deploy/nginx-timelapsed.conf" > "${SITE_AVAILABLE}"
+
+if [[ -z "${ARCHIVE_DIR}" ]]; then
+    sed -i '/# BEGIN archive/,/# END archive/d' "${SITE_AVAILABLE}"
+fi
 
 # directio hands the worker a blocking read, so it is only safe paired with a
 # thread pool. Without --with-threads, drop both and fall back to sendfile.
