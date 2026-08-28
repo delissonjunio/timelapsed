@@ -532,5 +532,17 @@ def test_live_page_loads_its_player_through_the_proxy_prefix(base_url):
     assert b"api/ws?src=ch" in body
 
 
+def test_live_page_starts_its_tiles_muted(base_url):
+    """A wall of tiles that all autoplay must not all speak at once.
+
+    go2rtc's player leaves its <video> unmuted and only mutes as a fallback
+    when the browser refuses the autoplay, so on a browser that permits
+    unmuted autoplay every camera's audio would start together. The page
+    mutes each tile itself; the per-tile controls unmute one on demand.
+    """
+    _, _, body = get(base_url + "/live")
+    assert b"player.video.muted = true" in body
+
+
 def test_index_links_to_the_live_wall(base_url):
     assert b'href="/live"' in get(base_url + "/")[2]

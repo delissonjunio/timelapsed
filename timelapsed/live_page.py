@@ -131,6 +131,12 @@ for (const id of channels) {
 
   tile.append(blank, player, label);
   grid.appendChild(tile);
+  // go2rtc builds the inner <video> on connect, unmuted; it only falls back to
+  // muted when the browser blocks the autoplay. A browser that *allows* unmuted
+  // autoplay (Safari per-site, Chrome with enough engagement) would therefore
+  // start every camera's audio at once. Mute up front -- the native controls on
+  // each tile unmute one on demand.
+  player.video.muted = true;
 
   tile.addEventListener("dblclick", () => {
     if (document.fullscreenElement) document.exitFullscreen();
