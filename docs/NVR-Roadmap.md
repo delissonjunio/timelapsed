@@ -306,8 +306,9 @@ As built: `/api/footage?channel&start&end` merges segments server-side into runs
 pixel's resolution of the requested window (`AnalysisIndex.segment_runs`), so the payload tracks
 the zoom level rather than the recording's duty cycle — a busy channel is hundreds of segments a
 day, far more than the lane has pixels. The lane sits between the cadence and activity lanes,
-draws only when the mirror has data, and is deliberately not clickable until stage 3 gives a run
-something to do. The lane colour is a fixed CSS variable; nothing from the device reaches CSS.
+always drawn — an empty stretch reads as "the NVR recorded nothing here" — and became clickable
+when stage 4 gave a run something to do. The lane colour is a fixed CSS variable; nothing from
+the device reaches CSS.
 The viewer tolerates an index from before schema v3 by answering an empty list.
 
 ### Stage 3 — Fetch clips — **built as the replica (2026-08-28)**

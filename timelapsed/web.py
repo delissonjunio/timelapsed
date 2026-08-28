@@ -538,6 +538,11 @@ const state = {
   // reference equality against those objects, so anything that re-derives or
   // re-maps them silently breaks selection and arrow-key stepping.
   activity: null,
+  // The window `activity` was computed over. The bucket counts are positions
+  // in THAT window, so drawing them into the current one has to translate --
+  // painting them as viewport fractions made the shading swim over the event
+  // marks on every pan until the next fetch landed.
+  activityWindow: null,
   events: [],
   footage: [],
   identities: [],
@@ -864,6 +869,7 @@ function refreshActivity() {
       // A slower earlier request must not overwrite a newer answer.
       if (token !== activityToken) return;
       state.activity = activity;
+      state.activityWindow = {start: start * 1000, end: end * 1000};
       state.events = events.map(e => ({...e, s: Date.parse(e.starts), f: Date.parse(e.finishes)}));
       state.footage = footage.map(w => ({...w, s: Date.parse(w.starts), f: Date.parse(w.finishes)}));
       const through = status[state.channel];
@@ -877,10 +883,11 @@ function refreshActivity() {
 
 
 // What the NVR itself holds, so it is visible which moments could be pulled.
-// Drawn only once there is something to draw: a deployment whose analyzer has
-// not built the footage map yet should not carry a permanently empty lane.
+// Always drawn, like the activity lanes below it: a lane that pops in and out
+// with the viewport reads as the page glitching, and an empty stretch of a
+// permanent lane correctly reads as "the NVR recorded nothing here".
 function drawFootageLane(lanes, pct) {
-  if (!HAS_RECOGNITION || !state.footage.length) return;
+  if (!HAS_RECOGNITION) return;
   const lane = el("div", "lane footage");
   lane.append(el("span", "label", "footage"));
   const track = el("div", "track");
@@ -972,14 +979,20 @@ function drawActivityLanes(lanes, pct) {
     const track = el("div", "track");
 
     const counts = state.activity ? state.activity[kind] : null;
-    if (counts && counts.length) {
+    const fetched = state.activityWindow;
+    if (counts && counts.length && fetched) {
       const peak = Math.max(...counts, 1);
-      const width = 100 / counts.length;
+      // Buckets belong to the window they were fetched for, so they are
+      // placed by timestamp like everything else on the timeline. Mid-pan
+      // they then move with the world instead of clinging to the viewport.
+      const bucketSpan = (fetched.end - fetched.start) / counts.length;
       counts.forEach((count, index) => {
         if (!count) return;
+        const from = fetched.start + index * bucketSpan;
+        if (from + bucketSpan < state.start || from > state.end) return;
         const bar = el("div", "bucket");
-        bar.style.left = (index * width) + "%";
-        bar.style.width = width + "%";
+        bar.style.left = pct(from) + "%";
+        bar.style.width = (pct(from + bucketSpan) - pct(from)) + "%";
         // Floor the alpha so a single sighting is still visible against the
         // track, rather than fading to nothing next to a busy bucket.
         bar.style.background = "var(--" + kind + ")";
