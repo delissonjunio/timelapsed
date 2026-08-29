@@ -26,6 +26,7 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
+from timelapsed.schema import Config, NVRConfig
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +138,18 @@ class NVRFootageClient:
         username: str,
         password: str,
         timeout: tuple[float, float] = DEFAULT_TIMEOUT_SECONDS,
+        nvr: NVRConfig | None = None,
     ):
         self.url = url.rstrip("/")
         self.timeout = timeout
+        # For translating a global channel id back to the device's own number.
+        self.nvr = nvr
         self.session = requests.Session()
         self.session.auth = HTTPDigestAuth(username, password)
         self._device_zone: timezone | None = None
+
+    def _device_channel(self, channel: str) -> str:
+        return self.nvr.device_channel(channel) if self.nvr else channel
 
     def device_zone(self) -> timezone:
         """The device's UTC offset, read from its own clock and cached.
@@ -208,7 +215,7 @@ class NVRFootageClient:
         for _ in range(MAX_PAGES_PER_SEARCH):
             body = SEARCH_BODY.format(
                 search_id=search_id,
-                track_id=f"{channel}01",
+                track_id=f"{self._device_channel(channel)}01",
                 start=_search_time(start, device_zone),
                 end=_search_time(end, device_zone),
                 page_size=SEARCH_PAGE_SIZE,
@@ -311,8 +318,31 @@ class NVRFootageClient:
         )
 
 
+def footage_client_for(nvr: NVRConfig):
+    """The right footage driver for one NVR, chosen by its configured type."""
+    if nvr.kind == "dahua":
+        from timelapsed.dahua import DahuaFootageClient
+
+        return DahuaFootageClient(nvr.url, nvr.username, nvr.password, nvr=nvr)
+    return NVRFootageClient(nvr.url, nvr.username, nvr.password, nvr=nvr)
+
+
+def footage_clients_by_channel(config: Config) -> dict[str, NVRFootageClient]:
+    """One client per NVR, shared by its channels, keyed by global channel id.
+
+    The mapping is what the indexer and the archiver route on, so neither ever
+    holds an NVR of its own -- a channel id is enough to reach the right device.
+    """
+    clients: dict[str, NVRFootageClient] = {}
+    for nvr in config.nvrs:
+        client = footage_client_for(nvr)
+        for channel_id in nvr.channel_ids:
+            clients[channel_id] = client
+    return clients
+
+
 class SegmentIndexer:
-    """Keeps `nvr_segment` mirroring what the device holds.
+    """Keeps `nvr_segment` mirroring what the devices hold.
 
     Runs inside the analyzer daemon, which is the index's one writer. A sweep is
     all-or-nothing per channel: the segment list is materialised before anything
@@ -320,8 +350,10 @@ class SegmentIndexer:
     poll simply asks again.
     """
 
-    def __init__(self, client: NVRFootageClient, index: AnalysisIndex, channels: list[str]):
-        self.client = client
+    def __init__(
+        self, clients: dict[str, NVRFootageClient], index: AnalysisIndex, channels: list[str]
+    ):
+        self.clients = clients
         self.index = index
         self.channels = channels
 
@@ -332,7 +364,7 @@ class SegmentIndexer:
             start = FULL_SWEEP_START
         else:
             start = from_epoch(swept_through) - SWEEP_OVERLAP
-        segments = list(self.client.search(channel, start, now))
+        segments = list(self.clients[channel].search(channel, start, now))
         self.index.record_segments(
             channel,
             [

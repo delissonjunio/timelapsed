@@ -420,7 +420,11 @@ def index(tmp_path):
 
 @pytest.fixture
 def indexer(index):
-    built = SegmentIndexer(ScriptedClient(), index, ["5", "6"])
+    # One scripted client behind both channels, exposed as .client so the tests
+    # can script it without caring that the indexer routes per channel now.
+    client = ScriptedClient()
+    built = SegmentIndexer({"5": client, "6": client}, index, ["5", "6"])
+    built.client = client
     return built
 
 

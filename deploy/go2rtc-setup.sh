@@ -35,41 +35,6 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
     exit 1
 fi
 
-# One value out of an ini section; same reader as nginx-setup.sh and good
-# enough for the same reason: these keys are single-line.
-ini_value() {  # section key
-    awk -F= -v want_section="[$1]" -v want_key="$2" '
-        /^\[/ { section = $0; next }
-        section == want_section {
-            key = $1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-            if (key == want_key) {
-                sub(/^[^=]*=/, ""); gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-                print; exit
-            }
-        }
-    ' "${CONFIG_PATH}"
-}
-
-NVR_URL=$(ini_value nvr url)
-NVR_USERNAME=$(ini_value nvr username)
-NVR_PASSWORD=$(ini_value nvr password)
-NVR_CHANNELS=$(ini_value nvr channels)
-
-if [[ -z "${NVR_URL}" || -z "${NVR_USERNAME}" || -z "${NVR_PASSWORD}" || -z "${NVR_CHANNELS}" ]]; then
-    echo "error: [nvr] url, username, password and channels are all required in ${CONFIG_PATH}" >&2
-    exit 1
-fi
-
-# The snapshot URL is HTTP; RTSP wants the bare host on its own port.
-NVR_HOST=$(echo "${NVR_URL}" | sed -E 's|^[a-z]+://||; s|[:/].*$||')
-
-# Credentials go into an RTSP URL, so anything URL-significant in them has to
-# be percent-encoded or the NVR sees a mangled username.
-urlencode() {
-    python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
-}
-AUTH="$(urlencode "${NVR_USERNAME}"):$(urlencode "${NVR_PASSWORD}")"
-
 # --- binary -----------------------------------------------------------------
 
 case "$(uname -m)" in
@@ -90,35 +55,20 @@ fi
 
 # --- config -----------------------------------------------------------------
 
-# Stream names are `ch<channel>`; the /live page derives the same names from
-# the same [nvr] channels line, so the two lists cannot drift apart.
-#
-# The api listens on localhost only: nginx proxies it under /go2rtc/ (see
-# deploy/nginx-timelapsed.conf) and Tailscale is the authentication, exactly
-# as for the viewer. WebRTC's media port has to be reachable directly -- the
-# browser connects to it after the proxied signalling -- so it binds wide.
+# Rendered by timelapsed.go2rtc_config, which reads every [nvr]/[nvr.*] section
+# and knows each device's RTSP dialect. Stream names are `ch<channel id>`; the
+# /live page derives the same names from the same config, so the two lists
+# cannot drift apart. The repo's venv has the package installed; fall back to
+# the system python3 with PYTHONPATH for a checkout that has no venv yet.
+PYTHON="${REPO_DIR}/.venv/bin/python"
+[[ -x "${PYTHON}" ]] || PYTHON=python3
+
 RENDERED=$(mktemp)
-{
-    echo "# Rendered by deploy/go2rtc-setup.sh from ${CONFIG_PATH} -- edit those, not this."
-    echo "api:"
-    echo "  listen: \"127.0.0.1:1984\""
-    echo ""
-    echo "rtsp:"
-    echo "  # Local restream, for checking a camera with ffprobe from the guest."
-    echo "  listen: \"127.0.0.1:8554\""
-    echo ""
-    echo "webrtc:"
-    echo "  listen: \":8555\""
-    echo ""
-    echo "streams:"
-    IFS=',' read -ra CHANNELS <<< "${NVR_CHANNELS}"
-    for channel in "${CHANNELS[@]}"; do
-        channel=$(echo "${channel}" | tr -d '[:space:]')
-        [[ -z "${channel}" ]] && continue
-        # Channel N's main stream is N01, same mapping as the snapshot URL.
-        echo "  ch${channel}: \"rtsp://${AUTH}@${NVR_HOST}:554/Streaming/Channels/${channel}01\""
-    done
-} > "${RENDERED}"
+if ! CONFIG_PATH="${CONFIG_PATH}" PYTHONPATH="${REPO_DIR}" "${PYTHON}" -m timelapsed.go2rtc_config > "${RENDERED}"; then
+    rm -f "${RENDERED}"
+    echo "error: could not render go2rtc config from ${CONFIG_PATH}" >&2
+    exit 1
+fi
 
 if ! cmp -s "${RENDERED}" "${GO2RTC_CONF}" 2>/dev/null; then
     echo "==> Rendering ${GO2RTC_CONF}"

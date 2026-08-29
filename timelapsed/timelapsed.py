@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 from timelapsed.config import get_config, validate_config
 from timelapsed.image_capture_library import ImageCaptureLibrary
 from timelapsed.image_processor import generate_timelapse
-from timelapsed.nvr_capture_agent import NVRCaptureAgent
+from timelapsed.nvr_capture_agent import NVRCaptureAgent, capture_agent_for
 from timelapsed.schema import Cadence, Config, SourceTrack
 
 logger = logging.getLogger(__name__)
@@ -494,7 +494,13 @@ def run() -> None:
 
     library = ImageCaptureLibrary(config.image_capture_library_root)
     library.clear_scratch()
-    capture_agent = NVRCaptureAgent(config.nvr_url, config.nvr_username, config.nvr_password)
+    # One agent per NVR, shared by that device's channels, so each worker talks
+    # to the recorder that actually owns its camera in that device's protocol.
+    agent_by_channel = {}
+    for nvr in config.nvrs:
+        agent = capture_agent_for(nvr)
+        for channel_id in nvr.channel_ids:
+            agent_by_channel[channel_id] = agent
 
     # Shared by every channel: ffmpeg, not the capture loop, is what this guest
     # runs out of memory on, so concurrency is capped across the daemon rather
@@ -502,9 +508,11 @@ def run() -> None:
     render_slot = multiprocessing.BoundedSemaphore(config.max_concurrent_renders)
 
     logger.info(
-        "Timelapsed starting: %d channel(s) [%s], cadences [%s], every %.0fs, %d render(s) at a time",
+        "Timelapsed starting: %d channel(s) [%s] across %d NVR(s), cadences [%s], "
+        "every %.0fs, %d render(s) at a time",
         len(config.channels),
         ", ".join(config.channels),
+        len(config.nvrs),
         ", ".join(cadence.name for cadence in config.timelapse_cadences),
         config.capture_interval.total_seconds(),
         config.max_concurrent_renders,
@@ -516,7 +524,7 @@ def run() -> None:
     for channel_id in config.channels:
         worker = multiprocessing.Process(
             target=capture_continuously,
-            args=(channel_id, capture_agent, library, config, render_slot),
+            args=(channel_id, agent_by_channel[channel_id], library, config, render_slot),
             name=f"capture-{channel_id}",
             daemon=False,
         )

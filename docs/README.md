@@ -44,4 +44,5 @@ much disk you burn and how smooth the *hourly* video is. See [Storage Planning](
 
 * Python 3.11 or newer
 * `ffmpeg` and `ffprobe` on `PATH`
-* An NVR exposing the ISAPI still-image endpoint (Hikvision and most of its OEM rebadges)
+* An NVR exposing a still-image endpoint: ISAPI (Hikvision and most of its OEM rebadges) or
+  Dahua CGI (Intelbras and other Dahua rebadges). Several at once are fine — see Configuration.

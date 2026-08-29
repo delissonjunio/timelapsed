@@ -5,7 +5,7 @@ import backoff
 import requests
 from requests.auth import HTTPDigestAuth
 
-from timelapsed.schema import VideoResolution
+from timelapsed.schema import NVRConfig, VideoResolution
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +33,23 @@ class NVRCaptureAgent:
         password: str,
         default_resolution: VideoResolution = VideoResolution(1920, 1080),
         timeout: tuple[float, float] = DEFAULT_TIMEOUT_SECONDS,
+        nvr: NVRConfig | None = None,
     ):
         self.url = url.rstrip("/")
         self.username = username
         self.password = password
         self.default_resolution = default_resolution
         self.timeout = timeout
+        # For translating a global channel id back to the device's own number.
+        # None means the two are the same, which is true of the default NVR.
+        self.nvr = nvr
 
         logger.info("Initialised NVR capture agent for %s as user %s", self.url, username)
 
     def _snapshot_url(self, channel_id: str, resolution: VideoResolution) -> str:
+        device_channel = self.nvr.device_channel(channel_id) if self.nvr else channel_id
         return (
-            f"{self.url}/ISAPI/Streaming/channels/{channel_id}01/picture"
+            f"{self.url}/ISAPI/Streaming/channels/{device_channel}01/picture"
             f"?videoResolutionWidth={resolution.width}&videoResolutionHeight={resolution.height}"
         )
 
@@ -85,3 +90,12 @@ class NVRCaptureAgent:
             "Captured %d bytes for channel %s in %.2fs", len(content), channel_id, elapsed
         )
         return content, extension
+
+
+def capture_agent_for(nvr: NVRConfig):
+    """The right capture driver for one NVR, chosen by its configured type."""
+    if nvr.kind == "dahua":
+        from timelapsed.dahua import DahuaCaptureAgent
+
+        return DahuaCaptureAgent(nvr.url, nvr.username, nvr.password, nvr=nvr)
+    return NVRCaptureAgent(nvr.url, nvr.username, nvr.password, nvr=nvr)

@@ -8,12 +8,27 @@
 # This file contains an NVR password. chmod 600 it and never commit it.
 
 [nvr]
-# Base URL of the NVR. No trailing path; ISAPI paths are appended automatically.
+# Base URL of the NVR. No trailing path; API paths are appended automatically.
 url = http://192.168.1.10
 username = admin
 password = CHANGE_ME
 # NVR channel numbers, comma separated. Channel 1 maps to ISAPI channel 101.
 channels = 1,2,3
+# Which API the device speaks: hikvision (ISAPI, the default) or dahua (the
+# CGI API Dahua-OEM devices such as Intelbras use).
+#type = hikvision
+
+# Further recorders are [nvr.<name>] sections with the same keys. This
+# section's channels keep their bare numbers everywhere -- directories, URLs,
+# the index -- while a named section's channels become "<name>-<number>"
+# ("garage-1" below), which is what lets two devices both have a channel 1.
+# The name appears in paths and URLs, so keep it short and lowercase.
+#[nvr.garage]
+#type = dahua
+#url = http://192.168.1.11
+#username = admin
+#password = CHANGE_ME
+#channels = 1,2,3,4
 
 [capture]
 # How long to wait between snapshots, per channel.

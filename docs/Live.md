@@ -38,10 +38,13 @@ sudo bash deploy/go2rtc-setup.sh          # on an existing install
 sudo bash deploy/install.sh --with-go2rtc
 ```
 
-The script installs the go2rtc binary, renders `/etc/go2rtc.yaml` from the
-`[nvr]` section of `/etc/timelapsed.ini` (same credentials, same channel list —
-channel N's main stream is RTSP channel N01, the same mapping the snapshot URL
-uses), installs a hardened systemd unit, and starts it. Once the unit exists,
+The script installs the go2rtc binary, renders `/etc/go2rtc.yaml` (via
+`timelapsed.go2rtc_config`) from every `[nvr]`/`[nvr.<name>]` section of
+`/etc/timelapsed.ini` — same credentials, same channel lists, each device's
+own RTSP dialect (ISAPI's `/Streaming/Channels/N01`, Dahua's
+`/cam/realmonitor?channel=N`) — installs a hardened systemd unit, and starts
+it. Stream names are `ch` plus the global channel id: `ch1` for the default
+NVR, `chgarage-1` for a named one. Once the unit exists,
 `deploy/update.sh` re-renders everything on every upgrade, so a channel added
 to `timelapsed.ini` reaches the live wall on the next update.
 

@@ -65,9 +65,10 @@ def test_parses_every_setting(tmp_path: Path):
 
     config = get_config((str(path),))
 
-    assert config.nvr_url == "http://192.168.1.10"  # trailing slash stripped
-    assert config.nvr_username == "admin"
-    assert config.nvr_password == "s3cret"
+    assert config.default_nvr.url == "http://192.168.1.10"  # trailing slash stripped
+    assert config.default_nvr.username == "admin"
+    assert config.default_nvr.password == "s3cret"
+    assert config.default_nvr.kind == "hikvision"
     assert config.channels == ["1", "2", "3"]  # whitespace stripped
     assert config.capture_interval == timedelta(seconds=5)
     assert (config.capture_resolution.width, config.capture_resolution.height) == (1920, 1080)
@@ -126,7 +127,75 @@ def test_later_paths_override_earlier_ones(tmp_path: Path):
     config = get_config((str(system), str(override)))
 
     assert config.channels == ["7", "8"]
-    assert config.nvr_url == "http://nvr.local"  # untouched keys survive
+    assert config.default_nvr.url == "http://nvr.local"  # untouched keys survive
+
+
+# --- multiple NVRs ---
+
+SECOND_NVR = """
+[nvr.garage]
+type = dahua
+url = http://192.168.1.11/
+username = viewer
+password = pw2
+channels = 1, 2
+"""
+
+
+def test_named_nvr_sections_namespace_their_channels(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", MINIMAL_CONFIG + SECOND_NVR)
+
+    config = get_config((str(path),))
+
+    assert [nvr.label for nvr in config.nvrs] == ["default", "garage"]
+    assert config.channels == ["1", "garage-1", "garage-2"]
+    garage = config.nvrs[1]
+    assert garage.kind == "dahua"
+    assert garage.url == "http://192.168.1.11"
+    assert garage.device_channel("garage-2") == "2"
+    assert config.nvr_for_channel("garage-1") is garage
+    assert config.nvr_for_channel("1") is config.default_nvr
+
+
+def test_the_default_nvr_leads_whatever_the_file_order(tmp_path: Path):
+    # The named section written first must not become the default: the default
+    # is the one whose channels keep their bare ids.
+    reordered = SECOND_NVR + MINIMAL_CONFIG
+    path = write_config(tmp_path / "timelapsed.ini", reordered)
+
+    config = get_config((str(path),))
+
+    assert config.default_nvr.name is None
+    assert config.channels == ["1", "garage-1", "garage-2"]
+
+
+def test_rejects_unknown_nvr_type(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG + SECOND_NVR.replace("type = dahua", "type = axis"),
+    )
+
+    with pytest.raises(ValueError, match="axis"):
+        get_config((str(path),))
+
+
+def test_rejects_a_bad_nvr_name(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG + SECOND_NVR.replace("[nvr.garage]", "[nvr.Bad Name]"),
+    )
+
+    with pytest.raises(ValueError, match="Bad NVR name"):
+        get_config((str(path),))
+
+
+def test_rejects_colliding_channel_ids(tmp_path: Path):
+    # A named NVR whose namespaced ids collide with another section's.
+    colliding = MINIMAL_CONFIG.replace("channels = 1", "channels = 1, garage-1") + SECOND_NVR
+    path = write_config(tmp_path / "timelapsed.ini", colliding)
+
+    with pytest.raises(ValueError, match="garage-1"):
+        get_config((str(path),))
 
 
 def test_missing_config_raises(tmp_path: Path):

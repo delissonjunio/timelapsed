@@ -14,9 +14,11 @@ GO2RTC_PATH -- see the matching location in deploy/nginx-timelapsed.conf,
 installed by deploy/go2rtc-setup.sh. tests/test_nginx_config.py holds the two
 sides of that path together.
 
-Streams are named `ch{channel}` in /etc/go2rtc.yaml, and go2rtc-setup.sh
-derives them from the same [nvr] channels line this page's channel list comes
-from, so the two lists cannot drift apart on an installed guest.
+Streams are named `ch{channel id}` in /etc/go2rtc.yaml -- `ch1` for the
+default NVR, `chintelbras-3` for a named one -- and go2rtc-setup.sh renders
+them (via timelapsed.go2rtc_config) from the same [nvr]/[nvr.*] sections this
+page's channel list comes from, so the two lists cannot drift apart on an
+installed guest.
 """
 
 import json

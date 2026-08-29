@@ -1,11 +1,17 @@
 # Second NVR: the Intelbras
 
-**Status: probed and viable, not built.** A second NVR — an Intelbras at **192.168.50.170** on the
-home LAN, from a different site than `nvr-zermatt` — was probed in depth on **2026-08-28**. Every
-operation Timelapsed needs was verified working against the live device: stills, segment search,
-segment download, remux to MP4, and RTSP. But it speaks **Dahua's CGI API, not ISAPI**, so
-supporting it means a second protocol driver on top of multi-NVR plumbing the codebase does not
-have yet. Both are mapped below.
+**Status: built and deployed.** A second NVR — an Intelbras at **192.168.50.170** on the home LAN,
+from a different site than `nvr-zermatt` — was probed in depth on **2026-08-28** and wired in the
+next day. It speaks **Dahua's CGI API, not ISAPI**, so the work was two pieces: the Dahua driver
+(`timelapsed/dahua.py`: `DahuaCaptureAgent` + `DahuaFootageClient`, chosen per NVR by `type =` in
+its config section) and the multi-NVR plumbing (`[nvr.<name>]` sections whose channels are
+namespaced `<name>-<number>` — see [Configuration](Configuration.md)). The namespaced id is the
+channel id everywhere downstream, which is what let storage, the index schema, the web routes and
+the archiver all stay exactly as they were: the default NVR's channels keep their bare numbers,
+so nothing already on disk moved and no migration ran.
+
+The API mapping and traps below were what the driver was built against; they remain the reference
+for it.
 
 All probing was done from the Mac (Wi-Fi, `192.168.50.181`). CT 303 reaches the device directly —
 see [reachability](#reachability-from-the-guest) — so the wired figures can and should be
@@ -150,9 +156,10 @@ zermatt records continuously plus events; this device records **only motion even
   (mind whether this firmware has a search-session result cap like zermatt's 4,000-match silent
   truncation — unverified here).
 
-## What the codebase needs
+## What the codebase needed (built 2026-08-29)
 
-Two separable pieces of work, and this device forces both.
+Two separable pieces of work, and this device forced both. What follows is the map the build
+worked from, kept because it explains the shape of what shipped.
 
 ### 1. A protocol driver
 
@@ -179,16 +186,19 @@ Mapped 2026-08-28 against the code; the single-NVR assumption is baked in end to
   each build one `NVRFootageClient`.
 
 Both NVRs have a channel 1, so every one of those collides the moment a second device exists.
-The work is threading an NVR identity through config (`[nvr.zermatt]`-style sections), storage
-paths, the index schema (composite keys, with a migration), routes (old URLs aliasing to the
-default NVR so bookmarks survive), go2rtc stream names, and per-(nvr, channel) worker spawning.
-Mostly mechanical parameter-threading, plus two real migrations (directory tree and sqlite), and
-one real risk: any query that filters on channel alone silently mixes devices.
 
-**The cheap alternative — a second instance** (own config, roots, ports, templated systemd units)
-— needs almost none of that and stood as the fallback for a *different-site* NVR. This device is
-on the same LAN and would presumably want the one UI, which is the whole reason the archive
-exists; that argues for doing the plumbing properly.
+**What actually shipped resolves the collision one layer up instead of threading an NVR dimension
+through all of them**: a named section's channels get composite ids (`intelbras-1`), the default
+section's keep their bare numbers, and since the channel id was already an opaque string in every
+one of those places — directory name, TEXT column, URL segment, stream suffix — everything
+downstream works unchanged, with **no directory migration and no sqlite migration**. Old URLs are
+not merely aliased to the default NVR; they simply still are the default NVR's URLs. The
+per-device pieces that did change: config parsing (`_parse_nvrs`), one capture agent per NVR
+handed to that device's workers, `footage_clients_by_channel` routing the indexer's sweeps and
+the archiver's fetches per channel, `uri_segment_name` deriving a stable name from a Dahua
+FilePath (Hikvision URIs carry `name=`; Dahua paths get a `dav-<digest>`), and go2rtc rendering
+moving from awk in `go2rtc-setup.sh` to `timelapsed/go2rtc_config.py`, which knows both RTSP
+dialects.
 
 ### Resources
 
@@ -198,10 +208,14 @@ exists; that argues for doing the plumbing properly.
   container memory is a cap, not a reservation — but eight more capture processes plus analyzer
   load for eight more channels is real; measure before enabling recognition on the new channels.
 
-## Next steps, in order
+## What remains open
 
-1. Decide the still-quality route: raise `SnapFormat` vs frames-from-RTSP.
-2. Driver interface + Dahua implementation, tested from the container.
-3. Multi-NVR config/storage/index/route threading, with the migrations.
-4. Measure this device's real retention depth and daily archive volume — including re-measuring
-   download throughput wired — and recount the archive volume's headroom.
+1. **Still quality**: capture runs off `snapshot.cgi` at the device's `SnapFormat` encode,
+   704×480 MJPG, while the same cameras record 960×1080. Raising `SnapFormat` via
+   `configManager.cgi setConfig` (or the device UI) is untried; frames-from-RTSP stays the
+   fallback if the firmware refuses. Analysis works at 704×480 — the detector's input is smaller
+   than that — but plates on these cameras are hopeless at any of these resolutions.
+2. Measure the device's real retention depth and daily archive volume — including re-measuring
+   download throughput wired, from the container — and recount the archive volume's headroom.
+3. Watch the analyzer and capture load on CT 303 with eight more channels; the 6 GB cap is cheap
+   to raise host-side if it starts to pinch.

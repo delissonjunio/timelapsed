@@ -13,17 +13,31 @@ exist, startup fails with a `FileNotFoundError` naming all three paths.
 The file contains your NVR password. `chmod 640` it, own it `root:timelapsed`, and never commit it.
 `.gitignore` blocks `*.ini` for exactly this reason.
 
-## `[nvr]`
+## `[nvr]` and `[nvr.<name>]`
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `url` | yes | — | Base URL of the NVR, e.g. `http://192.168.1.10`. ISAPI paths are appended; a trailing slash is stripped for you. |
+| `url` | yes | — | Base URL of the NVR, e.g. `http://192.168.1.10`. API paths are appended; a trailing slash is stripped for you. |
 | `username` | yes | — | NVR user. A read-only account is enough. |
 | `password` | yes | — | Sent using HTTP Digest auth, never logged. |
-| `channels` | yes | — | Comma-separated channel numbers, e.g. `1,2,3`. Whitespace is trimmed. Channel `1` maps to ISAPI channel `101`. |
+| `channels` | yes | — | Comma-separated channel numbers, as the device counts them, e.g. `1,2,3`. Whitespace is trimmed. On an ISAPI device channel `1` maps to track `101`. |
+| `type` | no | `hikvision` | Which API the device speaks: `hikvision` (ISAPI) or `dahua` (the CGI API Dahua-OEM devices such as Intelbras use). |
 
 One process is started per channel, so the channel count is also the process count and roughly the
 memory multiplier.
+
+### More than one recorder
+
+Further devices are `[nvr.<name>]` sections with the same keys. The unnamed `[nvr]` section is the
+**default NVR** and its channels keep their bare numbers as ids everywhere — directories, index
+rows, URLs, go2rtc stream names — so a single-NVR install keeps meaning exactly what it always
+meant. A named section's channels become `<name>-<number>` (`garage-1`), which is what lets two
+devices both have a channel 1 without anything colliding. That composite id **is** the channel id
+everywhere downstream; no other layer carries an NVR dimension of its own.
+
+The name appears in paths and URLs, so it is held to lowercase letters, digits, `-` and `_`.
+Every channel-shaped setting elsewhere in the file (`[analysis] plate_channels` among them) takes
+these global ids: `5` means the default NVR's channel 5, `garage-1` the garage's channel 1.
 
 ## `[capture]`
 

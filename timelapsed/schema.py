@@ -15,6 +15,53 @@ class VideoResolution:
     height: int
 
 
+# The protocols a driver exists for. "hikvision" is ISAPI; "dahua" is the CGI
+# API Dahua-OEM devices (Intelbras among them) speak.
+NVR_KINDS = ("hikvision", "dahua")
+
+
+@dataclass(frozen=True)
+class NVRConfig:
+    """One recorder: where it is, how to talk to it, and which cameras it owns.
+
+    `name` is None for the original `[nvr]` section, whose channels keep their
+    bare numbers as ids ("1", "5") so nothing already on disk, in the index or
+    in a bookmark moves. A named `[nvr.<name>]` section namespaces its channels
+    as "<name>-<number>", which is what lets two devices both have a channel 1.
+    That composite id is *the* channel id everywhere downstream -- directory
+    names, index rows, URLs, go2rtc stream names -- so no other layer needs an
+    NVR dimension of its own.
+    """
+
+    name: str | None
+    kind: str  # one of NVR_KINDS
+    url: str
+    username: str
+    password: str
+    # The device's own channel numbers, as it counts them.
+    device_channels: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return self.name or "default"
+
+    def channel_id(self, device_channel: str) -> str:
+        """The global channel id a device channel is known by everywhere else."""
+        return device_channel if self.name is None else f"{self.name}-{device_channel}"
+
+    @property
+    def channel_ids(self) -> list[str]:
+        return [self.channel_id(device_channel) for device_channel in self.device_channels]
+
+    def device_channel(self, channel_id: str) -> str:
+        """Back from the global id to the number the device answers to."""
+        if self.name is not None:
+            prefix = f"{self.name}-"
+            if channel_id.startswith(prefix):
+                return channel_id[len(prefix):]
+        return channel_id
+
+
 @dataclass(frozen=True)
 class Cadence:
     """A recurring timelapse: how far back it looks, and when it is due.
@@ -143,10 +190,12 @@ CADENCES: dict[str, Cadence] = {
 
 @dataclass
 class Config:
-    nvr_url: str
-    nvr_username: str
-    nvr_password: str
+    # Every recorder, the original `[nvr]` section first. The rest of the
+    # config -- and everything downstream of it -- speaks global channel ids;
+    # only the drivers built from these entries ever see a device's own number.
+    nvrs: list[NVRConfig]
 
+    # Global channel ids across every NVR, in configuration order.
     channels: list[str]
 
     capture_interval: timedelta
@@ -229,6 +278,18 @@ class Config:
     analysis_plate_confidence: float
 
     logging_level: int
+
+    @property
+    def default_nvr(self) -> "NVRConfig":
+        return self.nvrs[0]
+
+    def nvr_for_channel(self, channel_id: str) -> "NVRConfig":
+        """Which recorder owns this channel. Unknown ids get the default NVR,
+        which is where every channel lived before there could be a second one."""
+        for nvr in self.nvrs:
+            if channel_id in nvr.channel_ids:
+                return nvr
+        return self.default_nvr
 
     @property
     def longest_image_cadence(self) -> Cadence | None:

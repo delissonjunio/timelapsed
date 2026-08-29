@@ -1,6 +1,7 @@
 # Timelapsed
 
-Captures stills from an ISAPI (Hikvision-compatible) NVR and renders **hourly, daily and weekly**
+Captures stills from ISAPI (Hikvision-compatible) and Dahua-CGI (Intelbras and other Dahua OEM)
+NVRs — one or several at once — and renders **hourly, daily and weekly**
 timelapses — plus **monthly and since-day-one** ones for watching a building go up — with a built-in
 web viewer to watch them from anywhere on your Tailnet.
 
@@ -39,8 +40,9 @@ NVR ──HTTP snapshot──▶ capture worker ──▶ {root}/{channel}/image
 
 * **One process per channel.** Each loops forever: fetch a snapshot over HTTP Digest auth, write it
   to disk, check whether a timelapse is due, sleep for the configured interval.
-* **Snapshots, not RTSP.** One `GET /ISAPI/Streaming/channels/{channel}01/picture` per frame. No
-  stream to keep alive, no video to decode client-side.
+* **Snapshots, not RTSP.** One HTTP GET per frame (`/ISAPI/Streaming/channels/{channel}01/picture`
+  on ISAPI devices, `/cgi-bin/snapshot.cgi` on Dahua ones). No stream to keep alive, no video to
+  decode client-side.
 * **Renders happen in their own process** so a long `ffmpeg` run never stalls capture. If a render
   is still going when the next one is due, the new one is skipped rather than queued.
 * **Frames are sampled, not concatenated.** A day at a 10 second interval is 8,640 stills; a 60

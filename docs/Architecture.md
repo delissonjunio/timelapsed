@@ -89,9 +89,14 @@ the whole directory and everything else still works.
 
 Per channel, every `interval_seconds`:
 
-1. `GET {url}/ISAPI/Streaming/channels/{channel}01/picture?videoResolutionWidth=W&videoResolutionHeight=H`
-   with HTTP Digest auth, a `(5s connect, 20s read)` timeout, and up to 4 attempts with exponential
-   backoff and full jitter.
+1. One snapshot GET with HTTP Digest auth, a `(5s connect, 20s read)` timeout, and up to 4
+   attempts with exponential backoff and full jitter. On an ISAPI device that is
+   `GET {url}/ISAPI/Streaming/channels/{channel}01/picture?videoResolutionWidth=W&videoResolutionHeight=H`;
+   on a Dahua one it is `GET {url}/cgi-bin/snapshot.cgi?channel={channel}` (which serves the
+   device's own snapshot encode and ignores any requested resolution). Which driver a channel
+   gets is decided by its NVR's `type =`; each worker is handed the agent for the device that
+   owns its camera. Auth failures are never retried on the Dahua driver — that firmware locks
+   the account after a handful of bad attempts.
 2. Verify the response `Content-Type` is actually an image. NVRs answer some failures with `200 OK`
    and an XML error body; without this check that XML gets written to disk as a "frame" and poisons
    the next render.

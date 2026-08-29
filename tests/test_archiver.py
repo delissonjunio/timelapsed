@@ -40,6 +40,19 @@ def test_the_segment_name_comes_from_the_uri():
     assert uri_segment_name("rtsp://nvr/Streaming/tracks/501") is None
 
 
+def test_a_dahua_file_path_gets_a_stable_derived_name():
+    """Dahua search results carry a raw on-disk path, not a URI with a name=.
+    The derived name must be filesystem-safe and stable across sweeps."""
+    path = "/mnt/dvr/2026-08-28/0/dav/00/0/1/98673/00.14.57-00.15.31[M][0@0][0].dav"
+
+    name = uri_segment_name(path)
+
+    assert name == uri_segment_name(path)  # stable
+    assert name.startswith("dav-")
+    assert "/" not in name and "[" not in name
+    assert uri_segment_name("/mnt/dvr/whatever.idx") is None
+
+
 # --- the archiver ---
 
 class FakeClient:
@@ -88,16 +101,25 @@ def index(tmp_path):
         yield opened
 
 
+def make_archiver(index, root, channels, retention=None, minimum_free_bytes=0):
+    # One fake behind every channel, exposed as .client so the tests can script
+    # it without caring that the archiver routes per channel now.
+    client = FakeClient()
+    built = SegmentArchiver(
+        clients={channel: client for channel in channels},
+        index=index,
+        root=root,
+        channels=channels,
+        retention=retention,
+        minimum_free_bytes=minimum_free_bytes,
+    )
+    built.client = client
+    return built
+
+
 @pytest.fixture
 def archiver(index, tmp_path, fake_remux):
-    return SegmentArchiver(
-        client=FakeClient(),
-        index=index,
-        root=tmp_path / "archive",
-        channels=["5", "6"],
-        retention=None,
-        minimum_free_bytes=0,
-    )
+    return make_archiver(index, tmp_path / "archive", ["5", "6"])
 
 
 def test_settled_segments_are_fetched_into_the_day_layout(archiver, index):
@@ -149,10 +171,7 @@ def test_what_is_already_on_disk_is_not_refetched(archiver, index):
 def test_older_than_retention_is_never_fetched(index, tmp_path, fake_remux):
     """ch1 holds 205 days; a 30-day retention must not become a fetch/delete
     loop over the 175 days it would immediately throw away."""
-    archiver = SegmentArchiver(
-        client=FakeClient(), index=index, root=tmp_path / "archive",
-        channels=["5"], retention=timedelta(days=7), minimum_free_bytes=0,
-    )
+    archiver = make_archiver(index, tmp_path / "archive", ["5"], retention=timedelta(days=7))
     seed_segment(index, "5", "ch05_ancient", NOW - timedelta(days=30), NOW - timedelta(days=30, minutes=-2))
 
     assert archiver.run_once(NOW) == 0
@@ -176,10 +195,7 @@ def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
 
 
 def test_reclaim_ages_out_files_and_their_empty_days(index, tmp_path, fake_remux):
-    archiver = SegmentArchiver(
-        client=FakeClient(), index=index, root=tmp_path / "archive",
-        channels=["5"], retention=timedelta(days=7), minimum_free_bytes=0,
-    )
+    archiver = make_archiver(index, tmp_path / "archive", ["5"], retention=timedelta(days=7))
     old_start = NOW - timedelta(days=10)
     day = archiver.root / "5" / old_start.strftime("%Y%m%d")
     day.mkdir(parents=True)
@@ -195,10 +211,7 @@ def test_reclaim_ages_out_files_and_their_empty_days(index, tmp_path, fake_remux
 
 
 def test_the_free_space_floor_drops_the_oldest_whole_day(index, tmp_path, fake_remux, monkeypatch):
-    archiver = SegmentArchiver(
-        client=FakeClient(), index=index, root=tmp_path / "archive",
-        channels=["5"], retention=None, minimum_free_bytes=100,
-    )
+    archiver = make_archiver(index, tmp_path / "archive", ["5"], minimum_free_bytes=100)
     for label, days_ago in (("ch05_older", 5), ("ch05_newer", 1)):
         started = NOW - timedelta(days=days_ago)
         day = archiver.root / "5" / started.strftime("%Y%m%d")

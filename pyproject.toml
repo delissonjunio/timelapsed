@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "timelapsed"
 version = "1.0.0"
-description = "Captures stills from an ISAPI/Hikvision NVR and renders hourly, daily and weekly timelapses"
+description = "Captures stills from ISAPI/Hikvision and Dahua NVRs and renders hourly, daily and weekly timelapses"
 authors = ["Delisson Silva <delisonjunio@gmail.com>"]
 readme = "README.md"
 license = "MIT"

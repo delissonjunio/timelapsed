@@ -24,7 +24,7 @@ from timelapsed.analysis.models import BodyEmbedder, ObjectDetector, PlateReader
 from timelapsed.analysis.pipeline import FrameAnalyzer
 from timelapsed.config import get_config, validate_config
 from timelapsed.image_capture_library import ImageCaptureLibrary
-from timelapsed.nvr_footage import NVRFootageClient, SegmentIndexer
+from timelapsed.nvr_footage import SegmentIndexer, footage_clients_by_channel
 from timelapsed.schema import Config
 
 logger = logging.getLogger(__name__)
@@ -179,13 +179,9 @@ def run() -> None:
     index = AnalysisIndex(config.analysis_index_path)
 
     # Lives in this daemon because this daemon is the index's one writer. It
-    # asks the NVR for its search index only -- a few pages of XML -- so it adds
-    # nothing to the snapshot load the capture daemon already puts on it.
-    footage = SegmentIndexer(
-        NVRFootageClient(config.nvr_url, config.nvr_username, config.nvr_password),
-        index,
-        config.channels,
-    )
+    # asks each NVR for its search index only -- a few pages of XML -- so it
+    # adds nothing to the snapshot load the capture daemon already puts on it.
+    footage = SegmentIndexer(footage_clients_by_channel(config), index, config.channels)
 
     try:
         analyzer = build_analyzer(config, index)

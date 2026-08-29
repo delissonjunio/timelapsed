@@ -1,10 +1,11 @@
 import configparser
 import logging
+import re
 from datetime import datetime, time, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from timelapsed.schema import CADENCES, Cadence, Config, VideoResolution
+from timelapsed.schema import CADENCES, NVR_KINDS, Cadence, Config, NVRConfig, VideoResolution
 
 CONFIG_PATHS = ("/etc/timelapsed.ini", "~/.timelapsed.ini", "./timelapsed.ini")
 
@@ -65,6 +66,66 @@ SHORTEST_MONTH_FRAMES = 28
 FLIPBOOK_FPS = 24
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_NVR_KIND = "hikvision"
+# A name becomes a directory-name prefix, a URL segment and a go2rtc stream
+# name, so it is held to characters safe in all three.
+NVR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*$")
+
+
+def _parse_nvrs(parser: configparser.ConfigParser) -> list[NVRConfig]:
+    """Every `[nvr]` / `[nvr.<name>]` section, the unnamed one first.
+
+    The unnamed section's channels keep their bare numbers as global ids, so a
+    single-NVR config parses to exactly what it always meant; a named section's
+    channels are namespaced `<name>-<number>`. Collisions between the resulting
+    ids are refused here, once, rather than discovered as crossed wires in the
+    library, the index and the archive.
+    """
+    sections = [
+        section for section in parser.sections()
+        if section == "nvr" or section.startswith("nvr.")
+    ]
+    # File order, except the unnamed section always leads: it is the default
+    # NVR, and being first is what makes it so.
+    sections.sort(key=lambda section: section != "nvr")
+    if not sections:
+        raise ValueError("No [nvr] section found. At least one NVR must be configured.")
+
+    nvrs: list[NVRConfig] = []
+    seen_ids: set[str] = set()
+    for section in sections:
+        name = None if section == "nvr" else section[len("nvr."):]
+        if name is not None and not NVR_NAME.match(name):
+            raise ValueError(
+                f"Bad NVR name {name!r} in [{section}]: use lowercase letters, digits, "
+                f"'-' and '_', starting with a letter or digit."
+            )
+        kind = parser.get(section, "type", fallback=DEFAULT_NVR_KIND).strip().lower()
+        if kind not in NVR_KINDS:
+            raise ValueError(
+                f"Unknown NVR type {kind!r} in [{section}]. Valid values: {', '.join(NVR_KINDS)}"
+            )
+        nvr = NVRConfig(
+            name=name,
+            kind=kind,
+            url=parser.get(section, "url").rstrip("/"),
+            username=parser.get(section, "username"),
+            password=parser.get(section, "password"),
+            device_channels=tuple(
+                channel.strip()
+                for channel in parser.get(section, "channels").split(",")
+                if channel.strip()
+            ),
+        )
+        for channel_id in nvr.channel_ids:
+            if channel_id in seen_ids:
+                raise ValueError(
+                    f"Channel id {channel_id!r} appears under more than one NVR section."
+                )
+            seen_ids.add(channel_id)
+        nvrs.append(nvr)
+    return nvrs
 
 
 def _optional_days(parser: configparser.ConfigParser, section: str, option: str, fallback: int) -> timedelta | None:
@@ -262,11 +323,11 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         parser.get("analysis", "root", fallback=str(library_root / "index"))
     ).expanduser()
 
+    nvrs = _parse_nvrs(parser)
+
     return Config(
-        nvr_url=parser["nvr"]["url"].rstrip("/"),
-        nvr_username=parser["nvr"]["username"],
-        nvr_password=parser["nvr"]["password"],
-        channels=[channel.strip() for channel in parser["nvr"]["channels"].split(",") if channel.strip()],
+        nvrs=nvrs,
+        channels=[channel_id for nvr in nvrs for channel_id in nvr.channel_ids],
 
         capture_interval=timedelta(seconds=parser.getint("capture", "interval_seconds")),
         capture_resolution=VideoResolution(

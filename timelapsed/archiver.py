@@ -32,7 +32,8 @@ from urllib.parse import parse_qs, urlparse
 
 from timelapsed.analysis.index import AnalysisIndex
 from timelapsed.config import get_config
-from timelapsed.nvr_footage import NVRFootageClient
+from timelapsed.dahua import dahua_segment_name
+from timelapsed.nvr_footage import NVRFootageClient, footage_clients_by_channel
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,14 @@ def parse_segment_filename(stem: str) -> tuple[datetime, datetime, str]:
 
 
 def uri_segment_name(playback_uri: str) -> str | None:
+    # Hikvision URIs carry the device's own segment id as `name=`. A Dahua
+    # "URI" is the raw FilePath of a .dav file, so its name is derived instead.
     values = parse_qs(urlparse(playback_uri).query).get("name")
-    return values[0] if values else None
+    if values:
+        return values[0]
+    if playback_uri.endswith(".dav"):
+        return dahua_segment_name(playback_uri)
+    return None
 
 
 class SegmentArchiver:
@@ -105,14 +112,16 @@ class SegmentArchiver:
 
     def __init__(
         self,
-        client: NVRFootageClient,
+        clients: dict[str, NVRFootageClient],
         index: AnalysisIndex,
         root: Path,
         channels: list[str],
         retention: timedelta | None,
         minimum_free_bytes: int,
     ):
-        self.client = client
+        # One footage client per NVR, keyed by global channel id, so a fetch
+        # reaches whichever device recorded that channel.
+        self.clients = clients
         self.index = index
         self.root = root
         self.channels = channels
@@ -197,7 +206,7 @@ class SegmentArchiver:
         try:
             deadline = DOWNLOAD_DEADLINE_FLOOR_SECONDS + segment.size_bytes / 1_000_000
             started = time.monotonic()
-            written = self.client.download(segment.playback_uri, raw, deadline)
+            written = self.clients[segment.channel].download(segment.playback_uri, raw, deadline)
 
             # MPEG-PS to MP4 is a copy, not a transcode; the timeout is there
             # because run() kills the child on expiry, and an ffmpeg wedged on
@@ -340,7 +349,7 @@ def run() -> None:
 
     config.archive_root.mkdir(parents=True, exist_ok=True)
     archiver = SegmentArchiver(
-        client=NVRFootageClient(config.nvr_url, config.nvr_username, config.nvr_password),
+        clients=footage_clients_by_channel(config),
         index=AnalysisIndex(config.analysis_index_path, read_only=True),
         root=config.archive_root,
         channels=config.channels,

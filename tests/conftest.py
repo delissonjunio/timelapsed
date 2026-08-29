@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from timelapsed.image_capture_library import ImageCaptureLibrary
-from timelapsed.schema import CADENCES, Config, VideoResolution
+from timelapsed.schema import CADENCES, Config, NVRConfig, VideoResolution
 
 BASE_TIME = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -71,9 +71,16 @@ def library(tmp_path: Path) -> ImageCaptureLibrary:
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
     return Config(
-        nvr_url="http://nvr.invalid",
-        nvr_username="tester",
-        nvr_password="hunter2",
+        nvrs=[
+            NVRConfig(
+                name=None,
+                kind="hikvision",
+                url="http://nvr.invalid",
+                username="tester",
+                password="hunter2",
+                device_channels=("1", "2"),
+            )
+        ],
         channels=["1", "2"],
         capture_interval=timedelta(seconds=5),
         capture_resolution=VideoResolution(width=640, height=480),
