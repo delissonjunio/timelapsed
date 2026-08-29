@@ -67,7 +67,7 @@ Then, in order of likelihood:
 | `Skipping … only N frames available, minimum is 60` | Not enough stills in the window. | Lower `interval_seconds`, or lower `min_frames`. |
 | `No image frames found for channel 1 between … skipping weekly render` | Stills were pruned before the render ran. | Raise `image_retention_days` above your longest still-sourced cadence. |
 | `No keyframe frames found … skipping monthly render` | The keyframe track is empty or does not reach that far back. | See *No keyframes are being promoted*, below. |
-| `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Harmless on its own: the skipped window is picked up as a missing window later. If it is constant, give the VM more vCPU or reduce `output_fps` / resolution. |
+| `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Harmless on its own: the skipped window is picked up as a missing window later. If it is constant, give the container more cores or reduce `output_fps` / resolution. |
 | `Channel 5 is waiting for a render slot` | `max_concurrent_renders` is doing its job. | Nothing, unless the wait outlasts the cadence. |
 | Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight, weekly on Monday, monthly and progress on the 1st. |
 
@@ -166,7 +166,7 @@ Reclaimed only 0.2 GB of the 1.1 GB needed: nothing left to delete.
 
 It means the library has been emptied down to the weekly archive and still does not fit.
 
-### Renders are slow or the VM is pegged
+### Renders are slow or the container is pegged
 
 `ffmpeg` is the only heavy thing here. Check what a render actually costs:
 
@@ -179,7 +179,7 @@ Levers, cheapest first:
 1. Lower `output_fps` from 30 to 24 — 20% fewer frames to encode.
 2. Lower `duration_seconds` — directly fewer frames.
 3. Reduce capture resolution to 1280×720.
-4. Add vCPU to the guest.
+4. Add cores to the container (`pct set --cores` on the Proxmox host, applies live).
 
 The unit files already run renders at `Nice=10` with `CPUWeight=50`, so they yield to anything more
 important on the same Proxmox host.

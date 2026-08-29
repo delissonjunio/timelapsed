@@ -93,8 +93,7 @@ For six, budget **200 GB**. LVM-thin disks only consume what is written and resi
 at the figure your math gives and grow it once you have a week of real data:
 
 ```bash
-sudo -n qm disk resize 302 scsi0 300G          # on the Proxmox host
-sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1   # in the guest
+sudo -n pct resize 303 mp0 300G     # on the Proxmox host; grows the filesystem too
 ```
 
 ## The floor beneath all of this

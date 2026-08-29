@@ -7,9 +7,9 @@ segment download, remux to MP4, and RTSP. But it speaks **Dahua's CGI API, not I
 supporting it means a second protocol driver on top of multi-NVR plumbing the codebase does not
 have yet. Both are mapped below.
 
-All probing was done from the Mac (Wi-Fi, `192.168.50.181`), **not** from the Timelapsed guest —
-see [the reachability blocker](#blocker-vm-302-cannot-reach-it), which is unresolved and comes
-before any code. Figures were measured on 2026-08-28; re-measure before trusting them.
+All probing was done from the Mac (Wi-Fi, `192.168.50.181`). CT 303 reaches the device directly —
+see [reachability](#reachability-from-the-guest) — so the wired figures can and should be
+re-measured from there. Figures were measured on 2026-08-28; re-measure before trusting them.
 
 ## The device
 
@@ -29,19 +29,15 @@ before any code. Figures were measured on 2026-08-28; re-measure before trusting
 The web UI at `http://192.168.50.170/` is Dahua's ExtJS interface with Intelbras branding.
 `/ISAPI/*` paths answer 404 — nothing Hikvision-shaped is on this box.
 
-## Blocker: VM 302 cannot reach it
+## Reachability from the guest
 
-The Mac resolves the device's MAC and talks to it without trouble. **VM 302 cannot even ARP it**:
-`ip neigh` never learns an entry, pings are 100% loss, every TCP port filtered — while the same VM
-reaches the gateway and the Mac on the same /24 fine. The device is wired, the VM is wired (Proxmox
-bridge on `vmbr0`), both sit in 192.168.50.0/24, and yet ARP who-has from the VM's segment gets no
-reply.
+Verified 2026-08-29 from CT 303: ARP resolves (`54:6c:ac:29:d2:85` learned as `REACHABLE`), ping
+is 0% loss, and TCP port 80 answers. Nothing blocks driver work from running where it will
+actually live.
 
-That pattern points at L2 isolation between the Proxmox host's switch segment and whatever port
-the NVR is plugged into — a mesh satellite with client isolation, a guest-network port, or similar
-— rather than anything on the device. Until it is found and fixed, nothing can run from the guest;
-every figure in this document came over the Mac's Wi-Fi path, including the throughput number,
-which should be re-measured wired.
+One caveat stands: every figure in this document was measured over the Mac's Wi-Fi path, including
+the download throughput number, which should be re-measured from the container before sizing
+anything on it.
 
 ## The API, mapped and verified
 
@@ -102,7 +98,7 @@ GET /cgi-bin/RPC_Loadfile{FilePath}     # FilePath verbatim from search, with [ 
 ```
 
 Streams the raw `.dav` file. Measured ~18 Mbit/s over the Mac's Wi-Fi path — treat that as a
-floor and re-measure from the guest once it can reach the device at all.
+floor and re-measure from the container, which reaches the device directly.
 
 The container is **DHAV** (magic bytes `DHAV`), Dahua's proprietary wrapper. **ffmpeg has a native
 `dhav` demuxer** and a plain `-c copy` remux to MP4 worked first try on a real downloaded segment,
@@ -198,16 +194,14 @@ exists; that argues for doing the plumbing properly.
 
 * The 1.4 TB archive volume was sized against zermatt's ~40 GB/day alone; this device adds little
   (motion clips only), so it fits, but recount after measuring its real daily volume.
-* VM 302 is 4 vCPU / 6 GB and the Proxmox host has almost no free RAM to grow it. Eight more
-  capture processes plus analyzer load for eight more channels is real; measure before enabling
-  recognition on the new channels.
+* CT 303 runs 4 cores with a 6 GB memory cap. The cap is host-side config and cheap to raise —
+  container memory is a cap, not a reservation — but eight more capture processes plus analyzer
+  load for eight more channels is real; measure before enabling recognition on the new channels.
 
 ## Next steps, in order
 
-1. **Find the L2 break** between the Proxmox bridge and the NVR's switch port. Nothing else can
-   start until VM 302 can ARP 192.168.50.170.
-2. Decide the still-quality route: raise `SnapFormat` vs frames-from-RTSP.
-3. Driver interface + Dahua implementation, tested from the guest.
-4. Multi-NVR config/storage/index/route threading, with the migrations.
-5. Measure this device's real retention depth and daily archive volume; recount the archive
-   volume's headroom.
+1. Decide the still-quality route: raise `SnapFormat` vs frames-from-RTSP.
+2. Driver interface + Dahua implementation, tested from the container.
+3. Multi-NVR config/storage/index/route threading, with the migrations.
+4. Measure this device's real retention depth and daily archive volume — including re-measuring
+   download throughput wired — and recount the archive volume's headroom.

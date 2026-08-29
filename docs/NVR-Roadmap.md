@@ -4,8 +4,8 @@
 **full segment replica** (see [Archiving everything, revisited](#archiving-everything-revisited)),
 for one UI, an offsite copy, and longer retention than the device keeps. The storage for it exists
 — the guest has a dedicated **1.4 TB ext4 volume mounted at `/var/lib/timelapsed/archive`**, owned
-by the `timelapsed` user (thin volume `scsi1` from the `hdd-thin` LVM pool on the Proxmox host,
-growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `ContentMgmt/search`
+by the `timelapsed` user (a thin volume from the `hdd-thin` LVM pool on the Proxmox host, mounted
+into the container, growable). Stage 1 landed 2026-08-28: `timelapsed/nvr_footage.py` sweeps `ContentMgmt/search`
 into an `nvr_segment` table from inside the analyzer daemon, verified against the live device.
 Stage 2 landed the same day: a footage lane on the timeline, served by `/api/footage`. So did
 stage 3 in its replica form: the `timelapsed-archiver` daemon replicates every recorded segment
@@ -15,7 +15,7 @@ clickable and every sighting offers a jump to its real footage.
 This page records what the NVR can actually do, measured against the live device, and what it
 would take to use it. It exists so the decision does not have to be re-derived later.
 
-Device figures were measured from VM 302 against `nvr-zermatt` (192.168.18.89) on **2026-08-27**;
+Device figures were measured from the timelapsed guest against `nvr-zermatt` (192.168.18.89) on **2026-08-27**;
 the bulk-replication figures were added the same way on **2026-08-28**.
 Re-measure before trusting them; scenes, firmware and detection settings drift.
 
@@ -172,7 +172,7 @@ On channels where recognition sees almost nothing (ch7 and ch9 recorded essentia
 The rejection of a full archive above is a disk argument, not a transport one — ~47 GB/day against
 a guest disk that cannot hold a week of it. With buying a disk on the table, the bulk path was
 measured properly on **2026-08-28**: same live device, sequential `ContentMgmt/download` driven
-from VM 302.
+from the timelapsed guest.
 
 ### Replication throughput holds at scale
 
@@ -366,7 +366,7 @@ moment the replica has not caught up to says so instead of doing nothing.
   sweeps.
 * **Recognition stays where it is.** It runs on stills, costs the NVR nothing, and already works;
   nothing here proposes moving inference onto video.
-* **VM 302 does not become a recorder.** The NVR does not record continuously, and duplicating six
+* **CT 303 does not become a recorder.** The NVR does not record continuously, and duplicating six
   live streams buys nothing the download API does not give at 70× realtime.
 * **No face recognition.** Ruled out by measurement, not preference — see
   [Recognition Feasibility](Recognition-Feasibility.md). Pulling video does not change it; the

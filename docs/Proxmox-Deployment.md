@@ -1,72 +1,113 @@
 # Proxmox Deployment
 
-End-to-end: create a VM on Proxmox VE, install Timelapsed from a git checkout, reach the NVR over
-Tailscale, and publish the viewer over Tailscale.
+End-to-end: create an LXC container on Proxmox VE, install Timelapsed from a git checkout, reach
+the NVR over Tailscale, and publish the viewer over Tailscale.
 
-This is the procedure that built VM 302 (`timelapsed`) on the node at `192.168.50.25`, written from
+This is the procedure that built CT 303 (`timelapsed`) on the node at `192.168.50.25`, written from
 what actually ran.
 
-## Sizing the guest
+## Sizing the container
 
 | Resource | Used | Why |
 | --- | --- | --- |
-| vCPU | 2 | ffmpeg is the only real load and it is bursty. `Nice=10` keeps it from starving the host. Go to 4 if renders start overlapping the next cadence. |
-| RAM | 2 GB | The daemon is a few hundred MB per channel worker. ffmpeg at `-preset veryfast` 1080p stays well under 1 GB. |
-| Disk | 200 GB | Six channels, 10-second interval, 8-day still retention is ~96 GB of stills alone. See [Storage Planning](Storage-Planning.md). Thin-provisioned, so it only consumes what is written. |
+| Cores | 4 | ffmpeg is the only real load and it is bursty. `Nice=10` keeps it from starving the host. |
+| Memory | 6 GB | This is a **cap, not a reservation** — the container only takes what it uses, which is one of the reasons to run this as a container at all. The daemon is a few hundred MB per channel worker; the analyzer peaks higher and has its own `MemoryMax`. |
+| Root disk | 20 GB | OS, checkout, and virtualenv only. The library lives on its own mount point. |
+| Library mount | 150 GB | Six channels, 10-second interval, 8-day still retention is ~96 GB of stills alone. See [Storage Planning](Storage-Planning.md). Thin-provisioned, so it only consumes what is written. |
+| Archive mount | 1.4 TB | The NVR segment replica, on its own spinning-disk pool. See the [NVR Roadmap](NVR-Roadmap.md). |
 
-Size the disk from your own channel count and interval, not from this table. The stills dominate and
-they are the term that scales.
+Size the library mount from your own channel count and interval, not from this table. The stills
+dominate and they are the term that scales.
 
-## 1. Create the VM
+## 1. Create the container
 
-From the Proxmox host. `qm` is not on the login `PATH` on this node, hence `sudo -n qm`; the
+From the Proxmox host. `pct` is not on the login `PATH` on this node, hence `sudo -n pct`; the
 `perl: warning: Setting locale failed` noise on stderr is harmless.
 
 ```bash
-VMID=302
+CTID=303
 
-sudo -n qm create $VMID \
-  --name timelapsed \
-  --ostype l26 \
-  --machine q35 \
-  --cpu host --cores 2 \
-  --memory 2048 --balloon 0 \
-  --scsihw virtio-scsi-single \
-  --net0 virtio,bridge=vmbr0 \
-  --serial0 socket --vga serial0 \
-  --agent enabled=1 \
+sudo -n pveam update
+sudo -n pveam download local ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+
+sudo -n pct create $CTID local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst \
+  --hostname timelapsed \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --ostype ubuntu \
+  --cores 4 --memory 6144 --swap 2048 \
+  --rootfs local-lvm:20 \
+  --mp0 local-lvm:150,mp=/var/lib/timelapsed,backup=0 \
+  --mp1 hdd-thin:1400,mp=/var/lib/timelapsed/archive,backup=0 \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp \
   --onboot 1
-
-# Import the cached Ubuntu 24.04 cloud image straight into a new disk.
-# (`qm importdisk` still works but leaves the disk unattached.)
-sudo -n qm set $VMID --scsi0 \
-  local-lvm:0,import-from=/var/lib/vz/template/iso/noble-server-cloudimg-amd64.img,discard=on,ssd=1
-
-# Cloud images ship a ~3.5 GB root filesystem. Grow it.
-sudo -n qm disk resize $VMID scsi0 200G
-
-sudo -n qm set $VMID --ide2 local-lvm:cloudinit --boot order=scsi0
-sudo -n qm set $VMID --ciuser delisson --ciupgrade 0 --ipconfig0 ip=dhcp \
-  --cicustom "vendor=local:snippets/vendor-qga.yaml" \
-  --sshkeys /home/delisson/.ssh/authorized_keys
-
-sudo -n qm start $VMID
 ```
 
-Find the address once the guest agent answers:
+`--unprivileged 1` is the right default, and `--features nesting=1` is **required** with it: the
+systemd units use `PrivateTmp`/`ProtectSystem`, which need mount namespaces that an unprivileged
+container only gets with nesting on.
+
+Two pieces of host-side plumbing before first start:
 
 ```bash
-sudo -n qm guest cmd $VMID network-get-interfaces | grep -A2 '"ip-address"'
+# Tailscale needs a TUN device.
+cat <<'EOF' | sudo -n tee -a /etc/pve/lxc/$CTID.conf
+lxc.cgroup2.devices.allow: c 10:200 rwm
+lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
+EOF
+
+# PVE copies the HOST's resolv.conf into the container by default, and on this
+# node that is Tailscale MagicDNS (100.100.100.100) — dead inside a container
+# that is not on the tailnet yet. Pin real resolvers.
+sudo -n pct set $CTID --nameserver "192.168.50.129 1.1.1.1"
+
+sudo -n pct start $CTID
 ```
 
-The disk can be grown later without downtime — `qm disk resize`, then `growpart /dev/sda 1` and
-`resize2fs /dev/sda1` inside the guest. It cannot be shrunk, so start smaller than you think.
+The container has no cloud-init; create the admin user by hand:
+
+```bash
+sudo -n pct exec $CTID -- bash -c '
+  apt-get update && apt-get install -y openssh-server sudo curl git ca-certificates rsync
+  useradd -m -u 1000 -s /bin/bash delisson && usermod -aG sudo delisson
+  echo "delisson ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/delisson && chmod 440 /etc/sudoers.d/delisson
+  install -d -m 700 -o delisson -g delisson /home/delisson/.ssh
+  systemctl enable --now ssh
+'
+sudo -n pct push $CTID /home/delisson/.ssh/authorized_keys \
+  /home/delisson/.ssh/authorized_keys --user 1000 --group 1000 --perms 600
+```
+
+Find the address:
+
+```bash
+sudo -n pct exec $CTID -- ip -4 addr show dev eth0
+```
+
+Mount points can be grown later without downtime — `sudo -n pct resize $CTID mp0 +50G` resizes the
+volume and the filesystem in one step, no in-container action needed. They cannot be shrunk, so
+start smaller than you think.
+
+### The lost+found trap
+
+The mount-point volumes are ext4, and their `lost+found` belongs to host root — an id an
+unprivileged container cannot map, so `install.sh`'s `chown -R` over the library dies on it.
+Fix once from the host:
+
+```bash
+sudo -n pct stop $CTID && sudo -n pct mount $CTID
+sudo -n chown 100000:100000 /var/lib/lxc/$CTID/rootfs/var/lib/timelapsed/lost+found \
+  /var/lib/lxc/$CTID/rootfs/var/lib/timelapsed/archive/lost+found
+sudo -n pct unmount $CTID && sudo -n pct start $CTID
+```
+
+(100000 is where the unprivileged id map starts: container uid N is host uid 100000+N.)
 
 ## 2. Join the tailnet
 
 Do this **before** configuring Timelapsed: on this network the NVR sits on a different subnet
-(`192.168.18.0/24`) reachable only through a Tailscale subnet router, so the guest cannot see the
-NVR at all until it is on the tailnet.
+(`192.168.18.0/24`) reachable only through a Tailscale subnet router, so the container cannot see
+the NVR at all until it is on the tailnet.
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sudo sh
@@ -100,13 +141,17 @@ IDs ending in `01` are main streams, `02` are sub streams. `101 501 601 701 801 
 ### The local-subnet trap
 
 `--accept-routes` accepts *every* approved route on the tailnet, and on this tailnet another node
-advertises `192.168.50.0/24` — the guest's own LAN. That route lands in routing table 52, which
-policy rule 5270 consults **before** the main table, so the guest starts answering its LAN
-neighbours (the Proxmox host included) up the tunnel and effectively falls off its own network.
+advertises `192.168.50.0/24` — the container's own LAN. That route lands in routing table 52,
+which policy rule 5270 consults **before** the main table, so the container starts answering its
+LAN neighbours (the Proxmox host included) up the tunnel and effectively falls off its own
+network. The symptom is nasty: every Tailscale path keeps working, ARP for LAN peers never even
+fires, and only LAN-direct traffic dies.
 
 `deploy/tailscale-local-subnet-route.service` fixes this by adding an `ip rule` at priority 5260
-that sends anything bound for the local subnet back to the main table. `install.sh` enables it
-automatically when `tailscaled` is present. Verify:
+that sends anything bound for the local subnet back to the main table, and the matching `.timer`
+re-asserts it every minute — the rule has been observed to vanish mid-uptime, so it is not trusted
+to a single boot-time shot. `install.sh` enables the timer automatically when `tailscaled` is
+present. Verify:
 
 ```bash
 ip rule show | grep -E '5260|5270'
@@ -116,12 +161,12 @@ ip rule show | grep -E '5260|5270'
 
 ## 3. Install Timelapsed
 
-The repo is private, so the guest needs its own read-only deploy key. Generate it on the guest and
-register it — never copy a personal key onto a server.
+The repo is private, so the container needs its own read-only deploy key. Generate it in the
+container and register it — never copy a personal key onto a server.
 
 ```bash
-# On the guest
-ssh-keygen -t ed25519 -N '' -C 'timelapsed-vm-deploy' -f ~/.ssh/id_ed25519
+# In the container
+ssh-keygen -t ed25519 -N '' -C 'timelapsed-ct-deploy' -f ~/.ssh/id_ed25519
 ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
 cat ~/.ssh/id_ed25519.pub
 ```
@@ -129,8 +174,8 @@ cat ~/.ssh/id_ed25519.pub
 ```bash
 # On your workstation, with the printed public key
 gh api -X POST repos/delissonjunio/timelapsed/keys \
-  -f title='timelapsed-vm (VM 302, read-only)' \
-  -f key='ssh-ed25519 AAAA... timelapsed-vm-deploy' \
+  -f title='timelapsed-ct (CT 303, read-only)' \
+  -f key='ssh-ed25519 AAAA... timelapsed-ct-deploy' \
   -F read_only=true
 ```
 
@@ -138,7 +183,7 @@ Then clone **to `/opt/timelapsed` directly**. The checkout is the install: upgra
 `git pull` in place, so there is no copy step to get out of sync.
 
 ```bash
-# On the guest
+# In the container
 sudo mkdir -p /opt/timelapsed && sudo chown "$USER:$USER" /opt/timelapsed
 git clone git@github.com:delissonjunio/timelapsed.git /opt/timelapsed
 cd /opt/timelapsed
@@ -244,21 +289,22 @@ nothing if the viewer is deliberately stopped.
 systemctl list-timers timelapsed-web-restart.timer
 ```
 
-## 8. Snapshot the working VM
+## 8. Snapshot the working container
 
 Once it has run cleanly for a day:
 
 ```bash
-sudo -n qm snapshot 302 working-install --description "timelapsed configured and capturing"
+sudo -n pct snapshot 303 working-install --description "timelapsed configured and capturing"
 ```
 
 ## Backups
 
-`vzdump` of the whole VM would include the entire image library — tens of gigabytes regenerated
-continuously and not worth backing up. Exclude it:
+`vzdump` of the whole container would include the entire image library — tens of gigabytes
+regenerated continuously and not worth backing up. The library and archive mount points already
+carry `backup=0`, so a plain dump skips them:
 
 ```bash
-sudo -n vzdump 302 --storage local --mode snapshot --exclude-path /var/lib/timelapsed/
+sudo -n vzdump 303 --storage local --mode snapshot
 ```
 
 What actually needs backing up is `/etc/timelapsed.ini` (small, and holds the NVR password) and, if
@@ -267,15 +313,24 @@ you care about history, `/var/lib/timelapsed/*/timelapse/` — the rendered vide
 
 ## Firewall
 
-The guest needs to reach the NVR, and the viewer needs to be reachable on 8080 — but only from the
-tailnet. If you enable the Proxmox firewall on this VM:
+The container needs to reach the NVR, and the viewer needs to be reachable on 8080 — but only from
+the tailnet. If you enable the Proxmox firewall on this container:
 
 ```bash
-sudo -n pvesh create /nodes/$(hostname)/qemu/302/firewall/rules \
+sudo -n pvesh create /nodes/$(hostname)/lxc/303/firewall/rules \
   --type in --action ACCEPT --proto tcp --dport 22 --source 192.168.50.0/24
-sudo -n pvesh create /nodes/$(hostname)/qemu/302/firewall/rules \
+sudo -n pvesh create /nodes/$(hostname)/lxc/303/firewall/rules \
   --type in --action ACCEPT --proto tcp --dport 8080 --source 100.64.0.0/10
 ```
 
 `100.64.0.0/10` is the Tailscale CGNAT range. With `tailscale serve` in front, the viewer port does
 not need to be reachable from the LAN at all.
+
+## A rescue hatch VMs never had
+
+If the container falls off the network entirely (see the local-subnet trap above), the Proxmox
+host can always get a root shell inside it with no networking at all:
+
+```bash
+sudo -n pct enter 303
+```

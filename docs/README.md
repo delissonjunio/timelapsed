@@ -13,7 +13,7 @@ listing, you can debug it.
 * **[Architecture](Architecture.md)** — what runs, in what process, writing what where
 * **[Configuration](Configuration.md)** — every setting and how they interact
 * **[Storage Planning](Storage-Planning.md)** — the one decision that matters most
-* **[Proxmox Deployment](Proxmox-Deployment.md)** — from `qm create` to a running service
+* **[Proxmox Deployment](Proxmox-Deployment.md)** — from `pct create` to a running service
 * **[Viewing Timelapses](Viewing-Timelapses.md)** — the viewer, Tailscale Serve, Jellyfin
 * **[Live](Live.md)** — every camera at once, real video, about a second behind
 * **[System Status](System-Status.md)** — the `/status` page: storage, capture health, how far behind analysis is

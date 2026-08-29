@@ -77,7 +77,7 @@ sudoedit /etc/timelapsed.ini
 sudo systemctl enable --now timelapsed timelapsed-web
 ```
 
-Full walkthrough, including creating the VM and publishing the viewer over Tailscale:
+Full walkthrough, including creating the container and publishing the viewer over Tailscale:
 **[Proxmox Deployment](docs/Proxmox-Deployment.md)**.
 
 ## Configuration
@@ -101,7 +101,7 @@ The full documentation lives in [`docs/`](docs/README.md) and is versioned with 
 | [Architecture](docs/Architecture.md) | Process model, storage layout, why each decision was made |
 | [Configuration](docs/Configuration.md) | Every key, its default, and how the settings interact |
 | [Storage Planning](docs/Storage-Planning.md) | How to pick a capture interval and size the disk |
-| [Proxmox Deployment](docs/Proxmox-Deployment.md) | VM creation through to a running service |
+| [Proxmox Deployment](docs/Proxmox-Deployment.md) | Container creation through to a running service |
 | [Viewing Timelapses](docs/Viewing-Timelapses.md) | The built-in viewer, Tailscale Serve, Jellyfin |
 | [Live](docs/Live.md) | The live wall: every camera at once over go2rtc |
 | [System Status](docs/System-Status.md) | The `/status` page: storage, capture health, how far behind analysis is |

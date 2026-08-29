@@ -38,7 +38,7 @@ process per channel makes the count self-evident and lets each channel fail inde
 **Renders get their own process.** Rendering a week of footage takes ffmpeg tens of seconds to
 minutes. Doing that inline would stall that channel's capture for the whole run. Each render is
 forked off and the capture loop carries on. If a render is still running when the next one of the
-same cadence comes due, the new one is **skipped, not queued** — on a small VM, falling one period
+same cadence comes due, the new one is **skipped, not queued** — on a small guest, falling one period
 behind is much better than accumulating ffmpeg processes until the box dies.
 
 **Shutdown is cooperative.** `SIGTERM` and `SIGINT` set a flag; the worker finishes its current

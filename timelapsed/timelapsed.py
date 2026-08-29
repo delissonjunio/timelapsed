@@ -301,7 +301,7 @@ class RenderScheduler:
     Rendering inline would stall capture for as long as ffmpeg runs, so each
     render gets its own process. If a render is still going when the next one is
     due, the new one is skipped rather than queued -- piling up ffmpeg processes
-    on a small VM is what this is trying to avoid. Nothing is lost by skipping:
+    on a small guest is what this is trying to avoid. Nothing is lost by skipping:
     the window stays missing, and `pending_render_windows` offers it again.
     """
 

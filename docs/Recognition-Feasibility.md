@@ -4,7 +4,7 @@ Measured, not estimated. Before building face and plate recognition, the
 candidate models were run over real stills from this deployment to find out what
 the cameras can actually support. **One of the two answers is no.**
 
-Everything below came from a 2026-08-27 spike against the live library on VM 302.
+Everything below came from a 2026-08-27 spike against the live library on the production guest.
 Plate characters are redacted; the reads were well-formed, which is the finding.
 
 ## Summary
@@ -147,11 +147,11 @@ frontal pose would still only give a 43 px face from these positions.
 
 ```bash
 # sample every 60th still from each channel
-ssh delisson@100.66.218.6 \
+ssh delisson@100.84.156.77 \
   'cd /var/lib/timelapsed && for ch in 1 5 6 7 8 9; do
      sudo -n ls $ch/image | sort | awk -v c=$ch "NR%60==1{print c\"/image/\"\$0}"
    done | sudo -n tee /tmp/spike.list | wc -l'
-ssh delisson@100.66.218.6 'sudo -n tar -cf - -C /var/lib/timelapsed -T /tmp/spike.list' > frames.tar
+ssh delisson@100.84.156.77 'sudo -n tar -cf - -C /var/lib/timelapsed -T /tmp/spike.list' > frames.tar
 
 # person/vehicle box sizes and hit rates
 python detect.py && python report2.py
