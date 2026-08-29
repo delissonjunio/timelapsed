@@ -30,9 +30,17 @@ else
         exit 1
     fi
     echo "==> Reinstalling systemd units"
-    sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.service "${INSTALL_DIR}"/deploy/timelapsed*.timer \
+    sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.{service,timer} "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/
     sudo systemctl daemon-reload
+
+    # The route rule moved from a boot-time oneshot to a minutely timer;
+    # migrate installs that still have the service enabled directly.
+    if systemctl is-enabled --quiet tailscaled 2>/dev/null; then
+        sudo systemctl disable tailscale-local-subnet-route.service 2>/dev/null || true
+        sudo systemctl enable --now tailscale-local-subnet-route.timer
+        sudo systemctl restart tailscale-local-subnet-route.service
+    fi
 
     # Only where nginx is already in front. Re-rendered every upgrade so an edit
     # to the checked-in template actually reaches the guest.

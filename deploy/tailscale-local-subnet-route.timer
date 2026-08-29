@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-assert the local-LAN route rule every minute
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.md
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

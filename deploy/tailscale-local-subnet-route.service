@@ -9,15 +9,17 @@ Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/README.
 #
 # The added rule sits after tailscaled's fwmark rules and before its table-52
 # rule, sending anything bound for the local subnet back to the main table.
+#
+# The matching .timer re-runs this every minute. The first cut was a
+# boot-time oneshot with PartOf=tailscaled.service and an ExecStop that
+# deleted the rule; a tailscaled restart propagated the stop (removing the
+# rule) but never the start, so any tailscaled bounce silently dropped the
+# host off its own LAN while every Tailscale path kept working. Hence: no
+# PartOf, no ExecStop, and a timer instead of trust — the script is
+# idempotent and the rule is at worst redundant. To remove the rule by hand:
+# tailscale-local-subnet-route.sh del
 After=tailscaled.service
-Requires=tailscaled.service
-PartOf=tailscaled.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 ExecStart=/opt/timelapsed/deploy/tailscale-local-subnet-route.sh add
-ExecStop=/opt/timelapsed/deploy/tailscale-local-subnet-route.sh del
-
-[Install]
-WantedBy=multi-user.target

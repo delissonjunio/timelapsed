@@ -121,14 +121,17 @@ chown root:"${SERVICE_USER}" "${CONFIG_PATH}"
 chmod 640 "${CONFIG_PATH}"
 
 echo "==> Installing systemd units"
-cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/tailscale-local-subnet-route.service "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
+cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/tailscale-local-subnet-route.{service,timer} "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now timelapsed-web-restart.timer
 
-# Only relevant where Tailscale is providing the route to the NVR.
+# Only relevant where Tailscale is providing the route to the NVR. The timer
+# owns the rule now; installs from before it enabled the service directly.
 if systemctl list-unit-files tailscaled.service >/dev/null 2>&1 && \
    systemctl is-enabled tailscaled.service >/dev/null 2>&1; then
-    systemctl enable --now tailscale-local-subnet-route.service
+    systemctl disable tailscale-local-subnet-route.service 2>/dev/null || true
+    systemctl enable --now tailscale-local-subnet-route.timer
+    systemctl restart tailscale-local-subnet-route.service
 fi
 
 # Recognition is opt-in. Only fetch the ~170 MB of models when the config
