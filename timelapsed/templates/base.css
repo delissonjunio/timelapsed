@@ -1,0 +1,11 @@
+/* Tokens and resets shared by every page. Injected inline by
+   timelapsed.pages.load_page, so the palette lives in one place while each
+   page still arrives in a single request. Page-specific tokens stay in each
+   page's own :root block, which follows this one and may override it. */
+:root {
+  color-scheme: dark;
+  --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --fg:#e8ebf1; --muted:#8b93a5;
+  --line:#242a37; --accent:#5b9dff;
+}
+* { box-sizing:border-box; }
+html, body { height:100%; }
