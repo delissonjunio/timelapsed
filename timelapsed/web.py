@@ -4,6 +4,11 @@ Serves the timelapse directory of the capture library as a browsable page with
 inline playback. Intended to sit behind Tailscale Serve rather than be exposed
 to the internet: there is no authentication here on purpose.
 
+This module is the HTTP side: routing, range streaming, and the payloads baked
+into the viewer shell. What it serves comes from elsewhere -- the catalogues in
+catalogue.py, the recognition index via recognition_reader.py, the markup from
+templates/ via pages.py.
+
 Run with:  python -m timelapsed.web
 """
 import json
@@ -11,11 +16,6 @@ import logging
 import mimetypes
 import re
 import signal
-import sqlite3
-import subprocess
-import threading
-from collections import OrderedDict
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from http import HTTPStatus
@@ -23,13 +23,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
-from timelapsed.archiver import parse_segment_filename
+from timelapsed.analysis.index import from_epoch
+from timelapsed.catalogue import ArchiveCatalogue, ThumbnailCache, TimelapseCatalogue
 from timelapsed.config import get_config
-from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 from timelapsed.library_page import render_library
 from timelapsed.live_page import render_live
 from timelapsed.pages import load_page
+from timelapsed.recognition_reader import RecognitionReader
 from timelapsed.schema import CADENCES, Config
 from timelapsed.status_page import render_status
 from timelapsed.system_status import SystemStatusCollector, status_json
@@ -38,211 +38,6 @@ logger = logging.getLogger(__name__)
 
 RANGE_HEADER = re.compile(r"bytes=(\d*)-(\d*)")
 STREAM_CHUNK_SIZE = 256 * 1024
-
-THUMBNAIL_WIDTH = 384
-THUMBNAIL_QUALITY = "6"  # ffmpeg -q:v, 2 best to 31 worst
-THUMBNAIL_CACHE_SIZE = 64
-
-
-class ThumbnailCache:
-    """Downscaled camera stills, keyed by source path and mtime.
-
-    The sidebar polls these every 30 seconds across every camera, and a 1080p
-    still is ~230 KB, so serving them raw would be over a megabyte a refresh for
-    a 170-pixel-wide box. ffmpeg is already a hard dependency for rendering, so
-    it does the scaling; the cache means it runs once per new still rather than
-    once per request.
-    """
-
-    def __init__(self, maximum_entries: int = THUMBNAIL_CACHE_SIZE):
-        self._entries: OrderedDict[tuple[str, int], bytes] = OrderedDict()
-        self._maximum_entries = maximum_entries
-        self._lock = threading.Lock()
-
-    def get(self, source: Path) -> bytes | None:
-        try:
-            key = (str(source), source.stat().st_mtime_ns)
-        except OSError:
-            return None
-
-        with self._lock:
-            if key in self._entries:
-                self._entries.move_to_end(key)
-                return self._entries[key]
-
-        thumbnail = self._render(source)
-        if thumbnail is None:
-            return None
-
-        with self._lock:
-            self._entries[key] = thumbnail
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._maximum_entries:
-                self._entries.popitem(last=False)
-        return thumbnail
-
-    @staticmethod
-    def _render(source: Path) -> bytes | None:
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-loglevel", "error", "-i", str(source),
-                    # min() so a still smaller than the tile is never upscaled
-                    # into a file bigger than the original.
-                    "-vf", f"scale='min({THUMBNAIL_WIDTH},iw)':-2",
-                    "-q:v", THUMBNAIL_QUALITY, "-f", "image2", "-vcodec", "mjpeg", "pipe:1",
-                ],
-                capture_output=True, timeout=15, check=True,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            logger.warning("Could not build a thumbnail for %s: %s", source, error)
-            return None
-        return result.stdout or None
-
-
-@dataclass(frozen=True)
-class TimelapseEntry:
-    channel_id: str
-    cadence: str
-    starts: datetime
-    finishes: datetime
-    path: Path
-
-    @property
-    def size_bytes(self) -> int:
-        return self.path.stat().st_size
-
-    def as_dict(self) -> dict:
-        return {
-            "channel": self.channel_id,
-            "cadence": self.cadence,
-            "starts": self.starts.isoformat(),
-            "finishes": self.finishes.isoformat(),
-            "size_bytes": self.size_bytes,
-            "url": f"/video/{self.channel_id}/{self.path.name}",
-        }
-
-
-class TimelapseCatalogue:
-    """Reads the capture library from disk on every request.
-
-    No caching: the directory is small (one file per cadence per period) and a
-    stale list is more annoying than a directory scan is expensive.
-    """
-
-    def __init__(self, root_path: Path):
-        self.root_path = root_path
-        self.library = ImageCaptureLibrary(root_path)
-
-    def channels(self) -> list[str]:
-        if not self.root_path.is_dir():
-            return []
-        return sorted(
-            entry.name for entry in self.root_path.iterdir()
-            if entry.is_dir() and (entry / "timelapse").is_dir()
-        )
-
-    def entries(self, channel_id: str | None = None, cadence: str | None = None) -> list[TimelapseEntry]:
-        found = []
-        for candidate_channel in self.channels():
-            if channel_id is not None and candidate_channel != channel_id:
-                continue
-
-            for path in (self.root_path / candidate_channel / "timelapse").iterdir():
-                if not path.is_file():
-                    continue
-                try:
-                    entry_cadence, starts, finishes = parse_timelapse_filename(path.stem)
-                except ValueError:
-                    continue
-                if cadence is not None and entry_cadence != cadence:
-                    continue
-                found.append(TimelapseEntry(candidate_channel, entry_cadence, starts, finishes, path))
-
-        found.sort(key=lambda entry: entry.starts, reverse=True)
-        return found
-
-    def latest_still(self, channel_id: str) -> Path | None:
-        """The most recent captured image for a channel, or None if it has none."""
-        if channel_id not in self.channels_with_images():
-            return None
-        entries = self.library._timestamped_paths(channel_id, "image")
-        return entries[-1][1] if entries else None
-
-    def channels_with_images(self) -> list[str]:
-        if not self.root_path.is_dir():
-            return []
-        return sorted(
-            entry.name for entry in self.root_path.iterdir()
-            if entry.is_dir() and (entry / "image").is_dir()
-        )
-
-    def resolve_video(self, channel_id: str, filename: str) -> Path | None:
-        """Resolve a video path, refusing anything that escapes the library root."""
-        base = (self.root_path / channel_id / "timelapse").resolve()
-        try:
-            candidate = (base / filename).resolve()
-            candidate.relative_to(base)
-        except (ValueError, OSError):
-            return None
-        return candidate if candidate.is_file() else None
-
-
-class ArchiveCatalogue:
-    """What the archiver has replicated, read straight off its filenames.
-
-    No database and no caching: the archive is indexed by its filenames the way
-    the still library is, and the only questions asked of it are tiny --
-    "what covers this moment" is one or two day-directory listings.
-    """
-
-    def __init__(self, root: Path):
-        self.root = root
-
-    def segments(self, channel: str, start: datetime, end: datetime, limit: int = 500) -> list[dict]:
-        """Archived segments overlapping [start, end], oldest first.
-
-        Walks only the day directories the window touches, plus the day before
-        the window opens -- a segment can straddle midnight, but never more
-        than one (they run minutes, not days).
-        """
-        found = []
-        day = start.date() - timedelta(days=1)
-        while day <= end.date() and len(found) < limit:
-            directory = self.root / channel / day.strftime("%Y%m%d")
-            day += timedelta(days=1)
-            if not directory.is_dir():
-                continue
-            for stored in directory.iterdir():
-                if stored.suffix != ".mp4":
-                    continue
-                try:
-                    started_at, ended_at, _ = parse_segment_filename(stored.stem)
-                except ValueError:
-                    continue
-                if ended_at < start or started_at > end:
-                    continue
-                found.append({
-                    "starts": started_at.isoformat(),
-                    "finishes": ended_at.isoformat(),
-                    "size_bytes": stored.stat().st_size,
-                    "url": f"/archive/{channel}/{directory.name}/{stored.name}",
-                })
-        found.sort(key=lambda segment: segment["starts"])
-        return found[:limit]
-
-    def resolve(self, channel: str, day: str, filename: str) -> Path | None:
-        """Resolve an archived file, refusing anything that escapes the root."""
-        if not re.fullmatch(r"\d{8}", day) or not filename.endswith(".mp4"):
-            return None
-        base = self.root.resolve()
-        try:
-            candidate = (base / channel / day / filename).resolve()
-            candidate.relative_to(base)
-        except (ValueError, OSError):
-            return None
-        return candidate if candidate.is_file() else None
-
 
 # The viewer shell. Markup lives in templates/index.html; load_page stitches
 # in the shared fragments once, at import.
@@ -317,126 +112,6 @@ def render_index(
     if PAYLOAD_MARKER not in PAGE_TEMPLATE:
         raise ValueError(f"index.html has no {PAYLOAD_MARKER} marker")
     return PAGE_TEMPLATE.replace(PAYLOAD_MARKER, payloads).encode()
-
-
-class RecognitionReader:
-    """Read access to the recognition index, shared across handler threads.
-
-    The analyzer owns the database; this only reads it, plus the one write the
-    viewer allows (naming an identity). SQLite is happy with concurrent readers
-    under WAL, but a single connection is not, so every call takes a lock. The
-    queries are indexed lookups measured in microseconds, so the contention does
-    not matter and one connection beats a pool of them.
-
-    The index may legitimately not exist yet -- recognition is optional, and the
-    analyzer creates the file on first run -- so `open` reports that rather than
-    failing the whole viewer.
-    """
-
-    def __init__(self, index_path: Path, crops_root: Path):
-        self.index_path = index_path
-        self.crops_root = crops_root.resolve()
-        self._lock = threading.Lock()
-        self._index: AnalysisIndex | None = None
-
-    @classmethod
-    def open(cls, config: Config) -> "RecognitionReader | None":
-        if not config.analysis_enabled:
-            return None
-        if not config.analysis_index_path.exists():
-            logger.warning(
-                "Recognition is enabled but %s does not exist yet. The viewer will "
-                "serve timelapses only until the analyzer has run.",
-                config.analysis_index_path,
-            )
-            return None
-        return cls(config.analysis_index_path, config.analysis_crop_root)
-
-    def _connection(self) -> AnalysisIndex:
-        if self._index is None:
-            self._index = AnalysisIndex(self.index_path, read_only=True)
-        return self._index
-
-    def activity(self, channel: str, start: int, end: int, buckets: int) -> dict:
-        with self._lock:
-            return self._connection().activity(channel, start, end, buckets)
-
-    def events(self, **kwargs) -> list:
-        with self._lock:
-            return self._connection().events(**kwargs)
-
-    def recent_counts(self, start: int, end: int) -> dict[str, dict[str, int]]:
-        with self._lock:
-            return self._connection().recent_counts(start, end)
-
-    def footage_runs(self, channel: str, start: int, end: int, max_gap: int) -> list[dict]:
-        with self._lock:
-            try:
-                return self._connection().segment_runs(channel, start, end, max_gap)
-            except sqlite3.OperationalError:
-                # The viewer reads the index without migrating it, so it can be
-                # looking at a schema from before the footage mirror existed.
-                # No table means no map, which the lane already draws as nothing.
-                return []
-
-    def segment_summary(self) -> dict[str, dict]:
-        with self._lock:
-            try:
-                return self._connection().segment_summary()
-            except sqlite3.OperationalError:
-                # Same pre-mirror-schema tolerance as footage_runs.
-                return {}
-
-    def identities(self, kind: str | None = None) -> list[dict]:
-        with self._lock:
-            return self._connection().identities(kind=kind)
-
-    def plates(self, text: str | None = None, channel: str | None = None) -> list[dict]:
-        with self._lock:
-            return self._connection().plates(text=text, channel=channel)
-
-    def watermarks(self) -> dict[str, str]:
-        with self._lock:
-            return {
-                channel: from_epoch(through).isoformat()
-                for channel, through in self._connection().watermarks().items()
-            }
-
-    def watermark_epochs(self) -> dict[str, int]:
-        """The same watermarks unconverted, for callers doing arithmetic on them.
-
-        `watermarks` formats for the timeline, which wants a string it can hand
-        straight to Date.parse. The status page subtracts them from frame
-        timestamps, so it wants the seconds.
-        """
-        with self._lock:
-            return self._connection().watermarks()
-
-    def table_counts(self) -> dict[str, int]:
-        with self._lock:
-            return self._connection().table_counts()
-
-    def rename_identity(self, identity_id: int, name: str | None) -> bool:
-        # The one write. Opened separately so the read connection stays read-only
-        # and a bug in a GET handler cannot mutate anything.
-        with self._lock:
-            with AnalysisIndex(self.index_path) as writable:
-                return writable.rename_identity(identity_id, name)
-
-    def crop_file(self, kind: str, row_id: int) -> Path | None:
-        with self._lock:
-            relative = self._connection().crop_path(kind, row_id)
-        if not relative:
-            return None
-        # The path comes from the database, but resolve-then-check anyway: it is
-        # the same guard resolve_video uses, and it costs nothing.
-        candidate = (self.crops_root / relative).resolve()
-        try:
-            candidate.relative_to(self.crops_root)
-        except ValueError:
-            logger.warning("Refusing crop path outside the crop root: %s", relative)
-            return None
-        return candidate
 
 
 class TimelapseRequestHandler(BaseHTTPRequestHandler):

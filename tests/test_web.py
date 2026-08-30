@@ -11,7 +11,8 @@ import pytest
 
 from timelapsed.image_capture_library import _parse_image_filename
 from timelapsed.schema import CADENCES
-from timelapsed.web import THUMBNAIL_WIDTH, TimelapseCatalogue, build_server
+from timelapsed.catalogue import THUMBNAIL_WIDTH, TimelapseCatalogue
+from timelapsed.web import build_server
 from tests.conftest import BASE_TIME, requires_ffmpeg
 
 VIDEO_BODY = b"".join(bytes([index % 256]) for index in range(4096))

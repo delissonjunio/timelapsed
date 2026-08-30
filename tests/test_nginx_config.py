@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from timelapsed.image_capture_library import ImageCaptureLibrary
-from timelapsed.web import TimelapseCatalogue
+from timelapsed.catalogue import TimelapseCatalogue
 from tests.conftest import BASE_TIME
 
 SITE_CONFIG = Path(__file__).resolve().parent.parent / "deploy" / "nginx-timelapsed.conf"
@@ -155,7 +155,7 @@ def test_archive_location_matches_the_urls_the_catalogue_builds(archive_location
     from datetime import timedelta
 
     from timelapsed.archiver import segment_filename
-    from timelapsed.web import ArchiveCatalogue
+    from timelapsed.catalogue import ArchiveCatalogue
 
     root = tmp_path / "archive"
     day = root / "5" / BASE_TIME.strftime("%Y%m%d")
