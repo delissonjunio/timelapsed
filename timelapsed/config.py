@@ -207,6 +207,22 @@ def _parse_time_of_day(raw: str) -> time:
         ) from error
 
 
+def _parse_time_window(raw: str) -> tuple[time, time]:
+    """The local wall-clock window dense keyframe promotion covers."""
+    first, separator, last = raw.strip().partition("-")
+    if not separator:
+        raise ValueError(
+            f"Unknown keyframe window: {raw!r}. Use HH:MM-HH:MM, such as '06:00-18:00'."
+        )
+    window = (_parse_time_of_day(first), _parse_time_of_day(last))
+    if window[0] >= window[1]:
+        raise ValueError(
+            f"The keyframe window {raw!r} ends before it starts. It cannot cross midnight: "
+            f"promoting through the night is what the window exists to avoid."
+        )
+    return window
+
+
 def _parse_cadences(raw: str) -> list[Cadence]:
     names = [name.strip().lower() for name in raw.split(",") if name.strip()]
     unknown = [name for name in names if name not in CADENCES]
@@ -278,9 +294,20 @@ def validate_config(config: Config) -> list[str]:
             f"close enough to the keyframe time and the progress video will be mostly gaps."
         )
 
+    if config.keyframe_every is not None and config.keyframe_tolerance * 2 > config.keyframe_every:
+        warnings.append(
+            f"keyframe tolerance_minutes ({int(config.keyframe_tolerance.total_seconds() // 60)}) is "
+            f"more than half of every_minutes ({int(config.keyframe_every.total_seconds() // 60)}), so "
+            f"around capture gaps neighbouring instants can promote the same still twice. Set "
+            f"tolerance_minutes to at most half the step."
+        )
+
+    frames_per_day = len(config.keyframe_times())
     for cadence in keyframe_cadences:
         output_fps = config.output_fps_for(cadence.name)
-        if output_fps >= FLIPBOOK_FPS:
+        # Only the one-a-day shape is a flipbook; dense promotion is what makes
+        # a real playback rate reasonable.
+        if config.keyframe_every is None and output_fps >= FLIPBOOK_FPS:
             warnings.append(
                 f"output_fps for the {cadence.name} render is {output_fps}, so a 31-frame month "
                 f"plays in {31 / output_fps:.1f}s. One frame per day wants something nearer "
@@ -288,10 +315,11 @@ def validate_config(config: Config) -> list[str]:
             )
 
         min_frames = config.min_frames_for(cadence.name)
-        if min_frames > SHORTEST_MONTH_FRAMES:
+        shortest_month = SHORTEST_MONTH_FRAMES * frames_per_day
+        if min_frames > shortest_month:
             warnings.append(
                 f"min_frames for the {cadence.name} render is {min_frames}, above the "
-                f"{SHORTEST_MONTH_FRAMES} frames February can hold at one a day, so it would "
+                f"{shortest_month} frames February can hold at {frames_per_day} a day, so it would "
                 f"never render."
             )
 
@@ -324,6 +352,18 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
     ).expanduser()
 
     nvrs = _parse_nvrs(parser)
+
+    # Dense keyframe promotion. The two keys only make sense together: a step
+    # with no window has no start, a window with no step has no cadence.
+    keyframe_every_minutes = parser.getint("keyframe", "every_minutes", fallback=0)
+    keyframe_between = parser.get("keyframe", "between", fallback="").strip()
+    if bool(keyframe_every_minutes) != bool(keyframe_between):
+        raise ValueError(
+            "[keyframe] every_minutes and between must be set together: the step says how "
+            "often to promote, the window says between which local times."
+        )
+    if keyframe_every_minutes < 0:
+        raise ValueError("[keyframe] every_minutes cannot be negative.")
 
     return Config(
         nvrs=nvrs,
@@ -363,6 +403,8 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
             parser, "image_capture_library", "keyframe_retention_days",
             fallback=DEFAULT_KEYFRAME_RETENTION_DAYS,
         ),
+        keyframe_every=timedelta(minutes=keyframe_every_minutes) if keyframe_every_minutes else None,
+        keyframe_window=_parse_time_window(keyframe_between) if keyframe_between else None,
         timelapse_retention=_parse_timelapse_retention(parser, cadences),
         minimum_free_bytes=int(
             max(0.0, parser.getfloat(

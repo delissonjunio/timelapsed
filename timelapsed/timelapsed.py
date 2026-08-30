@@ -150,11 +150,11 @@ def pending_keyframes(
 ) -> list[datetime]:
     """Instants that should have a keyframe and do not, newest first.
 
-    One per local day at `config.keyframe_at`, expressed in UTC. Derived from the
-    filesystem exactly as `pending_render_windows` is: a promotion lost to a
-    crash, to a restart, or to a camera that was down at noon and came back at
-    12:20 heals on the next pass instead of leaving a permanent hole in the
-    progress video.
+    One per local day per entry in `config.keyframe_times()`, expressed in UTC.
+    Derived from the filesystem exactly as `pending_render_windows` is: a
+    promotion lost to a crash, to a restart, or to a camera that was down at
+    noon and came back at 12:20 heals on the next pass instead of leaving a
+    permanent hole in the progress video.
 
     Bounded by `image_retention`, because a still that has already been pruned
     cannot be promoted. That bound is the honest one and it is short -- eight days
@@ -171,13 +171,16 @@ def pending_keyframes(
     # done" is an exact match rather than a window search.
     already_promoted = set(keyframes)
 
+    times_of_day = config.keyframe_times()
+
     missing: list[datetime] = []
     local_day = now.astimezone(zone).date()
     while local_day >= oldest_day:
-        target = datetime.combine(local_day, config.keyframe_at, tzinfo=zone).astimezone(timezone.utc)
-        # Today is only a candidate once its keyframe time has actually passed.
-        if target <= now and target not in already_promoted:
-            missing.append(target)
+        for time_of_day in reversed(times_of_day):
+            target = datetime.combine(local_day, time_of_day, tzinfo=zone).astimezone(timezone.utc)
+            # An instant is only a candidate once it has actually passed.
+            if target <= now and target not in already_promoted:
+                missing.append(target)
         local_day -= timedelta(days=1)
 
     return missing
@@ -186,7 +189,7 @@ def pending_keyframes(
 def promote_keyframes(
     library: ImageCaptureLibrary, config: Config, channel_id: str, now: datetime
 ) -> int:
-    """Promote one still per local day into the keyframe track. Returns how many.
+    """Promote one still per scheduled instant into the keyframe track. Returns how many.
 
     Scanning the still directory is the whole cost -- ~69,000 files at a 10 second
     interval over 8 days of retention -- so it happens once and every missing day

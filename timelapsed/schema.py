@@ -232,6 +232,13 @@ class Config:
     keyframe_at: time
     keyframe_tolerance: timedelta
     keyframe_retention: timedelta | None
+    # Dense promotion: a keyframe every `keyframe_every` across the local
+    # wall-clock window `keyframe_window` (inclusive of both ends), instead of
+    # the single daily `keyframe_at`. The window is what keeps the sun in the
+    # frame: promoting around the clock puts an IR-grey night between every
+    # daylight second of the monthly render. None means one keyframe a day.
+    keyframe_every: timedelta | None
+    keyframe_window: tuple[time, time] | None
     # Keyed by cadence name: hourly videos are numerous and disposable, weekly
     # ones are the archive, so they do not share a retention.
     timelapse_retention: dict[str, timedelta | None]
@@ -317,6 +324,25 @@ class Config:
     def retention_for_source(self, source: SourceTrack) -> timedelta | None:
         """How long the track feeding a cadence keeps its frames. None means forever."""
         return self.image_retention if source == "image" else self.keyframe_retention
+
+    def keyframe_times(self) -> list[time]:
+        """The local wall-clock instants each day should hold a keyframe for.
+
+        A single noon under the default configuration; with `keyframe_every`
+        set, every step across `keyframe_window`, both ends included -- a
+        06:00-18:00 window at 15 minutes promotes 06:00 through 18:00.
+        """
+        if self.keyframe_every is None:
+            return [self.keyframe_at]
+        first, last = self.keyframe_window
+        step = int(self.keyframe_every.total_seconds() // 60)
+        minute = first.hour * 60 + first.minute
+        stop = last.hour * 60 + last.minute
+        found = []
+        while minute <= stop:
+            found.append(time(minute // 60, minute % 60))
+            minute += step
+        return found
 
     def min_frames_for(self, cadence_name: str) -> int:
         """Fewest frames worth rendering for this cadence."""

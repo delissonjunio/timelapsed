@@ -381,3 +381,68 @@ def test_a_render_survives_a_channel_that_answers_png(library, png_bytes):
     )
 
     assert stored is not None
+
+
+# --- dense promotion -------------------------------------------------------
+
+@pytest.fixture
+def dense_config(keyframe_config):
+    """Every six hours across the daylight window: 06:00, 12:00 and 18:00 local."""
+    keyframe_config.keyframe_every = timedelta(hours=6)
+    keyframe_config.keyframe_window = (time(6, 0), time(18, 0))
+    return keyframe_config
+
+
+def local(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
+    """A Sao Paulo wall-clock instant, as the UTC datetime keyframes are named in."""
+    return datetime.combine(
+        date(year, month, day), time(hour, minute), tzinfo=SAO_PAULO
+    ).astimezone(timezone.utc)
+
+
+def test_pending_covers_every_instant_of_the_window(library, dense_config):
+    """Newest first, only instants that have passed, nothing outside the window."""
+    missing = pending_keyframes(library, dense_config, "1", local(2025, 6, 2, 7))
+
+    assert missing[:4] == [
+        local(2025, 6, 2, 6),
+        local(2025, 6, 1, 18),
+        local(2025, 6, 1, 12),
+        local(2025, 6, 1, 6),
+    ]
+    # Never before the window opens or after it closes, whatever the day.
+    assert all(6 <= target.astimezone(SAO_PAULO).hour <= 18 for target in missing)
+
+
+def test_promotion_fills_the_whole_window(library, dense_config, jpeg_bytes):
+    store_stills_across(
+        library, "1", jpeg_bytes,
+        local(2025, 6, 1, 5, 30), local(2025, 6, 1, 18, 30),
+        spacing=timedelta(minutes=5),
+    )
+
+    promoted = promote_keyframes(library, dense_config, "1", local(2025, 6, 1, 19))
+
+    assert promoted == 3
+    assert library.image_timestamps("1", "keyframe") == [
+        local(2025, 6, 1, 6), local(2025, 6, 1, 12), local(2025, 6, 1, 18)
+    ]
+
+
+def test_an_outage_inside_the_window_leaves_only_that_instant_absent(library, dense_config, jpeg_bytes):
+    store_stills_across(
+        library, "1", jpeg_bytes,
+        local(2025, 6, 1, 5, 30), local(2025, 6, 1, 10),
+        spacing=timedelta(minutes=5),
+    )
+    store_stills_across(
+        library, "1", jpeg_bytes,
+        local(2025, 6, 1, 14), local(2025, 6, 1, 18, 30),
+        spacing=timedelta(minutes=5),
+    )
+
+    promote_keyframes(library, dense_config, "1", local(2025, 6, 1, 19))
+
+    assert library.image_timestamps("1", "keyframe") == [
+        local(2025, 6, 1, 6), local(2025, 6, 1, 18)
+    ]

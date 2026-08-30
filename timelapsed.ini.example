@@ -88,6 +88,16 @@ at = 12:00
 # still within this of the time (the camera was down over noon) and that day is
 # simply absent from the video. Must be longer than interval_seconds.
 tolerance_minutes = 30
+# Dense promotion: a keyframe every `every_minutes` across the local `between`
+# window instead of the single daily `at`, both ends included. This is how a
+# monthly render becomes a real video rather than a flipbook -- a 06:00-18:00
+# window at 15 minutes gives a month about a minute of playback at
+# output_fps.monthly = 24. The window exists to keep the sun in the frame:
+# promoting around the clock puts an IR-grey night between every daylight
+# second. Set the two together, drop tolerance_minutes to at most half the
+# step, and raise output_fps.monthly / output_fps.progress to match.
+#every_minutes = 15
+#between = 06:00-18:00
 
 [image_capture_library]
 # Where images and videos are written. Needs a lot of room; see docs/Storage-Planning.md.

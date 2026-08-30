@@ -66,9 +66,10 @@ comes back.
 
 ### The construction-progress cadences
 
-`monthly` and `progress` are a different kind of video from the other three: one frame per day
-rather than one every few seconds. `monthly` covers one calendar month; `progress` covers everything
-captured so far, in one file, re-rendered on the 1st.
+`monthly` and `progress` are a different kind of video from the other three: one frame per day —
+or per `[keyframe] every_minutes` step, when dense promotion is on — rather than one every few
+seconds. `monthly` covers one calendar month; `progress` covers everything captured so far, in one
+file, re-rendered on the 1st.
 
 Both read the **keyframe track** rather than the stills — see `[keyframe]` below and
 [Architecture](Architecture.md) — because a month of stills does not fit on the disk. Enabling them
@@ -126,8 +127,28 @@ The daily construction-progress frame. Only read when a keyframe-sourced cadence
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `at` | no | `12:00` | Local wall-clock time to take the daily frame at, as 24-hour `HH:MM`, on the `[timelapse] timezone`. An unparseable value is a startup error. |
-| `tolerance_minutes` | no | `30` | How far from `at` a stored still may be and still count as that day's frame. |
+| `at` | no | `12:00` | Local wall-clock time to take the daily frame at, as 24-hour `HH:MM`, on the `[timelapse] timezone`. An unparseable value is a startup error. Ignored when `every_minutes` is set. |
+| `tolerance_minutes` | no | `30` | How far from the scheduled instant a stored still may be and still count as its frame. |
+| `every_minutes` | no | unset | Dense promotion: a keyframe every this many minutes across `between`, instead of the single daily `at`. Must be set together with `between`. |
+| `between` | no | unset | The local wall-clock window dense promotion covers, as `HH:MM-HH:MM`, both ends included. May not cross midnight. |
+
+### Dense promotion: making the monthly a real video
+
+One frame a day makes the monthly a flipbook: a month plays in a few seconds however low the frame
+rate is pushed. Setting `every_minutes` and `between` promotes a keyframe on every step across the
+window each day — `every_minutes = 15` with `between = 06:00-18:00` turns a month into about a
+minute of playback at `output_fps.monthly = 24`, and the `progress` video grows by a couple of
+seconds a day instead of a couple of seconds a month.
+
+The window is what keeps the sun in the frame: promoting around the clock on infrared cameras puts
+a grey night between every daylight second of playback. When going dense, also drop
+`tolerance_minutes` to at most half of `every_minutes` (Timelapsed warns otherwise — around capture
+gaps a wider tolerance can promote the same still for two neighbouring instants) and raise
+`output_fps.monthly` / `output_fps.progress` to the rate you actually want.
+
+Keyframes promoted before the change stay: earlier days keep their single noon frame and play as a
+brief flipbook prefix in the next render, then the dense days take over. Storage stays small — a
+1080p still is a few hundred KB, so even 15-minute promotion is a few GB per channel per year.
 
 ### Why a time of day and not an interval
 

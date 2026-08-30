@@ -98,6 +98,8 @@ def config(tmp_path: Path) -> Config:
         keyframe_at=time(12, 0),
         keyframe_tolerance=timedelta(minutes=30),
         keyframe_retention=None,
+        keyframe_every=None,
+        keyframe_window=None,
         timelapse_retention={"hourly": None, "daily": None, "weekly": None},
         minimum_free_bytes=5_000_000_000,
         archive_root=None,

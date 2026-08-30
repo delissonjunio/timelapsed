@@ -499,3 +499,86 @@ def test_the_shipped_template_validates_clean_with_the_calendar_cadences_on(tmp_
     assert config.min_frames_for("weekly") == 60
     assert config.longest_cadence_window == timedelta(days=7)
     assert validate_config(config) == []
+
+
+# --- dense keyframe promotion -----------------------------------------------
+
+DENSE_KEYFRAME_CONFIG = KEYFRAME_CONFIG.replace(
+    "tolerance_minutes = 45\n",
+    "tolerance_minutes = 7\nevery_minutes = 15\nbetween = 06:00-18:00\n",
+)
+
+
+def test_dense_keyframe_settings_are_read(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", DENSE_KEYFRAME_CONFIG)
+
+    config = get_config((str(path),))
+
+    assert config.keyframe_every == timedelta(minutes=15)
+    assert config.keyframe_window == (time(6, 0), time(18, 0))
+
+
+def test_keyframe_times_includes_both_ends_of_the_window(tmp_path: Path):
+    path = write_config(tmp_path / "timelapsed.ini", DENSE_KEYFRAME_CONFIG)
+
+    times = get_config((str(path),)).keyframe_times()
+
+    assert times[0] == time(6, 0)
+    assert times[-1] == time(18, 0)
+    assert len(times) == 49  # 12 hours at 15 minutes, both ends
+
+
+def test_keyframe_times_is_the_single_daily_instant_by_default(config):
+    assert config.keyframe_times() == [time(12, 0)]
+
+
+@pytest.mark.parametrize("extra", ["every_minutes = 15", "between = 06:00-18:00"])
+def test_dense_promotion_needs_both_keys(tmp_path: Path, extra):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        KEYFRAME_CONFIG.replace("tolerance_minutes = 45\n", f"tolerance_minutes = 45\n{extra}\n"),
+    )
+
+    with pytest.raises(ValueError, match="set together"):
+        get_config((str(path),))
+
+
+def test_a_backwards_keyframe_window_is_a_startup_error(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        DENSE_KEYFRAME_CONFIG.replace("between = 06:00-18:00", "between = 18:00-06:00"),
+    )
+
+    with pytest.raises(ValueError, match="cross midnight"):
+        get_config((str(path),))
+
+
+def _with_dense_keyframes(config):
+    config = _with_calendar_cadences(config)
+    config.keyframe_every = timedelta(minutes=15)
+    config.keyframe_window = (time(6, 0), time(18, 0))
+    config.keyframe_tolerance = timedelta(minutes=7)
+    return config
+
+
+def test_validate_allows_a_real_frame_rate_for_dense_keyframes(config):
+    """The flipbook warning is about one frame a day; dense promotion is the cure."""
+    config = _with_dense_keyframes(config)
+    config.timelapse_output_fps_by_cadence = {"monthly": 24, "progress": 24}
+
+    assert validate_config(config) == []
+
+
+def test_validate_warns_when_the_tolerance_can_double_promote(config):
+    config = _with_dense_keyframes(config)
+    config.keyframe_tolerance = timedelta(minutes=30)
+
+    assert any("promote the same still twice" in warning for warning in validate_config(config))
+
+
+def test_min_frames_headroom_scales_with_dense_promotion(config):
+    """February holds far more than 28 frames once promotion is denser than daily."""
+    config = _with_dense_keyframes(config)
+    config.timelapse_min_frames_by_cadence = {"monthly": 200, "progress": 10}
+
+    assert validate_config(config) == []
