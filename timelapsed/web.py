@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, abort, request
-from waitress import create_server
+from waitress.server import create_server
 
 from timelapsed import telemetry
 from timelapsed.analysis.index import from_epoch

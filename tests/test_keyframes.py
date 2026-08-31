@@ -355,8 +355,10 @@ def test_deflicker_does_not_cost_any_frames(library, keyframe_config, populate_k
         output_fps=6, min_frames=5, source="keyframe", deflicker=deflicker,
     )
 
-    plain = probe_video(render(False))
-    smoothed = probe_video(render(True))
+    plain_path, smoothed_path = render(False), render(True)
+    assert plain_path is not None and smoothed_path is not None
+    plain = probe_video(plain_path)
+    smoothed = probe_video(smoothed_path)
 
     assert abs(float(plain["duration"]) - float(smoothed["duration"])) < 0.2
 

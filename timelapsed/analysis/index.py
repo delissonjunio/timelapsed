@@ -456,6 +456,7 @@ class AnalysisIndex:
                 "VALUES (?, ?, ?, ?, 1, ?)",
                 (channel, kind, at, at, score),
             )
+        assert cursor.lastrowid is not None  # always set after an INSERT
         return int(cursor.lastrowid)
 
     def extend_event(self, event_id: int, at: int, score: float) -> None:
@@ -612,6 +613,7 @@ class AnalysisIndex:
                 "VALUES (?, ?, ?, 0)",
                 (kind, at, at),
             )
+        assert cursor.lastrowid is not None  # always set after an INSERT
         return int(cursor.lastrowid)
 
     def add_signature(
@@ -766,6 +768,7 @@ class AnalysisIndex:
                 (event_id, channel, at, at, text, confidence, votes, reads, tally,
                  x, y, w, h, crop_path),
             )
+        assert cursor.lastrowid is not None  # always set after an INSERT
         return int(cursor.lastrowid)
 
     def extend_plate(

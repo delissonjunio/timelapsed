@@ -1,5 +1,6 @@
 import pytest
 import requests
+import requests.auth
 
 from timelapsed.nvr_capture_agent import DEFAULT_TIMEOUT_SECONDS, NVRCaptureAgent
 from timelapsed.schema import VideoResolution

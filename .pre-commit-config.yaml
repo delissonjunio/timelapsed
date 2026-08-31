@@ -1,0 +1,12 @@
+# Type checking gates every commit. A local hook rather than the pyright
+# mirror repo: pyright needs the project's own environment to resolve
+# third-party imports, and only `poetry run` has it.
+repos:
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: poetry run pyright
+        language: system
+        types: [python]
+        pass_filenames: false

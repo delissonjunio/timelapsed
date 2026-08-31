@@ -140,7 +140,9 @@ def _pool(group: list[dict]) -> dict:
         reads = max(row["votes"], 1)
         tally = tally_reads([(row["text"], row["confidence"])] * reads, existing=tally)
 
-    text, confidence, agreed, reads = vote_tally(tally)
+    voted = vote_tally(tally)
+    assert voted is not None  # rows only ever store texts a past vote produced
+    text, confidence, agreed, reads = voted
     if not looks_brazilian(text):
         # Pooling must not turn readable plates into a malformed one. Fall back
         # to whichever member text the most reads stood behind.
@@ -224,7 +226,7 @@ def report(pooled: list[dict]) -> None:
 
 
 def run(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--index", type=Path, help="Index to work on. Defaults to the config's.")
     parser.add_argument(
         "--gap-minutes", type=int, default=DEFAULT_GAP_MINUTES,

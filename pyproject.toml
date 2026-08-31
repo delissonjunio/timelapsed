@@ -25,6 +25,8 @@ newrelic = "^10.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"
+pyright = "^1.1.411"
+pre-commit = "^4.6.2"
 
 [tool.poetry.scripts]
 timelapsed = "timelapsed.timelapsed:run"
@@ -35,6 +37,10 @@ timelapsed-archiver = "timelapsed.archiver:run"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.pyright]
+include = ["timelapsed", "tests"]
+pythonVersion = "3.11"
 
 [build-system]
 requires = ["poetry-core"]

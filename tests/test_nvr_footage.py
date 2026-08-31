@@ -1,6 +1,7 @@
 import uuid
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 import requests
@@ -123,12 +124,14 @@ class FakeSession:
 @pytest.fixture
 def client():
     built = NVRFootageClient("http://nvr.local/", "admin", "pw")
-    built.session = FakeSession()
+    built.session = cast(Any, FakeSession())
     return built
 
 
 def request_field(call, tag):
-    return ElementTree.fromstring(call["data"]).find(f".//{tag}").text
+    field = ElementTree.fromstring(call["data"]).find(f".//{tag}")
+    assert field is not None
+    return field.text
 
 
 # --- the search request ---
@@ -433,6 +436,12 @@ class ScriptedClient:
             raise result
         return iter(result)
 
+    def oldest_recording(self, channel, start, end):
+        raise NotImplementedError("the indexer never probes the horizon")
+
+    def download(self, playback_uri, destination, deadline_seconds):
+        raise NotImplementedError("the indexer maps footage, never fetches it")
+
 
 def segment(channel, started_at, ended_at, size=1000):
     from timelapsed.nvr_footage import RecordedSegment
@@ -458,7 +467,7 @@ def indexer(index):
     # can script it without caring that the indexer routes per channel now.
     client = ScriptedClient()
     built = SegmentIndexer({"5": client, "6": client}, index, ["5", "6"])
-    built.client = client
+    built.client = client  # pyright: ignore[reportAttributeAccessIssue]
     return built
 
 

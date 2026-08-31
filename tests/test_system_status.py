@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -43,7 +44,7 @@ def capture(config):
         for moment in taken_at:
             library.store_image(channel, "jpg", payload, moment)
 
-    _capture.library = library
+    _capture.library = library  # pyright: ignore[reportFunctionMemberAccess]
     return _capture
 
 
@@ -63,6 +64,7 @@ def test_scan_counts_sizes_and_dates_a_frame_directory(tmp_path, capture, config
 
     assert scan.files == 5
     assert scan.bytes == 5 * len(FRAME)
+    assert scan.newest is not None and scan.oldest is not None
     assert scan.newest - scan.oldest == timedelta(seconds=40)
 
 
@@ -354,7 +356,7 @@ def test_analysis_that_is_not_gaining_on_the_cameras_is_reported_as_losing(captu
     index.set_watermark("1", to_epoch(now - timedelta(minutes=10)))
 
     collector = SystemStatusCollector(config)
-    collector.progress = FixedRate(0.5)  # Half real time: the backlog only grows.
+    collector.progress = cast(Any, FixedRate(0.5))  # Half real time: the backlog only grows.
 
     row = next(
         entry for entry in collector.report(recognition=Reader(index))["analysis"]["channels"]
@@ -370,7 +372,7 @@ def test_a_watermark_that_never_moves_is_a_stopped_analyzer_not_a_slow_one(captu
     index.set_watermark("1", to_epoch(now - timedelta(minutes=30)))
 
     collector = SystemStatusCollector(config)
-    collector.progress = FixedRate(0.0)
+    collector.progress = cast(Any, FixedRate(0.0))
 
     report = collector.report(recognition=Reader(index))
     row = next(entry for entry in report["analysis"]["channels"] if entry["channel"] == "1")
@@ -386,7 +388,7 @@ def test_a_channel_that_is_caught_up_is_not_called_stopped_for_standing_still(ca
     index.set_watermark("1", to_epoch(max(frames)))
 
     collector = SystemStatusCollector(config)
-    collector.progress = FixedRate(0.0)
+    collector.progress = cast(Any, FixedRate(0.0))
 
     report = collector.report(recognition=Reader(index))
     row = next(entry for entry in report["analysis"]["channels"] if entry["channel"] == "1")
@@ -401,7 +403,7 @@ def test_analysis_that_is_gaining_is_told_how_long_it_has_left(capture, config, 
 
     collector = SystemStatusCollector(config)
     # Three times real time, so it closes the gap at 2x per second of wall clock.
-    collector.progress = FixedRate(3.0)
+    collector.progress = cast(Any, FixedRate(3.0))
 
     row = next(
         entry for entry in collector.report(recognition=Reader(index))["analysis"]["channels"]
@@ -418,7 +420,7 @@ def test_a_channel_that_is_current_is_never_given_an_eta(capture, config, index,
     index.set_watermark("1", to_epoch(max(frames)))
 
     collector = SystemStatusCollector(config)
-    collector.progress = FixedRate(4.0)
+    collector.progress = cast(Any, FixedRate(4.0))
 
     row = next(
         entry for entry in collector.report(recognition=Reader(index))["analysis"]["channels"]

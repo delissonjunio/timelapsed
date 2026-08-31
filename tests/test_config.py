@@ -410,6 +410,7 @@ def test_a_keyframe_cadence_does_not_stretch_the_protected_window(tmp_path: Path
         "hourly", "daily", "weekly", "monthly", "progress"
     ]
     assert config.longest_cadence_window == timedelta(days=7)
+    assert config.longest_image_cadence is not None
     assert config.longest_image_cadence.name == "weekly"
     assert not any("monthly" in warning for warning in validate_config(config))
 

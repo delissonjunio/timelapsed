@@ -11,6 +11,7 @@ decides what a detection means.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import onnxruntime as ort
@@ -58,7 +59,7 @@ def _letterbox(image: np.ndarray, size: int, pad_value: int) -> tuple[np.ndarray
     """Resize preserving aspect ratio, pad to square. Returns the inverse transform."""
     ratio = min(size / image.shape[0], size / image.shape[1])
     height, width = int(round(image.shape[0] * ratio)), int(round(image.shape[1] * ratio))
-    resized = np.asarray(Image.fromarray(image).resize((width, height), Image.BILINEAR))
+    resized = np.asarray(Image.fromarray(image).resize((width, height), Image.Resampling.BILINEAR))
     canvas = np.full((size, size, 3), pad_value, dtype=np.uint8)
     canvas[:height, :width] = resized
     return canvas, ratio, 0.0, 0.0
@@ -100,7 +101,7 @@ class ObjectDetector:
         """`image` is RGB uint8. YOLOX wants BGR at 0-255 with no normalisation."""
         canvas, ratio, _, _ = _letterbox(image, self.size, 114)
         tensor = canvas[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32)
-        raw = self.session.run(None, {self.input_name: np.ascontiguousarray(tensor)})[0]
+        raw = cast(np.ndarray, self.session.run(None, {self.input_name: np.ascontiguousarray(tensor)})[0])
 
         predictions = self._decode(raw)[0]
         scores = predictions[:, 4:5] * predictions[:, 5:]
@@ -169,13 +170,13 @@ class BodyEmbedder:
 
     def __call__(self, crop_rgb: np.ndarray) -> np.ndarray:
         resized = np.asarray(
-            Image.fromarray(crop_rgb).resize((self.width, self.height), Image.BICUBIC)
+            Image.fromarray(crop_rgb).resize((self.width, self.height), Image.Resampling.BICUBIC)
         )
         tensor = (resized.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
         tensor = tensor.transpose(2, 0, 1)[None]
-        vector = self.session.run(
+        vector = cast(np.ndarray, self.session.run(
             None, {self.input_name: np.ascontiguousarray(tensor)}
-        )[0].flatten()
+        )[0]).flatten()
         return vector / (np.linalg.norm(vector) + 1e-9)
 
 
@@ -209,9 +210,9 @@ class PlateReader:
     def __call__(self, crop_rgb: np.ndarray, detect_threshold: float = 0.4) -> list[PlateRead]:
         canvas, ratio, _, _ = _letterbox(crop_rgb, self.detector_size, 114)
         tensor = (canvas.transpose(2, 0, 1)[None] / 255.0).astype(np.float32)
-        raw = self.detector.run(
+        raw = cast(np.ndarray, self.detector.run(
             None, {self.detector_input: np.ascontiguousarray(tensor)}
-        )[0]
+        )[0])
         if raw.size == 0:
             return []
 
@@ -240,11 +241,13 @@ class PlateReader:
 
     def _read(self, plate_rgb: np.ndarray) -> tuple[str, float, int]:
         resized = np.asarray(
-            Image.fromarray(plate_rgb).resize((self.ocr_width, self.ocr_height), Image.BILINEAR)
+            Image.fromarray(plate_rgb).resize((self.ocr_width, self.ocr_height), Image.Resampling.BILINEAR)
         )
         # This model takes uint8 straight through; it normalises internally.
         tensor = resized.astype(np.uint8)[None]
-        plate_logits, region_logits = self.ocr.run(None, {self.ocr_input: tensor})
+        outputs = self.ocr.run(None, {self.ocr_input: tensor})
+        plate_logits = cast(np.ndarray, outputs[0])
+        region_logits = cast(np.ndarray, outputs[1])
 
         # Already softmaxed inside the graph -- each slot's 37 values sum to 1.
         # Applying softmax again here reads as ~0.05 confidence on a perfect

@@ -66,11 +66,17 @@ def test_malformed_plates_are_rejected(text):
 # --- plate voting ---
 
 
+def must_vote(reads):
+    result = vote(reads)
+    assert result is not None
+    return result
+
+
 def test_voting_recovers_a_plate_no_single_frame_read_correctly():
     """The real failure mode at ~52px: most characters right, rarely the same
     one wrong twice. Position-wise majority beats trusting any one read."""
     reads = [("TZT4E17", 0.8), ("TZF4L17", 0.8), ("TZF4E17", 0.8), ("TIF4E17", 0.8)]
-    text, confidence, agreed = vote(reads)
+    text, confidence, agreed = must_vote(reads)
     assert text == "TZF4E17"
     assert agreed == 1
     assert confidence == pytest.approx(0.8)
@@ -78,7 +84,7 @@ def test_voting_recovers_a_plate_no_single_frame_read_correctly():
 
 def test_voting_reports_how_many_frames_agreed_outright():
     reads = [("ABC1D23", 0.9), ("ABC1D23", 0.9), ("ABC1X23", 0.5)]
-    text, _, agreed = vote(reads)
+    text, _, agreed = must_vote(reads)
     assert text == "ABC1D23"
     assert agreed == 2
 
@@ -86,12 +92,12 @@ def test_voting_reports_how_many_frames_agreed_outright():
 def test_voting_weights_by_confidence_not_just_count():
     """A confident read should outweigh two hesitant ones on the same slot."""
     reads = [("ABC1D23", 0.99), ("ABC1X23", 0.30), ("ABC1X23", 0.31)]
-    text, _, _ = vote(reads)
+    text, _, _ = must_vote(reads)
     assert text == "ABC1D23"
 
 
 def test_voting_ignores_reads_of_the_wrong_length():
-    assert vote([("ABC12", 0.9), ("ABC1D23", 0.9)])[0] == "ABC1D23"
+    assert must_vote([("ABC12", 0.9), ("ABC1D23", 0.9)])[0] == "ABC1D23"
     assert vote([("ABC12", 0.9), ("TOOLONG12", 0.9)]) is None
 
 

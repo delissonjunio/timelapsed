@@ -332,7 +332,7 @@ class Config:
         set, every step across `keyframe_window`, both ends included -- a
         06:00-18:00 window at 15 minutes promotes 06:00 through 18:00.
         """
-        if self.keyframe_every is None:
+        if self.keyframe_every is None or self.keyframe_window is None:
             return [self.keyframe_at]
         first, last = self.keyframe_window
         step = int(self.keyframe_every.total_seconds() // 60)

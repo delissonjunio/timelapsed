@@ -144,10 +144,8 @@ def frames_by_source(
     directory of tens of thousands of files. An image-only configuration never
     touches the keyframe directory.
     """
-    return {
-        source: library.image_timestamps(channel_id, source)
-        for source in {cadence.source for cadence in config.timelapse_cadences}
-    }
+    sources: set[SourceTrack] = {cadence.source for cadence in config.timelapse_cadences}
+    return {source: library.image_timestamps(channel_id, source) for source in sources}
 
 
 def pending_keyframes(

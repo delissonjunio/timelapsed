@@ -19,7 +19,7 @@ sudo apt install ffmpeg      # Debian/Ubuntu
 ## Running the tests
 
 ```bash
-.venv/bin/python -m pytest              # all 351
+.venv/bin/python -m pytest
 .venv/bin/python -m pytest tests/test_image_processor.py -v
 .venv/bin/python -m pytest -k cadence
 ```
@@ -52,6 +52,31 @@ random port and drive it with `urllib`.
 
 The clock is frozen in `test_daemon.py` by patching `timelapsed.timelapsed.datetime` and driving
 `time.sleep`, so a test covering a week of rollovers runs in milliseconds.
+
+## Type checking
+
+The codebase is pyright-clean at the default (standard) level, over both `timelapsed/` and
+`tests/` — configured in `pyproject.toml` under `[tool.pyright]`, with pyright itself a poetry
+dev dependency:
+
+```bash
+poetry run pyright
+```
+
+A pre-commit hook runs the same check on every commit. Install it once per clone:
+
+```bash
+poetry run pre-commit install
+```
+
+The hook lives in `.pre-commit-config.yaml` as a local `poetry run pyright` hook rather than the
+pyright mirror repository, because pyright has to resolve the project's third-party imports and
+only the poetry environment holds them.
+
+Keep it at zero errors by fixing the types, not by suppressing them. In tests, a
+`# pyright: ignore[rule]` naming its specific rule is fine for fakes and test-only attributes
+(the `.client` handle the archiver tests hang off the real object, say); `cast()` marks the
+genuine boundaries, like onnxruntime outputs that are typed as a union these graphs never emit.
 
 ## Project layout
 

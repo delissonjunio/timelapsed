@@ -342,7 +342,9 @@ class EventTracker:
         """Fold this sighting into the plate already sitting in that spot."""
         stored = json.loads(track["tally"]) if track["tally"] else {}
         merged = tally_reads(event.plate_reads, existing=stored)
-        text, confidence, agreed, reads = vote_tally(merged)
+        voted = vote_tally(merged)
+        assert voted is not None  # the row exists, so the tally cannot be empty
+        text, confidence, agreed, reads = voted
         if not looks_brazilian(text):
             # More evidence should never turn a good plate into a malformed one.
             # Keep what the row says and let the tally go on growing; the next

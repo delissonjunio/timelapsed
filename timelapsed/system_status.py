@@ -398,13 +398,14 @@ class SystemStatusCollector:
 
     def report(self, recognition=None, force: bool = False) -> dict:
         with self._lock:
+            previous = self._cached
             fresh_enough = (
-                self._cached is not None
+                previous is not None
                 and not force
                 and (time.monotonic() - self._cached_at) < self.ttl_seconds
             )
-            if fresh_enough:
-                cached = dict(self._cached)
+            if fresh_enough and previous is not None:
+                cached = dict(previous)
                 cached["cached"] = True
                 cached["cache_age_seconds"] = round(time.monotonic() - self._cached_at, 1)
                 return cached

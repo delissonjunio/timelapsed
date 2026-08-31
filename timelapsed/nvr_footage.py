@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator, Protocol
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape
 
@@ -87,6 +87,21 @@ class RecordedSegment:
     ended_at: datetime
     size_bytes: int
     playback_uri: str
+
+
+class FootageClient(Protocol):
+    """The footage-driver seam: what the indexer and the archiver call.
+
+    Both drivers -- NVRFootageClient (ISAPI) and DahuaFootageClient -- satisfy
+    it, so the per-channel routing dicts are typed against this rather than
+    against either device's implementation.
+    """
+
+    def search(self, channel: str, start: datetime, end: datetime) -> Iterable[RecordedSegment]: ...
+
+    def oldest_recording(self, channel: str, start: datetime, end: datetime) -> datetime | None: ...
+
+    def download(self, playback_uri: str, destination: Path, deadline_seconds: float) -> int: ...
 
 
 def _search_time(moment: datetime, device_zone: timezone) -> str:
@@ -341,7 +356,7 @@ class NVRFootageClient:
         )
 
 
-def footage_client_for(nvr: NVRConfig):
+def footage_client_for(nvr: NVRConfig) -> FootageClient:
     """The right footage driver for one NVR, chosen by its configured type."""
     if nvr.kind == "dahua":
         from timelapsed.dahua import DahuaFootageClient
@@ -350,13 +365,13 @@ def footage_client_for(nvr: NVRConfig):
     return NVRFootageClient(nvr.url, nvr.username, nvr.password, nvr=nvr)
 
 
-def footage_clients_by_channel(config: Config) -> dict[str, NVRFootageClient]:
+def footage_clients_by_channel(config: Config) -> dict[str, FootageClient]:
     """One client per NVR, shared by its channels, keyed by global channel id.
 
     The mapping is what the indexer and the archiver route on, so neither ever
     holds an NVR of its own -- a channel id is enough to reach the right device.
     """
-    clients: dict[str, NVRFootageClient] = {}
+    clients: dict[str, FootageClient] = {}
     for nvr in config.nvrs:
         client = footage_client_for(nvr)
         for channel_id in nvr.channel_ids:
@@ -374,7 +389,7 @@ class SegmentIndexer:
     """
 
     def __init__(
-        self, clients: dict[str, NVRFootageClient], index: AnalysisIndex, channels: list[str]
+        self, clients: dict[str, FootageClient], index: AnalysisIndex, channels: list[str]
     ):
         self.clients = clients
         self.index = index

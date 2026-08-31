@@ -48,6 +48,7 @@ def test_a_dahua_file_path_gets_a_stable_derived_name():
 
     name = uri_segment_name(path)
 
+    assert name is not None
     assert name == uri_segment_name(path)  # stable
     assert name.startswith("dav-")
     assert "/" not in name and "[" not in name
@@ -58,6 +59,9 @@ def test_a_dahua_file_path_gets_a_stable_derived_name():
 
 class FakeClient:
     """Writes plausible MPEG-PS unless told to fail."""
+
+    def search(self, channel, start, end):
+        raise NotImplementedError("the archiver reads the mirror, never the device")
 
     def __init__(self):
         self.calls = []
@@ -74,6 +78,7 @@ class FakeClient:
 
     def download(self, playback_uri: str, destination: Path, deadline_seconds: float) -> int:
         name = uri_segment_name(playback_uri)
+        assert name is not None
         self.calls.append(name)
         if name in self.failures:
             destination.write_bytes(b"partial")
@@ -123,7 +128,7 @@ def make_archiver(index, root, channels, retention=None, minimum_free_bytes=0):
         retention=retention,
         minimum_free_bytes=minimum_free_bytes,
     )
-    built.client = client
+    built.client = client  # pyright: ignore[reportAttributeAccessIssue]
     return built
 
 
@@ -162,7 +167,7 @@ def test_a_segment_still_inside_the_settle_margin_waits(archiver, index):
     seed_segment(index, "5", "ch05_open", NOW - SETTLE, NOW - timedelta(minutes=5))
 
     assert archiver.run_once(NOW) == 0
-    assert archiver.client.calls == []
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_what_is_already_on_disk_is_not_refetched(archiver, index):
@@ -175,7 +180,7 @@ def test_what_is_already_on_disk_is_not_refetched(archiver, index):
     archiver.scan()
 
     assert archiver.run_once(NOW) == 0
-    assert archiver.client.calls == []
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_older_than_retention_is_never_fetched(index, tmp_path, fake_remux):
@@ -185,7 +190,7 @@ def test_older_than_retention_is_never_fetched(index, tmp_path, fake_remux):
     seed_segment(index, "5", "ch05_ancient", NOW - timedelta(days=30), NOW - timedelta(days=30, minutes=-2))
 
     assert archiver.run_once(NOW) == 0
-    assert archiver.client.calls == []
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
@@ -201,7 +206,7 @@ def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
     # The next pass does not hammer the segment the device has expired.
     archiver.client.calls.clear()
     archiver.run_once(NOW)
-    assert archiver.client.calls == []
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
 # --- the device's retention horizon ---

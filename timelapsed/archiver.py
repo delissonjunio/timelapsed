@@ -46,7 +46,7 @@ from timelapsed import telemetry
 from timelapsed.analysis.index import AnalysisIndex, from_epoch
 from timelapsed.config import get_config
 from timelapsed.dahua import dahua_segment_name
-from timelapsed.nvr_footage import NVRFootageClient, footage_clients_by_channel
+from timelapsed.nvr_footage import FootageClient, footage_clients_by_channel
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ class SegmentArchiver:
 
     def __init__(
         self,
-        clients: dict[str, NVRFootageClient],
+        clients: dict[str, FootageClient],
         index: AnalysisIndex,
         root: Path,
         channels: list[str],

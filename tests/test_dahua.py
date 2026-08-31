@@ -6,6 +6,7 @@ channels, a clock that admits no offset anywhere, and downloads whose failures
 arrive as HTTP 200 with a text body.
 """
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 import requests
@@ -41,9 +42,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            error = requests.exceptions.HTTPError(f"{self.status_code}")
-            error.response = self
-            raise error
+            raise requests.exceptions.HTTPError(f"{self.status_code}", response=cast(Any, self))
 
 
 class StreamResponse:
@@ -53,9 +52,7 @@ class StreamResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            error = requests.exceptions.HTTPError(f"{self.status_code}")
-            error.response = self
-            raise error
+            raise requests.exceptions.HTTPError(f"{self.status_code}", response=cast(Any, self))
 
     def iter_content(self, _size):
         return iter(self.chunks)
@@ -120,9 +117,10 @@ def device_clock(offset: timedelta = timedelta(0)) -> FakeResponse:
 @pytest.fixture
 def client():
     built = DahuaFootageClient("http://nvr.local/", "u", "p", nvr=NVR)
-    built.session = FakeSession()
+    session = FakeSession()
     # A device sitting on UTC unless a test scripts otherwise.
-    built.session.script("getCurrentTime", device_clock())
+    session.script("getCurrentTime", device_clock())
+    built.session = cast(Any, session)
     return built
 
 
@@ -331,7 +329,7 @@ def test_capture_asks_the_device_channel_and_returns_jpeg():
     agent = DahuaCaptureAgent("http://nvr.local", "u", "p", nvr=NVR)
     session = FakeSession()
     session.script("snapshot.cgi", FakeResponse("\xff\xd8jpeg", content_type="image/jpeg"))
-    agent._session = session
+    agent._session = cast(Any, session)
 
     content, extension = agent.capture_image("intelbras-2")
 
@@ -344,7 +342,7 @@ def test_capture_refuses_a_non_image_answer():
     agent = DahuaCaptureAgent("http://nvr.local", "u", "p", nvr=NVR)
     session = FakeSession()
     session.script("snapshot.cgi", FakeResponse("Error", content_type="text/plain"))
-    agent._session = session
+    agent._session = cast(Any, session)
 
     with pytest.raises(ValueError, match="expected an image"):
         agent.capture_image("intelbras-1")

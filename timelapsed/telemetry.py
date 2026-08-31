@@ -17,11 +17,13 @@ with or without monitoring and the tests never know the difference.
 import logging
 import os
 from contextlib import contextmanager
+from types import ModuleType
 
 logger = logging.getLogger(__name__)
 
-_agent = None
-_enabled = False
+# The imported newrelic.agent module once initialize() has run and the
+# environment asked for monitoring; None otherwise. Every helper guards on it.
+_agent: ModuleType | None = None
 
 
 def initialize() -> None:
@@ -31,8 +33,8 @@ def initialize() -> None:
     an unconditional import would tax every test run and CLI invocation for a
     feature that is off everywhere but the guest.
     """
-    global _agent, _enabled
-    if _enabled:
+    global _agent
+    if _agent is not None:
         return
     if not (os.environ.get("NEW_RELIC_LICENSE_KEY") or os.environ.get("NEW_RELIC_CONFIG_FILE")):
         return
@@ -52,7 +54,6 @@ def initialize() -> None:
     # startup backfill sweep -- the most interesting cycle of the day.
     agent.register_application(timeout=10.0)
     _agent = agent
-    _enabled = True
 
 
 @contextmanager
@@ -63,10 +64,11 @@ def task(name: str):
     logger.exception, so an error is filed exactly once, on the transaction it
     happened in.
     """
-    if not _enabled:
+    agent = _agent
+    if agent is None:
         yield
         return
-    with _agent.BackgroundTask(_agent.application(), name=name, group="Timelapsed"):
+    with agent.BackgroundTask(agent.application(), name=name, group="Timelapsed"):
         yield
 
 
@@ -85,7 +87,7 @@ def child() -> None:
     Works at any fork depth for the same reason, which matters because render
     processes fork from capture workers, not from the daemon.
     """
-    if not _enabled:
+    if _agent is None:
         return
     try:
         from newrelic.api.application import Application
@@ -110,13 +112,13 @@ def flush() -> None:
     children leave through os._exit, which never runs atexit -- without this a
     short-lived render's whole transaction vanishes with the process.
     """
-    if _enabled:
+    if _agent is not None:
         _agent.shutdown_agent(timeout=5.0)
 
 
 def ignore() -> None:
     """Drop the current transaction: health checks, passes that did nothing."""
-    if _enabled:
+    if _agent is not None:
         _agent.ignore_transaction()
 
 
@@ -127,23 +129,25 @@ def notice_error() -> None:
     lands on it; outside one it is recorded against the application, so a
     failure in a corner no transaction covers still shows up.
     """
-    if not _enabled:
+    agent = _agent
+    if agent is None:
         return
-    if _agent.current_transaction() is not None:
-        _agent.notice_error()
+    if agent.current_transaction() is not None:
+        agent.notice_error()
     else:
-        _agent.notice_error(application=_agent.application())
+        agent.notice_error(application=agent.application())
 
 
 def attribute(key: str, value) -> None:
     """A custom attribute on the current transaction (channel, window, ...)."""
-    if _enabled:
+    if _agent is not None:
         _agent.add_custom_attribute(key, value)
 
 
 def record_metric(name: str, value) -> None:
     """A custom metric, named Custom/... by convention."""
-    if not _enabled:
+    agent = _agent
+    if agent is None:
         return
-    application = None if _agent.current_transaction() is not None else _agent.application()
-    _agent.record_custom_metric(name, value, application=application)
+    application = None if agent.current_transaction() is not None else agent.application()
+    agent.record_custom_metric(name, value, application=application)

@@ -28,7 +28,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 from urllib.parse import quote
 
 import backoff
@@ -37,6 +37,12 @@ from requests.auth import HTTPDigestAuth
 
 from timelapsed.nvr_capture_agent import CONTENT_TYPE_TO_EXTENSION, MAX_CAPTURE_TRIES
 from timelapsed.schema import NVRConfig, VideoResolution
+
+if TYPE_CHECKING:
+    # Runtime imports of nvr_footage stay inside the functions that need them:
+    # nvr_footage imports this module back, and only the lazy import breaks the
+    # cycle.
+    from timelapsed.nvr_footage import RecordedSegment
 
 logger = logging.getLogger(__name__)
 
