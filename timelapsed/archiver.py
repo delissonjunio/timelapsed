@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from timelapsed import telemetry
 from timelapsed.analysis.index import AnalysisIndex
 from timelapsed.config import get_config
 from timelapsed.dahua import dahua_segment_name
@@ -228,6 +229,7 @@ class SegmentArchiver:
             self._archived.add(segment.name)
 
             elapsed = time.monotonic() - started
+            telemetry.record_metric("Custom/archiver/bytes_archived", written)
             logger.debug(
                 "Archived %s: %.1f MB in %.1fs", final.name, written / 1e6, elapsed
             )
@@ -307,12 +309,16 @@ class SegmentArchiver:
             if shutting_down:
                 break
             try:
-                self.fetch(segment)
+                # A named span inside the pass transaction, so one slow or
+                # failing channel stands out from the rest of the queue.
+                with telemetry.trace(f"fetch/{segment.channel}"):
+                    self.fetch(segment)
                 fetched += 1
             except Exception:
                 # One bad segment -- expired on the device, malformed PS --
                 # must not stop the replica behind it.
                 self._failed.add(segment.name)
+                telemetry.notice_error()
                 logger.exception(
                     "Failed to archive %s segment %s, skipping until restart",
                     segment.channel, segment.name,
@@ -368,14 +374,22 @@ def run() -> None:
     )
 
     while not shutting_down:
-        try:
-            fetched = archiver.run_once(datetime.now(tz=timezone.utc))
-        except Exception:
-            # The mirror table may not exist yet (analyzer running an older
-            # build), the device may be away: nothing here is fatal, the next
-            # pass simply asks again.
-            logger.exception("Archive pass failed, continuing")
-            fetched = 0
+        with telemetry.task("archiver/pass"):
+            try:
+                fetched = archiver.run_once(datetime.now(tz=timezone.utc))
+            except Exception:
+                # The mirror table may not exist yet (analyzer running an older
+                # build), the device may be away: nothing here is fatal, the next
+                # pass simply asks again.
+                telemetry.notice_error()
+                logger.exception("Archive pass failed, continuing")
+                fetched = 0
+            if fetched:
+                telemetry.record_metric("Custom/archiver/segments_archived", fetched)
+            else:
+                # A pass that found nothing pending repeats every minute all
+                # night; charting it would bury the ones that moved data.
+                telemetry.ignore()
 
         if fetched:
             logger.info("Archived %d segment(s)", fetched)

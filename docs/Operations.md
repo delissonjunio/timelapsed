@@ -310,7 +310,7 @@ New settings get defaults, so an old config keeps working — skim
 ### The daily viewer restart
 
 `timelapsed-web-restart.timer` bounces `timelapsed-web` at 04:00 (±15 minutes) every day, so a slow
-leak or a wedged socket in the long-lived stdlib HTTP server never accumulates. It runs
+leak or a wedged socket in the long-lived viewer process never accumulates. It runs
 `systemctl try-restart`, so it does nothing when the viewer is deliberately stopped.
 
 ```bash

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from rich.logging import RichHandler
 
+from timelapsed import telemetry
 from timelapsed.analysis.identities import IdentityMatcher
 from timelapsed.analysis.index import AnalysisIndex, from_epoch, to_epoch
 from timelapsed.analysis.models import BodyEmbedder, ObjectDetector, PlateReader
@@ -114,6 +115,7 @@ def run_once(config: Config, library: ImageCaptureLibrary, index: AnalysisIndex,
                 # Reclaim can delete a still between listing it and opening it.
                 logger.debug("Still %s vanished before analysis", path)
             except Exception:
+                telemetry.notice_error()
                 logger.exception("Failed to analyse %s, skipping", path)
             analysed += 1
             if position % WATERMARK_EVERY == 0:
@@ -206,19 +208,29 @@ def run() -> None:
 
         # Before the analysis pass, so a first start builds the footage map
         # while the frame backlog is still being chewed through, not after.
-        try:
-            now = datetime.now(tz=timezone.utc)
-            if last_swept_at is None or (now - last_swept_at) >= SEGMENT_SYNC_INTERVAL:
-                last_swept_at = now
-                footage.sync_all(now)
-        except Exception:
-            logger.exception("NVR footage sweep failed, continuing")
+        now = datetime.now(tz=timezone.utc)
+        if last_swept_at is None or (now - last_swept_at) >= SEGMENT_SYNC_INTERVAL:
+            last_swept_at = now
+            with telemetry.task("analyzer/footage-sync"):
+                try:
+                    footage.sync_all(now)
+                except Exception:
+                    telemetry.notice_error()
+                    logger.exception("NVR footage sweep failed, continuing")
 
-        try:
-            analysed = run_once(config, library, index, analyzer)
-        except Exception:
-            logger.exception("Analysis pass failed, continuing")
-            analysed = 0
+        with telemetry.task("analyzer/pass"):
+            try:
+                analysed = run_once(config, library, index, analyzer)
+            except Exception:
+                telemetry.notice_error()
+                logger.exception("Analysis pass failed, continuing")
+                analysed = 0
+            if analysed:
+                telemetry.record_metric("Custom/analyzer/frames_analysed", analysed)
+            else:
+                # An idle pass every IDLE_SLEEP_SECONDS is throughput noise,
+                # not work worth charting.
+                telemetry.ignore()
 
         # Commit what has gone quiet, and only that. Events still being seen
         # stay open across passes: closing them here would file one car sitting
@@ -228,25 +240,30 @@ def run() -> None:
             if analysed:
                 analyzer.tracker.close_stale()
         except Exception:
+            telemetry.notice_error()
             logger.exception("Closing finished events failed, continuing")
 
         # Fold together the identities that online matching split apart. Runs
         # after the batch rather than per frame: it is a whole-set operation, and
         # a fragment created early in a pass often only becomes mergeable once
         # the pass has seen the poses in between.
-        try:
-            if analysed and analyzer.identity_matcher is not None:
-                analyzer.identity_matcher.consolidate(config.analysis_reid_merge_threshold)
-        except Exception:
-            logger.exception("Identity consolidation failed, continuing")
+        if analysed and analyzer.identity_matcher is not None:
+            with telemetry.task("analyzer/consolidate"):
+                try:
+                    analyzer.identity_matcher.consolidate(config.analysis_reid_merge_threshold)
+                except Exception:
+                    telemetry.notice_error()
+                    logger.exception("Identity consolidation failed, continuing")
 
-        try:
-            now = datetime.now(tz=timezone.utc)
-            if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:
-                last_pruned_at = now
-                prune(config, index)
-        except Exception:
-            logger.exception("Index pruning failed, continuing")
+        now = datetime.now(tz=timezone.utc)
+        if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:
+            last_pruned_at = now
+            with telemetry.task("analyzer/prune"):
+                try:
+                    prune(config, index)
+                except Exception:
+                    telemetry.notice_error()
+                    logger.exception("Index pruning failed, continuing")
 
         if analysed:
             elapsed = time.monotonic() - started

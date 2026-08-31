@@ -1,0 +1,65 @@
+# Monitoring
+
+The four daemons report to New Relic APM. Off by default: nothing starts, and
+nothing leaves the guest, until a licence key is set. The free tier's monthly
+ingest allowance is far beyond what this deployment produces, so the only cost
+is the key.
+
+## Turning it on
+
+`install.sh` drops a template at `/etc/timelapsed-newrelic.env`; every unit
+reads it with `EnvironmentFile=-`, so the file being absent or empty simply
+leaves the agent off. To enable:
+
+```bash
+sudoedit /etc/timelapsed-newrelic.env     # paste the INGEST - LICENSE key
+sudo systemctl restart timelapsed timelapsed-web timelapsed-analyzer timelapsed-archiver
+```
+
+Each unit names its own APM service, so the daemons chart separately:
+`timelapsed-capture`, `timelapsed-web`, `timelapsed-analyzer`,
+`timelapsed-archiver`.
+
+The key is a credential and the file is root-only, the same reasoning as the
+NVR password in `/etc/timelapsed.ini`. The agent sends no request parameters
+and no local variables, so the NVR credentials in the config object never ride
+along with an error.
+
+## What reports
+
+The switch and every hook live in `telemetry.py`; each helper is a no-op
+without the agent, which is why the daemons and the tests read the same either
+way. The agent itself is started from the package `__init__` -- it instruments
+Flask and requests with import hooks, so it has to be up before either is
+imported anywhere.
+
+**timelapsed-web** is ordinary Flask APM: a web transaction per route, error
+traces for anything a handler raises, and the catalogue and index reads inside
+them. `/healthz` deliberately reports nothing -- nginx and the docs' curl poll
+it, and a poll is throughput noise.
+
+**timelapsed-capture** records a background transaction per capture cycle
+(named per channel) and one per render window, so a slow NVR snapshot, a
+rollover pileup or a long ffmpeg run each have their own chart. The snapshot
+HTTP call shows up as an external inside the cycle. Sleep is excluded from the
+cycle transaction on purpose: the duration is the work, which is what the
+loop's own >80% warning is about.
+
+**timelapsed-analyzer** records a transaction per analysis pass, footage
+sweep, identity consolidation and index prune. Idle passes -- the every-few-
+seconds "nothing new" poll -- are dropped rather than charted, so throughput
+means frames actually analysed.
+
+**timelapsed-archiver** records a transaction per pass with a span per segment
+fetch, and drops the idle passes for the same reason.
+
+Every `logger.exception` in the daemons files the same error with the agent,
+so the Errors page and the journal tell one story. Log lines themselves are
+forwarded by the agent's logging integration, which is on by default.
+
+Alongside the transactions there are a few custom metrics, all under
+`Custom/`: images stored, keyframes promoted and cycle overruns for capture;
+frames analysed for the analyzer; segments and bytes archived for the
+archiver. They exist for dashboards and alerts -- "no images stored for ten
+minutes" is the alert that matters most and none of the built-in signals say
+it directly.

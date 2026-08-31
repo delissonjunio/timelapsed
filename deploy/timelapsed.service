@@ -16,6 +16,10 @@ RestartSec=10
 StateDirectory=timelapsed
 WorkingDirectory=/opt/timelapsed
 
+# New Relic; the key file is optional on purpose -- see timelapsed-web.service.
+Environment=NEW_RELIC_APP_NAME=timelapsed-capture
+EnvironmentFile=-/etc/timelapsed-newrelic.env
+
 # ffmpeg is CPU-hungry; keep it from starving the rest of the guest.
 Nice=10
 CPUWeight=50

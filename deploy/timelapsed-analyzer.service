@@ -15,6 +15,10 @@ Restart=on-failure
 RestartSec=15
 WorkingDirectory=/opt/timelapsed
 
+# New Relic; the key file is optional on purpose -- see timelapsed-web.service.
+Environment=NEW_RELIC_APP_NAME=timelapsed-analyzer
+EnvironmentFile=-/etc/timelapsed-newrelic.env
+
 # Capture is the job that must not miss its interval; recognition is work that
 # can always be caught up later. Nice it below both the capture daemon (10) and
 # leave a core free, so a backfill cannot make the capture loop overrun.

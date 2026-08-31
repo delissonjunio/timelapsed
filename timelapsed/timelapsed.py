@@ -10,6 +10,7 @@ from typing import Iterator, Sequence
 
 from rich.logging import RichHandler
 
+from timelapsed import telemetry
 from timelapsed.config import get_config, validate_config
 from timelapsed.image_capture_library import ImageCaptureLibrary
 from timelapsed.image_processor import generate_timelapse
@@ -93,32 +94,38 @@ def _render_timelapse_entrypoint(
     apply_logging_config(config)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     for start_time, end_time in windows:
-        try:
-            with _render_slot_held(render_slot, channel_id, cadence.name):
-                stored_path = generate_timelapse(
-                    library,
-                    channel_id,
-                    cadence.name,
-                    start_time,
-                    end_time,
-                    config.timelapse_video_duration,
-                    output_fps=config.output_fps_for(cadence.name),
-                    min_frames=config.min_frames_for(cadence.name),
-                    source=cadence.source,
-                    deflicker=config.deflicker_keyframe_renders and cadence.source == "keyframe",
-                )
+        # One transaction per window: the slot wait, the ffmpeg run and the
+        # prune all land in it, so a slow render is a slow span, not a mystery.
+        with telemetry.task(f"render/{cadence.name}"):
+            telemetry.attribute("channel", channel_id)
+            telemetry.attribute("window_start", start_time.isoformat())
+            try:
+                with _render_slot_held(render_slot, channel_id, cadence.name):
+                    stored_path = generate_timelapse(
+                        library,
+                        channel_id,
+                        cadence.name,
+                        start_time,
+                        end_time,
+                        config.timelapse_video_duration,
+                        output_fps=config.output_fps_for(cadence.name),
+                        min_frames=config.min_frames_for(cadence.name),
+                        source=cadence.source,
+                        deflicker=config.deflicker_keyframe_renders and cadence.source == "keyframe",
+                    )
 
-            if stored_path is not None and cadence.anchored:
-                # Every anchored render covers everything the previous one did,
-                # so what it replaces is a strict prefix of it. Dropped here
-                # rather than by retention, which keys off a start that never
-                # moves and would therefore delete the current video.
-                library.prune_superseded(channel_id, cadence.name)
-        except Exception:
-            logger.exception(
-                "%s timelapse render failed for channel %s (window starting %s)",
-                cadence.name, channel_id, start_time.isoformat(),
-            )
+                if stored_path is not None and cadence.anchored:
+                    # Every anchored render covers everything the previous one did,
+                    # so what it replaces is a strict prefix of it. Dropped here
+                    # rather than by retention, which keys off a start that never
+                    # moves and would therefore delete the current video.
+                    library.prune_superseded(channel_id, cadence.name)
+            except Exception:
+                telemetry.notice_error()
+                logger.exception(
+                    "%s timelapse render failed for channel %s (window starting %s)",
+                    cadence.name, channel_id, start_time.isoformat(),
+                )
 
 
 def _count_within(sorted_times: Sequence[datetime], start: datetime, end: datetime) -> int:
@@ -212,6 +219,7 @@ def promote_keyframes(
         promoted += 1
 
     if promoted:
+        telemetry.record_metric("Custom/capture/keyframes_promoted", promoted)
         logger.info("Promoted %d keyframe(s) for channel %s", promoted, channel_id)
     return promoted
 
@@ -394,87 +402,95 @@ def capture_continuously(
     # worker does is look for gaps rather than wait an hour to notice. Keyframes
     # go first: they are the input to the renders the next few lines schedule.
     startup = datetime.now(tz=timezone.utc)
-    if promotes_keyframes:
-        promote_keyframes(library, config, channel_id, startup)
-    frames = frames_by_source(library, config, channel_id)
-    for cadence in config.timelapse_cadences:
-        scheduler.submit(
-            cadence,
-            pending_render_windows(
-                library, config, channel_id, cadence, startup, frames=frames[cadence.source]
-            ),
-        )
+    with telemetry.task(f"capture/startup-sweep/{channel_id}"):
+        if promotes_keyframes:
+            promote_keyframes(library, config, channel_id, startup)
+        frames = frames_by_source(library, config, channel_id)
+        for cadence in config.timelapse_cadences:
+            scheduler.submit(
+                cadence,
+                pending_render_windows(
+                    library, config, channel_id, cadence, startup, frames=frames[cadence.source]
+                ),
+            )
 
     while not shutting_down:
         now = datetime.now(tz=timezone.utc)
 
-        try:
-            image_data, extension = capture_agent.capture_image(channel_id, config.capture_resolution)
-            library.store_image(channel_id, extension, image_data, now)
-            logger.debug("Stored image for channel %s", channel_id)
-        except Exception:
-            logger.exception("Capture cycle failed for channel %s, continuing", channel_id)
+        # One transaction per cycle, sleep excluded, so the APM's duration is
+        # the work and the >80% warning below has a chart to point at.
+        with telemetry.task(f"capture/cycle/{channel_id}"):
+            try:
+                image_data, extension = capture_agent.capture_image(channel_id, config.capture_resolution)
+                library.store_image(channel_id, extension, image_data, now)
+                telemetry.record_metric("Custom/capture/images_stored", 1)
+                logger.debug("Stored image for channel %s", channel_id)
+            except Exception:
+                telemetry.notice_error()
+                logger.exception("Capture cycle failed for channel %s, continuing", channel_id)
 
-        # Rollovers are judged on the configured wall clock, so a "daily" closes
-        # at local midnight. Only the decision moves: the windows themselves come
-        # back from pending_render_windows in UTC.
-        local_now = now.astimezone(config.render_timezone)
+            # Rollovers are judged on the configured wall clock, so a "daily" closes
+            # at local midnight. Only the decision moves: the windows themselves come
+            # back from pending_render_windows in UTC.
+            local_now = now.astimezone(config.render_timezone)
 
-        try:
-            # Hourly, alongside the prune, and deliberately before it: a still
-            # must not be pruned in the same pass it was due to be promoted in.
-            # Hourly rather than daily so today's frame is in the library within
-            # the hour, and cheap because the expensive scan of the still
-            # directory only happens on a day that is actually missing one.
-            if promotes_keyframes and (
-                last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL
-            ):
-                promote_keyframes(library, config, channel_id, now)
+            try:
+                # Hourly, alongside the prune, and deliberately before it: a still
+                # must not be pruned in the same pass it was due to be promoted in.
+                # Hourly rather than daily so today's frame is in the library within
+                # the hour, and cheap because the expensive scan of the still
+                # directory only happens on a day that is actually missing one.
+                if promotes_keyframes and (
+                    last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL
+                ):
+                    promote_keyframes(library, config, channel_id, now)
 
-            due = [
-                cadence for cadence in config.timelapse_cadences
-                if cadence.is_due(local_now, last_run_at[cadence.name])
-            ]
-            if due:
-                # Scanned once per track for all of them: at midnight every
-                # cadence is due.
-                frames = frames_by_source(library, config, channel_id)
-                for cadence in due:
-                    last_run_at[cadence.name] = local_now
-                    scheduler.submit(
-                        cadence,
-                        pending_render_windows(
-                            library, config, channel_id, cadence, now, frames=frames[cadence.source]
-                        ),
-                    )
+                due = [
+                    cadence for cadence in config.timelapse_cadences
+                    if cadence.is_due(local_now, last_run_at[cadence.name])
+                ]
+                if due:
+                    # Scanned once per track for all of them: at midnight every
+                    # cadence is due.
+                    frames = frames_by_source(library, config, channel_id)
+                    for cadence in due:
+                        last_run_at[cadence.name] = local_now
+                        scheduler.submit(
+                            cadence,
+                            pending_render_windows(
+                                library, config, channel_id, cadence, now, frames=frames[cadence.source]
+                            ),
+                        )
 
-            # Prune hourly: often enough to keep disk flat, cheap enough to ignore.
-            if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:
-                last_pruned_at = now
-                library.prune(channel_id, "image", config.image_retention, now)
-                library.prune(channel_id, "keyframe", config.keyframe_retention, now)
-                for cadence in config.timelapse_cadences:
-                    if cadence.anchored:
-                        # Superseded on each render instead. Its start is day one
-                        # of the project, so an age-based prune would delete the
-                        # current video and keep nothing.
-                        continue
-                    library.prune(
-                        channel_id, "timelapse", config.retention_for(cadence.name), now,
-                        cadence_name=cadence.name,
-                    )
+                # Prune hourly: often enough to keep disk flat, cheap enough to ignore.
+                if last_pruned_at is None or (now - last_pruned_at) >= PRUNE_INTERVAL:
+                    last_pruned_at = now
+                    library.prune(channel_id, "image", config.image_retention, now)
+                    library.prune(channel_id, "keyframe", config.keyframe_retention, now)
+                    for cadence in config.timelapse_cadences:
+                        if cadence.anchored:
+                            # Superseded on each render instead. Its start is day one
+                            # of the project, so an age-based prune would delete the
+                            # current video and keep nothing.
+                            continue
+                        library.prune(
+                            channel_id, "timelapse", config.retention_for(cadence.name), now,
+                            cadence_name=cadence.name,
+                        )
 
-            # Checked every cycle, not every prune: a disk that fills between
-            # hourly prunes would otherwise lose an hour of captures. The check
-            # itself is a statvfs, and the expensive part only runs below the floor.
-            library.reclaim(
-                config.channels, config.minimum_free_bytes, config.longest_cadence_window, now,
-            )
-        except Exception:
-            logger.exception("Timelapse scheduling failed for channel %s, continuing", channel_id)
+                # Checked every cycle, not every prune: a disk that fills between
+                # hourly prunes would otherwise lose an hour of captures. The check
+                # itself is a statvfs, and the expensive part only runs below the floor.
+                library.reclaim(
+                    config.channels, config.minimum_free_bytes, config.longest_cadence_window, now,
+                )
+            except Exception:
+                telemetry.notice_error()
+                logger.exception("Timelapse scheduling failed for channel %s, continuing", channel_id)
 
         cycle_duration = datetime.now(tz=timezone.utc) - now
         if cycle_duration.total_seconds() > config.capture_interval.total_seconds() * 0.8:
+            telemetry.record_metric("Custom/capture/cycle_overruns", 1)
             logger.warning(
                 "Capture cycle for channel %s took >80%% of the capture interval (%.2fs > %.2fs)",
                 channel_id, cycle_duration.total_seconds(), config.capture_interval.total_seconds(),

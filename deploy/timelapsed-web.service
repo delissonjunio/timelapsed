@@ -13,6 +13,12 @@ Restart=always
 RestartSec=10
 WorkingDirectory=/opt/timelapsed
 
+# New Relic. The env file holds the licence key and is optional on purpose --
+# absent or empty, the agent never starts (see timelapsed/telemetry.py). Each
+# unit names its own APM service so the four daemons chart separately.
+Environment=NEW_RELIC_APP_NAME=timelapsed-web
+EnvironmentFile=-/etc/timelapsed-newrelic.env
+
 # The viewer only ever reads the library.
 NoNewPrivileges=true
 

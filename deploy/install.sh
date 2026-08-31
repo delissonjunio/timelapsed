@@ -120,6 +120,18 @@ fi
 chown root:"${SERVICE_USER}" "${CONFIG_PATH}"
 chmod 640 "${CONFIG_PATH}"
 
+# New Relic stays off until a licence key is pasted into this file; the units
+# read it with EnvironmentFile=- so an empty or absent file costs nothing.
+NEWRELIC_ENV=${NEWRELIC_ENV:-/etc/timelapsed-newrelic.env}
+if [[ ! -f "${NEWRELIC_ENV}" ]]; then
+    echo "==> Installing New Relic env template to ${NEWRELIC_ENV} (monitoring off until a key is set)"
+    cp "${REPO_DIR}/deploy/newrelic.env.example" "${NEWRELIC_ENV}"
+fi
+# The licence key is a credential; systemd reads the file as root, so nobody
+# else needs to.
+chown root:root "${NEWRELIC_ENV}"
+chmod 600 "${NEWRELIC_ENV}"
+
 echo "==> Installing systemd units"
 cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/tailscale-local-subnet-route.{service,timer} "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
 systemctl daemon-reload

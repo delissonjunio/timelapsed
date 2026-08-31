@@ -64,7 +64,8 @@ timelapsed/
   nvr_capture_agent.py      HTTP snapshot fetching
   image_capture_library.py  filesystem store: naming, queries, promotion, pruning
   image_processor.py        frame selection and ffmpeg invocation
-  web.py                    the viewer's HTTP side (standard library only): routing, streaming, APIs
+  web.py                    the viewer's HTTP side (Flask on waitress): routing, streaming, APIs
+  telemetry.py              New Relic behind one switch; a no-op without a licence key
   catalogue.py              what the viewer serves, read off the disk: clips, stills, archive
   recognition_reader.py     the viewer's read access to the recognition index
   pages.py                  loads templates/ and stitches in the shared fragments

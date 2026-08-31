@@ -145,9 +145,10 @@ In the order the difference is noticeable:
   through the guest's page cache and evicting the stills the next ffmpeg wants. The nginx location
   uses `directio` above 16 MB, so a 140 MB render is read without disturbing the cache at all. On a
   2 GB guest running renders at `max_concurrent_renders = 1`, that is the difference that matters.
-* **Threads.** `ThreadingHTTPServer` spawns one OS thread per connection. A browser scrubbing a
-  timeline opens several while every camera tile is polling a thumbnail; nginx serves the lot from
-  one worker with no per-connection memory.
+* **Threads.** waitress serves everything from a fixed pool of eight threads, so a browser
+  scrubbing a timeline while every camera tile polls a thumbnail queues behind them; nginx serves
+  the lot from one worker with no per-connection memory and never touches the pool at all for the
+  videos it caches.
 * **gzip** on the page and the JSON APIs, which the viewer does not do.
 
 **What it does not buy is a faster single stream.** Over Tailscale the WireGuard tunnel is the

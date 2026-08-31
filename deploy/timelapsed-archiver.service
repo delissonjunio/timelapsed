@@ -15,6 +15,10 @@ Restart=on-failure
 RestartSec=15
 WorkingDirectory=/opt/timelapsed
 
+# New Relic; the key file is optional on purpose -- see timelapsed-web.service.
+Environment=NEW_RELIC_APP_NAME=timelapsed-archiver
+EnvironmentFile=-/etc/timelapsed-newrelic.env
+
 # Bulk downloading is bandwidth work, not CPU work; the only CPU it burns is
 # the copy-remux. Keep it below capture (10) and beside the analyzer (15) so a
 # 17-hour backfill cannot make the capture loop overrun.
