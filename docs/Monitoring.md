@@ -69,6 +69,9 @@ forwarded by the agent's logging integration, which is on by default.
 Alongside the transactions there are a few custom metrics, all under
 `Custom/`: images stored, keyframes promoted and cycle overruns for capture;
 frames analysed for the analyzer; segments and bytes archived for the
-archiver. They exist for dashboards and alerts -- "no images stored for ten
-minutes" is the alert that matters most and none of the built-in signals say
-it directly.
+archiver, plus its backlog gauges (`backlog_segments` and
+`backlog_oldest_days`, reported every pass and every fetch -- the zero is the
+heartbeat that tells an idle archiver apart from a dead one). They exist for
+dashboards and alerts -- "no images stored for ten minutes" and "the replica
+is falling behind" are the alerts that matter most and none of the built-in
+signals say either directly.

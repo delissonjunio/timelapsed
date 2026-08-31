@@ -296,16 +296,34 @@ class SegmentArchiver:
 
     # --- the pass ---
 
+    def _report_backlog(self, queue: list[PendingSegment], position: int) -> None:
+        """The backlog as the alerts see it: segments still waiting, and how
+        old the oldest one is.
+
+        Reported every pass including zero -- the zero is the heartbeat that
+        tells an idle archiver apart from a dead one -- and again after every
+        fetch, because a backfill pass runs for days and a gauge quiet that
+        long reads as a dead daemon.
+        """
+        remaining = queue[position:]
+        telemetry.record_metric("Custom/archiver/backlog_segments", len(remaining))
+        oldest_days = 0.0
+        if remaining:
+            age = datetime.now(tz=timezone.utc) - remaining[0].started_at
+            oldest_days = max(age.total_seconds() / 86400, 0.0)
+        telemetry.record_metric("Custom/archiver/backlog_oldest_days", oldest_days)
+
     def run_once(self, now: datetime) -> int:
         """One full pass: fetch everything pending, then enforce retention."""
         fetched = 0
         queue = self.pending(now)
+        self._report_backlog(queue, 0)
         if queue:
             logger.info(
                 "%d segment(s) to archive, oldest from %s",
                 len(queue), queue[0].started_at.isoformat(),
             )
-        for segment in queue:
+        for position, segment in enumerate(queue, start=1):
             if shutting_down:
                 break
             # A transaction per segment, not per pass: a pass drains the whole
@@ -326,6 +344,7 @@ class SegmentArchiver:
                         "Failed to archive %s segment %s, skipping until restart",
                         segment.channel, segment.name,
                     )
+            self._report_backlog(queue, position)
         with telemetry.task("archiver/reclaim"):
             if not self.reclaim(datetime.now(tz=timezone.utc)):
                 # Most reclaims delete nothing; chart the ones that did.
