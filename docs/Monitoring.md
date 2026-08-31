@@ -50,8 +50,17 @@ sweep, identity consolidation and index prune. Idle passes -- the every-few-
 seconds "nothing new" poll -- are dropped rather than charted, so throughput
 means frames actually analysed.
 
-**timelapsed-archiver** records a transaction per pass with a span per segment
-fetch, and drops the idle passes for the same reason.
+**timelapsed-archiver** records a transaction per segment fetch -- a pass
+drains the whole queue, and during a backfill that is days of downloading,
+far longer than any single transaction could usefully report -- plus one per
+reclaim that actually removed files. An idle daemon charts nothing, which is
+the normal look for a replica that is caught up.
+
+The capture daemon's workers are forked processes, and the agent's harvest
+thread does not survive a fork -- a worker that inherits the parent's agent
+records transactions nobody ever sends. `telemetry.child()` resets the agent
+at the top of every spawned process (capture workers and render processes
+both), which is why capture data exists at all.
 
 Every `logger.exception` in the daemons files the same error with the agent,
 so the Errors page and the journal tell one story. Log lines themselves are

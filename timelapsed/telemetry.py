@@ -8,17 +8,15 @@ systemd units. Tests and local runs see no env var, no agent, no threads.
 initialize() is called from the package's __init__ so it runs before Flask and
 requests are imported anywhere: the agent instruments libraries with import
 hooks, and a library imported before the hooks exist is a library it may
-silently fail to wrap. That placement also covers every worker process the
-daemons spawn -- a spawned child re-imports the package and initialises fresh,
-and a forked child inherits an initialised agent, which re-registers itself
-after the fork the way it does under any preforking server.
+silently fail to wrap. Forked workers are a separate problem with a separate
+answer -- child() below, called at the top of every process the daemons spawn.
 
 Every helper is a no-op when the agent is off, so the daemons read the same
 with or without monitoring and the tests never know the difference.
 """
 import logging
 import os
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +70,34 @@ def task(name: str):
         yield
 
 
-def trace(name: str):
-    """A named segment inside the current transaction, for spans worth timing
-    on their own -- one archive fetch inside an archive pass."""
+def child() -> None:
+    """Give a forked worker its own agent. Call first in every spawned process.
+
+    The harvest thread does not survive a fork, but the agent's application
+    registry does -- and an inherited, already-activated application makes the
+    agent skip activation entirely, so a forked worker records transactions
+    nobody will ever send (verified against the agent source; capture reported
+    nothing until this existed). Clearing the registry forces activation to run
+    again here, which is what starts a harvest thread that actually lives in
+    this process. The reach into agent internals is deliberate and narrow: the
+    public API has no post-fork story for multiprocessing.
+
+    Works at any fork depth for the same reason, which matters because render
+    processes fork from capture workers, not from the daemon.
+    """
     if not _enabled:
-        return nullcontext()
-    return _agent.FunctionTrace(name=name)
+        return
+    try:
+        from newrelic.core.agent import agent_instance
+
+        instance = agent_instance()
+        with instance._lock:
+            instance._applications.clear()
+    except Exception:
+        logger.warning(
+            "Could not reset the forked agent; this worker may report nothing", exc_info=True
+        )
+    _agent.register_application(timeout=10.0)
 
 
 def ignore() -> None:

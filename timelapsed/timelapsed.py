@@ -92,6 +92,7 @@ def _render_timelapse_entrypoint(
 ) -> None:
     """Process entrypoint for one cadence's outstanding renders, newest first."""
     apply_logging_config(config)
+    telemetry.child()
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     for start_time, end_time in windows:
         # One transaction per window: the slot wait, the ffmpeg run and the
@@ -371,6 +372,7 @@ def capture_continuously(
 ) -> None:
     """Capture one channel forever: snapshot, store, render on rollover, prune, sleep."""
     apply_logging_config(config)
+    telemetry.child()
 
     shutting_down = False
 

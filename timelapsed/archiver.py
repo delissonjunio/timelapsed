@@ -308,22 +308,28 @@ class SegmentArchiver:
         for segment in queue:
             if shutting_down:
                 break
-            try:
-                # A named span inside the pass transaction, so one slow or
-                # failing channel stands out from the rest of the queue.
-                with telemetry.trace(f"fetch/{segment.channel}"):
+            # A transaction per segment, not per pass: a pass drains the whole
+            # queue, and during a backfill that is days of downloading -- a
+            # transaction that long would never be reported at all.
+            with telemetry.task("archiver/fetch"):
+                telemetry.attribute("channel", segment.channel)
+                telemetry.attribute("segment", segment.name)
+                try:
                     self.fetch(segment)
-                fetched += 1
-            except Exception:
-                # One bad segment -- expired on the device, malformed PS --
-                # must not stop the replica behind it.
-                self._failed.add(segment.name)
-                telemetry.notice_error()
-                logger.exception(
-                    "Failed to archive %s segment %s, skipping until restart",
-                    segment.channel, segment.name,
-                )
-        self.reclaim(datetime.now(tz=timezone.utc))
+                    fetched += 1
+                except Exception:
+                    # One bad segment -- expired on the device, malformed PS --
+                    # must not stop the replica behind it.
+                    self._failed.add(segment.name)
+                    telemetry.notice_error()
+                    logger.exception(
+                        "Failed to archive %s segment %s, skipping until restart",
+                        segment.channel, segment.name,
+                    )
+        with telemetry.task("archiver/reclaim"):
+            if not self.reclaim(datetime.now(tz=timezone.utc)):
+                # Most reclaims delete nothing; chart the ones that did.
+                telemetry.ignore()
         return fetched
 
 
@@ -374,24 +380,18 @@ def run() -> None:
     )
 
     while not shutting_down:
-        with telemetry.task("archiver/pass"):
-            try:
-                fetched = archiver.run_once(datetime.now(tz=timezone.utc))
-            except Exception:
-                # The mirror table may not exist yet (analyzer running an older
-                # build), the device may be away: nothing here is fatal, the next
-                # pass simply asks again.
-                telemetry.notice_error()
-                logger.exception("Archive pass failed, continuing")
-                fetched = 0
-            if fetched:
-                telemetry.record_metric("Custom/archiver/segments_archived", fetched)
-            else:
-                # A pass that found nothing pending repeats every minute all
-                # night; charting it would bury the ones that moved data.
-                telemetry.ignore()
+        try:
+            fetched = archiver.run_once(datetime.now(tz=timezone.utc))
+        except Exception:
+            # The mirror table may not exist yet (analyzer running an older
+            # build), the device may be away: nothing here is fatal, the next
+            # pass simply asks again.
+            telemetry.notice_error()
+            logger.exception("Archive pass failed, continuing")
+            fetched = 0
 
         if fetched:
+            telemetry.record_metric("Custom/archiver/segments_archived", fetched)
             logger.info("Archived %d segment(s)", fetched)
         elif not shutting_down:
             time.sleep(IDLE_SLEEP_SECONDS)
