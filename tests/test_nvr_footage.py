@@ -324,6 +324,40 @@ def test_an_http_error_raises_rather_than_returning_half_a_sweep(client):
         list(client.search("5", NOW - timedelta(hours=1), NOW))
 
 
+# --- the retention horizon probe ---
+
+def test_oldest_recording_is_the_first_match_of_one_page(client):
+    """The device answers in ascending time order (measured), so the first
+    match of the first page is the oldest it still holds. One request."""
+    client.session.script(FakeResponse(search_page("MORE", [
+        match_item("2026-08-27T12:00:00Z", "2026-08-27T12:01:30Z", 100),
+        match_item("2026-08-27T12:05:00Z", "2026-08-27T12:06:00Z", 200),
+    ])))
+
+    oldest = client.oldest_recording("5", NOW - timedelta(days=30), NOW)
+
+    assert oldest == datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
+    assert len(client.session.calls) == 1
+
+
+def test_oldest_recording_translates_like_a_search(client):
+    """Results come back stamped 'Z' but mean the device's wall clock."""
+    client.session.time_text = time_answer("2026-08-28T13:05:59-03:00")
+    client.session.script(FakeResponse(search_page("OK", [
+        match_item("2026-08-28T12:00:00Z", "2026-08-28T12:01:00Z", 1),
+    ])))
+
+    oldest = client.oldest_recording("5", NOW - timedelta(days=30), NOW)
+
+    assert oldest == datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+
+
+def test_oldest_recording_answers_none_for_an_empty_window(client):
+    client.session.script(FakeResponse(search_page("OK", [])))
+
+    assert client.oldest_recording("5", NOW - timedelta(days=30), NOW) is None
+
+
 # --- downloading ---
 
 def test_download_streams_the_segment_to_disk(client, tmp_path):

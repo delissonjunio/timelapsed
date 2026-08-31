@@ -18,6 +18,18 @@ Fetches run oldest-first, deliberately: the device wraps its quota by deleting
 oldest footage, so the oldest unarchived segment is always the one at risk.
 Sequentially too -- parallel downloads were measured to buy nothing, the
 ~128 Mbit/s is the path, not the request.
+
+The mirror remembers segments forever; the devices do not. Once a device has
+recycled a stretch of footage, every mirror row in it is unfetchable -- and not
+even cleanly so: the Dahua answers a recycled FilePath as HTTP 200 with 64 KB
+of whatever the disk holds now, caught only by the first-chunk magic check. So
+before choosing work, each device is asked where its own retention horizon
+sits (the start of the oldest segment it still holds), and anything clearly
+behind that horizon is skipped as expired rather than fetched into a failure.
+The horizon is re-probed as passes run, because the archiver works exactly at
+the recycle frontier and the frontier moves. A probe that fails leaves that
+channel unfiltered: wrongly fetching a doomed segment costs a fast failure,
+wrongly skipping a live one loses footage.
 """
 import logging
 import shutil
@@ -31,7 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from timelapsed import telemetry
-from timelapsed.analysis.index import AnalysisIndex
+from timelapsed.analysis.index import AnalysisIndex, from_epoch
 from timelapsed.config import get_config
 from timelapsed.dahua import dahua_segment_name
 from timelapsed.nvr_footage import NVRFootageClient, footage_clients_by_channel
@@ -52,6 +64,19 @@ DOWNLOAD_DEADLINE_FLOOR_SECONDS = 120.0
 REMUX_TIMEOUT_SECONDS = 300
 # More rows than any channel's history holds; the archiver wants all of them.
 ALL_SEGMENTS = 1_000_000
+# How stale a device's retention horizon may grow before it is re-probed. The
+# archiver works oldest-first, exactly at the recycle frontier, and a backfill
+# pass runs for hours while the frontier advances underneath it. Staleness only
+# errs toward fetching -- the frontier never retreats -- so this is about not
+# wasting time on doomed fetches, not about safety.
+HORIZON_REFRESH_SECONDS = 15 * 60
+# Only segments clearly behind the horizon are skipped. Wrongly fetching one
+# doomed segment costs a fast failure; wrongly skipping a live one loses
+# footage, so the tie goes to fetching.
+HORIZON_SLACK = timedelta(hours=1)
+# The probe's search window opens slightly before the mirror's oldest row for
+# the channel, absorbing the clock translation at the device edge.
+HORIZON_PROBE_MARGIN = timedelta(hours=1)
 
 STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 SCRATCH_DIRECTORY_NAME = ".scratch"
@@ -131,10 +156,15 @@ class SegmentArchiver:
         # Device segment names already on disk. Seeded from a full scan, then
         # maintained incrementally -- fetches add, reclaim removes.
         self._archived: set[str] = set()
-        # Names that failed this run. Retried only on restart: a segment the
-        # device has expired fails identically forever, and retrying it every
-        # pass would starve the fetches that can still succeed.
+        # Names that failed this run. Retried only on restart: a broken fetch
+        # tends to fail identically all day, and retrying it every pass would
+        # starve the fetches that can still succeed.
         self._failed: set[str] = set()
+        # Per channel, when the oldest segment its device still holds starts.
+        # A channel absent here is not filtered at all -- the probe failed or
+        # answered nothing, and the safe reading of both is "fetch as always".
+        self._horizons: dict[str, datetime] = {}
+        self._horizons_probed_at = float("-inf")
 
     # --- layout ---
 
@@ -160,16 +190,69 @@ class SegmentArchiver:
             self._archived.add(name)
         logger.info("Archive at %s holds %d segment(s)", self.root, len(self._archived))
 
+    # --- the device's retention horizon ---
+
+    def refresh_horizons(self) -> None:
+        """Ask each device where its oldest still-held recording starts.
+
+        Probed per channel, with the search window opening at the mirror's own
+        oldest row for that channel: the mirror never forgets, so nothing the
+        device still holds can start before it, and the recycled region costs
+        the probe almost nothing to step over. A channel whose probe fails or
+        answers nothing simply carries no horizon this round -- skipping is a
+        pure optimisation, and no answer means no skipping.
+        """
+        now = datetime.now(tz=timezone.utc)
+        summary = self.index.segment_summary()
+        horizons: dict[str, datetime] = {}
+        for channel in self.channels:
+            oldest = summary.get(channel, {}).get("oldest")
+            if oldest is None:
+                continue
+            try:
+                horizon = self.clients[channel].oldest_recording(
+                    channel, from_epoch(oldest) - HORIZON_PROBE_MARGIN, now
+                )
+            except Exception:
+                logger.warning(
+                    "Channel %s horizon probe failed; fetching unfiltered",
+                    channel, exc_info=True,
+                )
+                continue
+            if horizon is not None:
+                horizons[channel] = horizon
+        self._horizons = horizons
+        self._horizons_probed_at = time.monotonic()
+
+    def _maybe_refresh_horizons(self) -> None:
+        if time.monotonic() - self._horizons_probed_at >= HORIZON_REFRESH_SECONDS:
+            self.refresh_horizons()
+
+    def _expired_on_device(self, channel: str, ended_at: datetime) -> bool:
+        """Whether the device has certainly recycled this segment already.
+
+        Only a segment that ended clearly before the horizon is called
+        expired: the slack keeps the frontier itself on the fetching side.
+        """
+        horizon = self._horizons.get(channel)
+        return horizon is not None and ended_at < horizon - HORIZON_SLACK
+
     # --- choosing work ---
 
     def pending(self, now: datetime) -> list[PendingSegment]:
-        """Every settled, unarchived segment the mirror lists, oldest first."""
+        """Every settled, unarchived segment the mirror lists, oldest first.
+
+        Segments the device itself has already recycled are left out and not
+        remembered as failures -- expiry is the device's retention at work, not
+        an error, and the horizon test is re-run fresh every pass.
+        """
         settled_before = now - SETTLE
         # Anything retention would delete tomorrow must not be fetched today,
         # or the deep channels (205 days on ch1) become a fetch/delete loop.
         cutoff = now - self.retention if self.retention else None
 
         found: list[PendingSegment] = []
+        expired: dict[str, int] = {}
         for channel in self.channels:
             for row in self.index.segments(channel=channel, limit=ALL_SEGMENTS):
                 started_at = datetime.fromisoformat(row["starts"])
@@ -181,6 +264,9 @@ class SegmentArchiver:
                 name = uri_segment_name(row["playback_uri"])
                 if not name or name in self._archived or name in self._failed:
                     continue
+                if self._expired_on_device(channel, ended_at):
+                    expired[channel] = expired.get(channel, 0) + 1
+                    continue
                 found.append(PendingSegment(
                     channel=channel,
                     name=name,
@@ -189,6 +275,18 @@ class SegmentArchiver:
                     size_bytes=row["size_bytes"],
                     playback_uri=row["playback_uri"],
                 ))
+        if expired:
+            # One line for the whole pass, not one per segment: tens of
+            # thousands of these is the normal state after a device wraps.
+            logger.info(
+                "Skipping %d expired segment(s) the device no longer holds: %s",
+                sum(expired.values()),
+                "; ".join(
+                    f"channel {channel} holds nothing before {self._horizons[channel].isoformat()}"
+                    f" ({count} skipped)"
+                    for channel, count in sorted(expired.items())
+                ),
+            )
         found.sort(key=lambda segment: segment.started_at)
         return found
 
@@ -316,6 +414,7 @@ class SegmentArchiver:
     def run_once(self, now: datetime) -> int:
         """One full pass: fetch everything pending, then enforce retention."""
         fetched = 0
+        self._maybe_refresh_horizons()
         queue = self.pending(now)
         self._report_backlog(queue, 0)
         if queue:
@@ -326,6 +425,14 @@ class SegmentArchiver:
         for position, segment in enumerate(queue, start=1):
             if shutting_down:
                 break
+            # A long pass works at the recycle frontier for hours while the
+            # frontier advances; the horizon is re-probed as it goes, and a
+            # segment the device expired mid-pass is dropped, not fetched.
+            # The next pass's pending() accounts for it in the summary line.
+            self._maybe_refresh_horizons()
+            if self._expired_on_device(segment.channel, segment.ended_at):
+                self._report_backlog(queue, position)
+                continue
             # A transaction per segment, not per pass: a pass drains the whole
             # queue, and during a backfill that is days of downloading -- a
             # transaction that long would never be reported at all.
@@ -336,8 +443,9 @@ class SegmentArchiver:
                     self.fetch(segment)
                     fetched += 1
                 except Exception:
-                    # One bad segment -- expired on the device, malformed PS --
-                    # must not stop the replica behind it.
+                    # One bad segment -- recycled behind a stale or unprobed
+                    # horizon (the first-chunk magic check is the backstop),
+                    # malformed PS -- must not stop the replica behind it.
                     self._failed.add(segment.name)
                     telemetry.notice_error()
                     logger.exception(

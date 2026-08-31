@@ -141,6 +141,11 @@ Every one of these was hit live; the driver must handle them.
 5. **Account lockout.** Dahua firmware locks the account after a handful of failed Digest
    attempts. A driver retrying on 401 must distinguish "challenge" from "wrong password" and never
    loop.
+6. **A recycled `FilePath` still answers 200.** Once quota wrap has deleted a segment,
+   `RPC_Loadfile` for its old path does not 404 — it answers HTTP 200 with 65,536 bytes of
+   whatever the disk holds there now, typically a JPEG (verified live 2026-08-31). The
+   first-chunk DHAV magic check is the only honest test of what arrived; the archiver also probes
+   the device for its oldest still-held recording so it stops walking the recycled region at all.
 
 ## What motion-only recording means for the pipeline
 

@@ -253,6 +253,27 @@ class DahuaFootageClient:
             yield from self._search_window(channel, window_start, window_end)
             window_start = window_end
 
+    def oldest_recording(self, channel: str, start: datetime, end: datetime) -> datetime | None:
+        """When the oldest segment the device still holds in [start, end] starts.
+
+        The device wraps its quota by deleting oldest footage first, so this is
+        its retention horizon: everything before it is gone for good. Asked
+        window by window from `start` -- a few cheap empty finders over the
+        recycled region, then one real window -- with the minimum taken over
+        that whole window rather than its first result, because whether this
+        firmware answers in time order is unverified. `start` wants to sit at
+        or before the oldest segment the caller still believes in; None means
+        the device answered the whole span with nothing.
+        """
+        window_start = start
+        while window_start < end:
+            window_end = min(window_start + SEARCH_WINDOW, end)
+            segments = self._search_window(channel, window_start, window_end)
+            if segments:
+                return min(segment.started_at for segment in segments)
+            window_start = window_end
+        return None
+
     def _search_window(
         self, channel: str, start: datetime, end: datetime
     ) -> list["RecordedSegment"]:

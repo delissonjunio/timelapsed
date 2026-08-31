@@ -243,6 +243,57 @@ def test_non_dav_rows_are_skipped(client):
     assert list(client.search("intelbras-1", NOW - timedelta(hours=1), NOW)) == []
 
 
+# --- the retention horizon probe ---
+
+def test_oldest_recording_steps_over_the_recycled_region(client):
+    """Empty windows over the recycled region cost one cheap finder each; the
+    first window with footage answers. Minimum of the whole window, not its
+    first result, because time order is unverified on this firmware."""
+    client.session.script("factory.create", FakeResponse("result=1"))
+    # Two recycled windows (an empty window answers 400), then footage,
+    # deliberately out of time order.
+    client.session.script(
+        "findFile&",
+        FakeResponse("Error", status_code=400),
+        FakeResponse("Error", status_code=400),
+        FakeResponse("OK"),
+    )
+    client.session.script(
+        "findNextFile",
+        find_page([
+            dav_row("2026-08-23 10:00:00", "2026-08-23 10:00:30", "/m/later.dav"),
+            dav_row("2026-08-23 08:00:00", "2026-08-23 08:00:30", "/m/oldest.dav"),
+        ]),
+    )
+    client.session.script("action=close", FakeResponse("OK"))
+    client.session.script("action=destroy", FakeResponse("OK"))
+
+    oldest = client.oldest_recording("intelbras-1", NOW - timedelta(days=20), NOW)
+
+    assert oldest == datetime(2026, 8, 23, 8, 0, tzinfo=timezone.utc)
+
+
+def test_oldest_recording_with_nothing_anywhere_is_none(client):
+    client.session.script("factory.create", FakeResponse("result=1"))
+    client.session.script("findFile&", FakeResponse("Error", status_code=400))
+    client.session.script("action=close", FakeResponse("OK"))
+    client.session.script("action=destroy", FakeResponse("OK"))
+
+    assert client.oldest_recording("intelbras-1", NOW - timedelta(days=20), NOW) is None
+
+
+def test_a_probe_auth_failure_propagates_rather_than_reading_as_empty(client):
+    """The empty-window 400 must not swallow a 401: the caller treats a probe
+    failure as 'no filtering', never as 'device holds nothing'."""
+    client.session.script("factory.create", FakeResponse("result=1"))
+    client.session.script("findFile&", FakeResponse("Denied", status_code=401))
+    client.session.script("action=close", FakeResponse("OK"))
+    client.session.script("action=destroy", FakeResponse("OK"))
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        client.oldest_recording("intelbras-1", NOW - timedelta(days=1), NOW)
+
+
 # --- download ---
 
 def test_download_url_encodes_the_path_and_checks_the_magic(client, tmp_path):

@@ -335,7 +335,17 @@ keeps its single writer and a crash can only ever lose a scratch file. A segment
 once its end is 30 minutes settled (an open segment's end keeps walking), and never fetched at
 all if retention would delete it tomorrow. Configuration is the `[archive]` section; on this
 deployment it points at the 1.4 TB volume. Failures are skipped until restart rather than
-retried per pass, so a segment the device has expired cannot starve the queue.
+retried per pass, so a broken fetch cannot starve the queue.
+
+Expired footage is not a failure at all (2026-08-31): both devices recycle oldest footage when
+their disk wraps, the mirror remembers those rows forever, and the Intelbras even answers a
+recycled path as HTTP 200 with recycled disk content — so before choosing work the archiver asks
+each device where its oldest still-held recording starts (one cheap search per channel, opening
+at the mirror's own oldest row) and skips anything clearly behind that horizon, with slack toward
+fetching. The horizon is re-probed as long passes run, since the archiver works oldest-first at
+the recycle frontier exactly as it moves. A failed probe means no filtering — the first-chunk
+magic check remains the backstop — and skipped segments are never tombstoned, so the decision is
+re-made fresh every pass.
 
 ### Stage 4 — Play them — **built (2026-08-28)**
 

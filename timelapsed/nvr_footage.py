@@ -208,28 +208,11 @@ class NVRFootageClient:
         from the segments but still counted, or a page of them would make a
         truncated session look complete.
         """
-        device_zone = self.device_zone()
         search_id = str(uuid.uuid4())
         segments: list[RecordedSegment] = []
         position = 0
         for _ in range(MAX_PAGES_PER_SEARCH):
-            body = SEARCH_BODY.format(
-                search_id=search_id,
-                track_id=f"{self._device_channel(channel)}01",
-                start=_search_time(start, device_zone),
-                end=_search_time(end, device_zone),
-                page_size=SEARCH_PAGE_SIZE,
-                position=position,
-            )
-            response = self.session.post(
-                f"{self.url}/ISAPI/ContentMgmt/search",
-                data=body,
-                headers={"Content-Type": "application/xml"},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-
-            root = ElementTree.fromstring(response.content)
+            root = self._search_page(search_id, channel, start, end, position)
             matches = root.findall(".//{*}searchMatchItem")
             for item in matches:
                 segment = self._parse_match(channel, item)
@@ -245,6 +228,46 @@ class NVRFootageClient:
             channel, MAX_PAGES_PER_SEARCH,
         )
         return segments, position
+
+    def _search_page(
+        self, search_id: str, channel: str, start: datetime, end: datetime, position: int
+    ) -> ElementTree.Element:
+        """One ContentMgmt/search request, parsed. Raises on HTTP failure."""
+        device_zone = self.device_zone()
+        body = SEARCH_BODY.format(
+            search_id=search_id,
+            track_id=f"{self._device_channel(channel)}01",
+            start=_search_time(start, device_zone),
+            end=_search_time(end, device_zone),
+            page_size=SEARCH_PAGE_SIZE,
+            position=position,
+        )
+        response = self.session.post(
+            f"{self.url}/ISAPI/ContentMgmt/search",
+            data=body,
+            headers={"Content-Type": "application/xml"},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return ElementTree.fromstring(response.content)
+
+    def oldest_recording(self, channel: str, start: datetime, end: datetime) -> datetime | None:
+        """When the oldest segment the device still holds in [start, end] starts.
+
+        The device wraps its quota by deleting oldest footage first, so this is
+        its retention horizon: everything before it is gone for good. One page
+        of one search answers it -- the device returns matches in ascending
+        time order (measured; `search` leans on the same fact), so the first
+        match is the oldest. `start` wants to sit at or before the oldest
+        segment the caller still believes in; None means the device answered
+        the whole window with nothing.
+        """
+        root = self._search_page(str(uuid.uuid4()), channel, start, end, position=0)
+        for item in root.findall(".//{*}searchMatchItem"):
+            segment = self._parse_match(channel, item)
+            if segment is not None:
+                return segment.started_at
+        return None
 
     @backoff.on_exception(
         backoff.expo,

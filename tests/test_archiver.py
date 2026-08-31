@@ -7,6 +7,7 @@ import pytest
 from tests.conftest import BASE_TIME
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.archiver import (
+    HORIZON_PROBE_MARGIN,
     SETTLE,
     SegmentArchiver,
     parse_segment_filename,
@@ -61,6 +62,15 @@ class FakeClient:
     def __init__(self):
         self.calls = []
         self.failures = set()  # segment names that raise
+        self.horizons = {}  # channel -> oldest-held start, or an Exception
+        self.probes = []  # every (channel, start, end) the archiver asked
+
+    def oldest_recording(self, channel, start, end):
+        self.probes.append((channel, start, end))
+        answer = self.horizons.get(channel)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def download(self, playback_uri: str, destination: Path, deadline_seconds: float) -> int:
         name = uri_segment_name(playback_uri)
@@ -192,6 +202,89 @@ def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
     archiver.client.calls.clear()
     archiver.run_once(NOW)
     assert archiver.client.calls == []
+
+
+# --- the device's retention horizon ---
+
+def test_segments_behind_the_device_horizon_are_skipped_not_failed(archiver, index):
+    """The device recycles oldest footage first; a mirror row behind its
+    horizon is unfetchable and skipping it is not a failure -- when the
+    horizon later goes away, the segment is simply asked for again."""
+    gone_start = NOW - timedelta(days=20)
+    live_start = NOW - timedelta(hours=2)
+    seed_segment(index, "5", "ch05_gone", gone_start, gone_start + timedelta(minutes=2))
+    seed_segment(index, "5", "ch05_live", live_start, live_start + timedelta(minutes=2))
+    archiver.client.horizons["5"] = NOW - timedelta(days=2)
+
+    assert archiver.run_once(NOW) == 1
+    assert archiver.client.calls == ["ch05_live"]
+
+    # Not a tombstone: with the horizon gone the segment is fetched after all.
+    archiver.client.horizons.clear()
+    archiver.refresh_horizons()
+    archiver.client.calls.clear()
+    archiver.run_once(NOW)
+    assert archiver.client.calls == ["ch05_gone"]
+
+
+def test_the_horizon_keeps_slack_toward_fetching(archiver, index):
+    """Wrongly fetching a doomed segment costs a fast failure; wrongly
+    skipping a live one loses footage. Only clearly-behind is skipped."""
+    horizon = NOW - timedelta(days=2)
+    near_start = horizon - timedelta(minutes=30)  # behind, but inside the slack
+    seed_segment(index, "5", "ch05_near", near_start, near_start + timedelta(minutes=2))
+    archiver.client.horizons["5"] = horizon
+
+    archiver.run_once(NOW)
+
+    assert archiver.client.calls == ["ch05_near"]
+
+
+def test_a_failed_probe_means_no_filtering(archiver, index):
+    """No horizon is the safe state: the archiver fetches as it always has,
+    and a doomed fetch fails fast on the magic check."""
+    old_start = NOW - timedelta(days=20)
+    seed_segment(index, "5", "ch05_old", old_start, old_start + timedelta(minutes=2))
+    archiver.client.horizons["5"] = RuntimeError("device away")
+
+    assert archiver.run_once(NOW) == 1
+    assert archiver.client.calls == ["ch05_old"]
+
+
+def test_the_probe_window_opens_before_the_mirrors_oldest_row(archiver, index):
+    """The mirror never forgets, so nothing the device still holds can start
+    before the mirror's oldest row; the margin absorbs clock translation."""
+    old_start = NOW - timedelta(days=20)
+    seed_segment(index, "5", "ch05_old", old_start, old_start + timedelta(minutes=2))
+
+    archiver.refresh_horizons()
+
+    (channel, start, end) = archiver.client.probes[0]
+    assert channel == "5"
+    assert start == old_start - HORIZON_PROBE_MARGIN
+    assert end > start
+
+
+def test_the_horizon_is_reprobed_mid_pass_and_newly_expired_dropped(archiver, index, monkeypatch):
+    """A backfill pass runs for hours while the recycle frontier advances;
+    a queued segment the device expired mid-pass is dropped, not fetched."""
+    monkeypatch.setattr("timelapsed.archiver.HORIZON_REFRESH_SECONDS", -1)
+    first = NOW - timedelta(days=10)
+    second = NOW - timedelta(days=8)
+    seed_segment(index, "5", "ch05_first", first, first + timedelta(minutes=2))
+    seed_segment(index, "5", "ch05_second", second, second + timedelta(minutes=2))
+    # Probed at the pass start, before the first fetch, before the second: the
+    # frontier jumps past the second segment while the first is downloading.
+    horizons = iter([
+        first - timedelta(days=1),
+        first - timedelta(days=1),
+        second + timedelta(days=1),
+    ])
+    archiver.client.oldest_recording = lambda channel, start, end: next(horizons)
+
+    assert archiver.run_once(NOW) == 1
+    assert archiver.client.calls == ["ch05_first"]
+    assert "ch05_second" not in archiver._failed
 
 
 def test_reclaim_ages_out_files_and_their_empty_days(index, tmp_path, fake_remux):
