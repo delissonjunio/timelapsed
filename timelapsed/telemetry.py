@@ -73,14 +73,14 @@ def task(name: str):
 def child() -> None:
     """Give a forked worker its own agent. Call first in every spawned process.
 
-    The harvest thread does not survive a fork, but the agent's application
-    registry does -- and an inherited, already-activated application makes the
-    agent skip activation entirely, so a forked worker records transactions
-    nobody will ever send (verified against the agent source; capture reported
-    nothing until this existed). Clearing the registry forces activation to run
-    again here, which is what starts a harvest thread that actually lives in
-    this process. The reach into agent internals is deliberate and narrow: the
-    public API has no post-fork story for multiprocessing.
+    Nothing of the parent's agent survives a fork usefully: the harvest thread
+    is dead but its Thread object remembers being started, so re-activating
+    the inherited Agent dies with "threads can only be started once" (seen
+    live on CT 303), and the api layer separately caches Application wrappers
+    that pin that same dead Agent. Dropping both caches makes
+    register_application build a fresh Agent -- new thread, new registry --
+    owned by this process. The reach into agent internals is deliberate and
+    narrow: the public API has no post-fork story for multiprocessing.
 
     Works at any fork depth for the same reason, which matters because render
     processes fork from capture workers, not from the daemon.
@@ -88,16 +88,30 @@ def child() -> None:
     if not _enabled:
         return
     try:
-        from newrelic.core.agent import agent_instance
+        from newrelic.api.application import Application
+        from newrelic.core.agent import Agent
 
-        instance = agent_instance()
-        with instance._lock:
-            instance._applications.clear()
+        with Application._lock:
+            Application._instances.clear()
+        with Agent._instance_lock:
+            Agent._instance = None
     except Exception:
         logger.warning(
-            "Could not reset the forked agent; this worker may report nothing", exc_info=True
+            "Could not reset the forked agent; this worker will report nothing", exc_info=True
         )
+        return
     _agent.register_application(timeout=10.0)
+
+
+def flush() -> None:
+    """Send what the agent still holds, for a worker about to exit.
+
+    The agent's own final harvest rides an atexit hook, and multiprocessing
+    children leave through os._exit, which never runs atexit -- without this a
+    short-lived render's whole transaction vanishes with the process.
+    """
+    if _enabled:
+        _agent.shutdown_agent(timeout=5.0)
 
 
 def ignore() -> None:

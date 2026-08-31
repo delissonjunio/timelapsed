@@ -127,6 +127,7 @@ def _render_timelapse_entrypoint(
                     "%s timelapse render failed for channel %s (window starting %s)",
                     cadence.name, channel_id, start_time.isoformat(),
                 )
+    telemetry.flush()
 
 
 def _count_within(sorted_times: Sequence[datetime], start: datetime, end: datetime) -> int:
@@ -503,6 +504,7 @@ def capture_continuously(
             time.sleep(sleep_for)
 
     scheduler.shutdown()
+    telemetry.flush()
     logger.info("Channel %s worker stopped", channel_id)
 
 
