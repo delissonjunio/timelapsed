@@ -390,6 +390,7 @@ class SegmentArchiver:
         return removed
 
     def _free_bytes(self) -> int:
+        self.root.mkdir(parents=True, exist_ok=True)
         return shutil.disk_usage(self.root).free
 
     # --- the pass ---
@@ -410,6 +411,7 @@ class SegmentArchiver:
             age = datetime.now(tz=timezone.utc) - remaining[0].started_at
             oldest_days = max(age.total_seconds() / 86400, 0.0)
         telemetry.record_metric("Custom/archiver/backlog_oldest_days", oldest_days)
+        telemetry.record_metric("Custom/archiver/disk_free_gb", self._free_bytes() / 1e9)
 
     def run_once(self, now: datetime) -> int:
         """One full pass: fetch everything pending, then enforce retention."""

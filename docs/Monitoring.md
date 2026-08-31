@@ -71,7 +71,10 @@ Alongside the transactions there are a few custom metrics, all under
 frames analysed for the analyzer; segments and bytes archived for the
 archiver, plus its backlog gauges (`backlog_segments` and
 `backlog_oldest_days`, reported every pass and every fetch -- the zero is the
-heartbeat that tells an idle archiver apart from a dead one). They exist for
+heartbeat that tells an idle archiver apart from a dead one). Both volumes
+report their headroom as `disk_free_gb` gauges: the capture workers cover the
+library filesystem every cycle, the archiver covers the archive volume with
+each backlog report. They exist for
 dashboards and alerts -- "no images stored for ten minutes" and "the replica
 is falling behind" are the alerts that matter most and none of the built-in
 signals say either directly.

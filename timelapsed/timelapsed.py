@@ -485,6 +485,11 @@ def capture_continuously(
                 library.reclaim(
                     config.channels, config.minimum_free_bytes, config.longest_cadence_window, now,
                 )
+                # Every worker reports the same filesystem; charted as an
+                # average, the duplicates collapse into one honest gauge.
+                telemetry.record_metric(
+                    "Custom/capture/disk_free_gb", library.free_bytes() / 1e9
+                )
             except Exception:
                 telemetry.notice_error()
                 logger.exception("Timelapse scheduling failed for channel %s, continuing", channel_id)
