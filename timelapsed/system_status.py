@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +36,7 @@ from pathlib import Path
 from timelapsed.archiver import parse_segment_filename
 from timelapsed.config import validate_config
 from timelapsed.image_capture_library import (
+    FRAME_STEM,
     SCRATCH_DIRECTORY_NAME,
     TIMESTAMP_FORMAT,
     ImageCaptureLibrary,
@@ -46,10 +46,17 @@ from timelapsed.schema import Cadence, Config
 
 logger = logging.getLogger(__name__)
 
-# How long a report stays fresh. The page polls faster than this so a manual
-# refresh feels immediate, and the cache is what stops six of those polls from
-# turning into six full library scans.
+# How long a report is served without any work at all. Past this, a request
+# still gets the report it finds, at once, and starts one rescan in the
+# background so the next request gets a newer one: on a full library the scan
+# is a couple of seconds, and a poll that waited on it made the page feel hung.
+# The page polls every twenty seconds, so while it is open the numbers on
+# screen are at most a poll old and no poll ever waits.
 REPORT_TTL_SECONDS = 12.0
+# ...but a report older than this is not worth showing. Nobody has asked for a
+# while -- the page was closed -- so the first request back scans in the
+# foreground rather than open on stale numbers until the next poll.
+REPORT_MAX_AGE_SECONDS = 60.0
 
 # A camera is late when it has written nothing for this many capture intervals.
 # Generous on purpose: one missed snapshot is a blip the daemon already retries,
@@ -75,10 +82,6 @@ UNIT_PROPERTIES = (
     "LoadState", "ActiveState", "SubState", "Result", "NRestarts",
     "MemoryCurrent", "ExecMainStartTimestamp", "ActiveEnterTimestamp",
 )
-
-# A frame filename, without its extension. Used as a shape guard on the cheap
-# scan path, where a full strptime per file would be the dominant cost.
-FRAME_STEM = re.compile(r"\d{8}_\d{6}_UTC")
 
 # Windows the capture report quotes yields over.
 RECENT_WINDOWS = {"hour": timedelta(hours=1), "day": timedelta(days=1)}
@@ -387,32 +390,77 @@ class SystemStatusCollector:
     than held, so this works identically with recognition off.
     """
 
-    def __init__(self, config: Config, ttl_seconds: float = REPORT_TTL_SECONDS):
+    def __init__(
+        self,
+        config: Config,
+        ttl_seconds: float = REPORT_TTL_SECONDS,
+        max_age_seconds: float = REPORT_MAX_AGE_SECONDS,
+    ):
         self.config = config
         self.library = ImageCaptureLibrary(config.image_capture_library_root)
         self.progress = AnalysisProgress()
         self.ttl_seconds = ttl_seconds
+        self.max_age_seconds = max_age_seconds
         self._lock = threading.Lock()
         self._cached: dict | None = None
+        # When the cached report's scan began, so its age counts the scan too.
         self._cached_at = 0.0
+        self._refresher: threading.Thread | None = None
 
     def report(self, recognition=None, force: bool = False) -> dict:
+        """The report, from the cache whenever there is one worth serving.
+
+        Three ages. Under `ttl_seconds` the cached report comes back as is.
+        Past that it still comes back at once -- the scan takes seconds on a
+        full library and a poll must not wait on it -- and one background rescan
+        starts, so the next request finds a newer report. Past
+        `max_age_seconds`, or with `force`, the request scans in the foreground
+        and waits for the answer.
+        """
         with self._lock:
             previous = self._cached
-            fresh_enough = (
-                previous is not None
-                and not force
-                and (time.monotonic() - self._cached_at) < self.ttl_seconds
-            )
-            if fresh_enough and previous is not None:
+            age = time.monotonic() - self._cached_at
+            if previous is not None and not force and age < self.max_age_seconds:
+                if age >= self.ttl_seconds:
+                    self._refresh_in_background(recognition)
                 cached = dict(previous)
                 cached["cached"] = True
-                cached["cache_age_seconds"] = round(time.monotonic() - self._cached_at, 1)
+                cached["cache_age_seconds"] = round(age, 1)
                 return cached
 
-            report = self._collect(recognition)
-            self._cached, self._cached_at = report, time.monotonic()
-            return dict(report)
+        started = time.monotonic()
+        report = self._collect(recognition)
+        self._store(report, started)
+        return dict(report)
+
+    def _refresh_in_background(self, recognition) -> None:
+        """Start one rescan, unless one is already running. Called under the lock."""
+        if self._refresher is not None and self._refresher.is_alive():
+            return
+
+        def refresh() -> None:
+            started = time.monotonic()
+            try:
+                self._store(self._collect(recognition), started)
+            except Exception:
+                logger.exception("Could not rebuild the status report in the background")
+
+        self._refresher = threading.Thread(target=refresh, name="status-refresh", daemon=True)
+        self._refresher.start()
+
+    def _store(self, report: dict, started: float) -> None:
+        with self._lock:
+            # A forced scan and a background one can overlap; whichever began
+            # later describes the library later, and the other is discarded.
+            if started >= self._cached_at:
+                self._cached, self._cached_at = report, started
+
+    def join_refresh(self, timeout: float | None = None) -> None:
+        """Wait for a background rescan, if one is running, to land in the cache."""
+        with self._lock:
+            refresher = self._refresher
+        if refresher is not None:
+            refresher.join(timeout)
 
     # --- collection ---
 

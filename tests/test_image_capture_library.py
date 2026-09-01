@@ -103,6 +103,26 @@ def test_retrieve_images_within_skips_unparseable_files(library, populate_images
     assert len(library.retrieve_images_within("1", BASE_TIME - timedelta(hours=1), BASE_TIME)) == 5
 
 
+def test_latest_image_is_the_newest_still_without_parsing_the_rest(library, populate_images):
+    timestamps = populate_images(count=5, interval=timedelta(minutes=1), end=BASE_TIME)
+    # Names that would win a plain string comparison but are not frames.
+    (library.root_path / "1" / "image" / "thumbs.db").write_bytes(b"junk")
+    (library.root_path / "1" / "image" / "99999999_999999_UTC.jpg").mkdir()
+
+    latest = library.latest_image("1")
+
+    assert latest is not None
+    assert _parse_image_filename(latest.stem) == timestamps[-1]
+
+
+def test_latest_image_is_none_for_a_channel_with_nothing(library, populate_images):
+    populate_images(channel_id="1", count=2, interval=timedelta(minutes=1), end=BASE_TIME)
+    (library.root_path / "2" / "image").mkdir(parents=True)
+
+    assert library.latest_image("2") is None
+    assert library.latest_image("nope") is None
+
+
 def test_retrieve_image_finds_an_exact_match(library, populate_images):
     timestamps = populate_images(count=5, interval=timedelta(minutes=1), end=BASE_TIME)
 

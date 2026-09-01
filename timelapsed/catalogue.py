@@ -144,10 +144,11 @@ class TimelapseCatalogue:
 
     def latest_still(self, channel_id: str) -> Path | None:
         """The most recent captured image for a channel, or None if it has none."""
+        # The id came off a URL; membership in the listing is what keeps it from
+        # naming anything but a channel directory.
         if channel_id not in self.channels_with_images():
             return None
-        entries = self.library._timestamped_paths(channel_id, "image")
-        return entries[-1][1] if entries else None
+        return self.library.latest_image(channel_id)
 
     def channels_with_images(self) -> list[str]:
         if not self.root_path.is_dir():

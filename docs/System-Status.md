@@ -146,8 +146,12 @@ entirely: frame filenames are `%Y%m%d_%H%M%S_%Z`, which is fixed-width and zero-
 lexicographic order *is* chronological order and "how many frames since 14:00" is a string
 comparison. Only the first and last name in each directory is ever parsed into a date.
 
-The report is then cached for twelve seconds, and the page polls every twenty, so an open page costs
-one scan per refresh rather than one per request. The Refresh button is the only thing that skips
-the cache. `collected_in_ms` in the payload — shown in the header — is how long the scan actually
-took; a few tens of milliseconds is normal, and the tail is stat syscalls, so it scales with file
-count rather than with bytes.
+Even so, the scan is a stat per file, so it scales with file count rather than with bytes: about
+0.2 s per 40,000-frame channel, plus the archive's segments, which on a full library adds up to a
+couple of seconds. No request waits that long. A report is served as is for twelve seconds; a
+request later than that still gets it at once and starts a single rescan in the background, so the
+next request finds a newer one. The page polls every twenty seconds, so an open page shows numbers
+at most one poll old and never hangs on a scan. A report older than a minute is not worth showing —
+the page was closed — so the first request after that scans in the foreground, as does the Refresh
+button. `collected_in_ms` in the payload is how long the last scan took; the header shows that, or
+the report's age when it came from the cache.

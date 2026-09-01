@@ -8,6 +8,7 @@ images would buy nothing and would pull ffmpeg into tests that do not need it.
 import json
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -755,12 +756,50 @@ def test_forcing_a_refresh_rescans(capture, config, now):
     assert collector.report(force=True)["storage"]["by_track"]["image"]["files"] == 5
 
 
-def test_a_zero_ttl_collector_never_serves_a_stale_report(capture, config, now):
-    collector = SystemStatusCollector(config, ttl_seconds=0)
+def test_a_collector_with_no_stale_window_rescans_on_every_look(capture, config, now):
+    collector = SystemStatusCollector(config, ttl_seconds=0, max_age_seconds=0)
     collector.report()
     capture("1", steady(now, 3, config.capture_interval))
 
     assert collector.report()["storage"]["by_track"]["image"]["files"] == 3
+
+
+def test_past_the_ttl_the_old_report_is_served_while_a_rescan_runs(capture, config, now):
+    """A poll never waits on the scan: it gets what there is, and the next one gets the rest."""
+    collector = SystemStatusCollector(config, ttl_seconds=0)
+    collector.report()
+    capture("1", steady(now, 3, config.capture_interval))
+
+    stale = collector.report()
+    collector.join_refresh(timeout=5)
+    refreshed = collector.report()
+
+    assert stale["cached"] is True
+    assert stale["storage"]["by_track"]["image"]["files"] == 0
+    assert refreshed["storage"]["by_track"]["image"]["files"] == 3
+
+
+def test_only_one_background_rescan_runs_at_a_time(capture, config, monkeypatch):
+    collector = SystemStatusCollector(config, ttl_seconds=0)
+    collector.report()
+
+    gate = threading.Event()
+    scans: list[float] = []
+    collect = collector._collect
+
+    def slow_collect(recognition):
+        scans.append(time.monotonic())
+        gate.wait(timeout=5)
+        return collect(recognition)
+
+    monkeypatch.setattr(collector, "_collect", slow_collect)
+
+    collector.report()
+    collector.report()
+    gate.set()
+    collector.join_refresh(timeout=5)
+
+    assert len(scans) == 1
 
 
 # --- over HTTP ---

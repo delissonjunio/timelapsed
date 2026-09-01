@@ -3,6 +3,7 @@ import fcntl
 import glob
 import logging
 import os
+import re
 import shutil
 from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,10 @@ from typing import Literal, Sequence
 logger = logging.getLogger(__name__)
 
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S_%Z"
+# A frame stem -- the filename without its extension -- as TIMESTAMP_FORMAT
+# writes it. The shape guard on the cheap paths, where a strptime per file would
+# be the dominant cost.
+FRAME_STEM = re.compile(r"\d{8}_\d{6}_UTC")
 
 TargetName = Literal["image", "keyframe", "timelapse"]
 
@@ -120,6 +125,34 @@ class ImageCaptureLibrary:
 
         entries.sort(key=lambda entry: entry[0])
         return entries
+
+    def latest_image(self, channel_id: str) -> Path | None:
+        """The newest still for a channel, or None when it has none.
+
+        The lexicographic maximum of the directory listing, nothing more: stems
+        are fixed-width UTC timestamps, so name order is time order and no file
+        needs a stat or a strptime. That matters here more than anywhere else in
+        the library, because this sits under the viewer's thumbnail route, asked
+        once per camera every thirty seconds, and at a five-second interval over
+        eight days of retention a channel holds ~140,000 stills. Going through
+        _timestamped_paths cost half a second a call.
+        """
+        directory = self._path_for_channel(channel_id, "image")
+        newest: os.DirEntry[str] | None = None
+        try:
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if not FRAME_STEM.fullmatch(entry.name.rpartition(".")[0]):
+                        continue
+                    # d_type from the listing, not a stat, on every filesystem
+                    # that matters.
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if newest is None or entry.name > newest.name:
+                        newest = entry
+        except OSError:
+            return None
+        return Path(newest.path) if newest is not None else None
 
     def store_image(self, channel_id: str, file_format_extension: str, content: bytes, taken_at: datetime) -> Path:
         image_path = (
