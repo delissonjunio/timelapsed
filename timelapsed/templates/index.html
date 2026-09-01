@@ -1193,7 +1193,15 @@ for (const event of ["pause", "seeked", "loadedmetadata", "progress", "ratechang
 
 // --- the transport ----------------------------------------------------------
 
-const RATES = [0.5, 1, 2, 4];
+// Past the usual 0.5-4, a day of hourly clips goes by in seconds. Browsers cap
+// the rate they will set -- Chromium refuses anything above 16x outright,
+// others clamp -- so each rate is tried on a detached element first, and a
+// button the browser could not honour is never drawn rather than drawn dead.
+const RATES = [0.5, 1, 2, 4, 8, 16, 32].filter(rate => {
+  const probe = document.createElement("video");
+  try { probe.playbackRate = rate; } catch (err) { return false; }
+  return probe.playbackRate === rate;
+});
 
 function syncRates() {
   for (const button of document.querySelectorAll("#transport [data-rate]")) {

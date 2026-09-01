@@ -75,9 +75,10 @@ that one conversion, in both directions:
 
 The transport bar under the picture states **what time is on screen**. Nothing in the picture says
 so, and on a weekly clip a second of video is nearly three hours of the world. It also carries
-play/pause, ten-second skips, frame stepping, 0.5×–4× (half speed is the only way to watch a
-weekly), and full screen. Space plays and pauses, `,` and `.` step a frame, the arrow keys move a
-clip at a time.
+play/pause, ten-second skips, frame stepping, 0.5×–32× (half speed is the only way to watch a
+weekly; at the fast end a day goes by in seconds, and a browser that caps the rate — Chrome stops
+at 16× — simply shows fewer buttons), and full screen. Space plays and pauses, `,` and `.` step a
+frame, the arrow keys move a clip at a time.
 
 The ten-second skip is ten seconds **of the video**, not of the world — on a weekly render that is
 most of a day. The reason to reach for it is "I missed something, back it up", and that distance is
