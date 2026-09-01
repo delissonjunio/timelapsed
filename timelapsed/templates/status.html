@@ -18,23 +18,13 @@ body {
   font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   display:flex; flex-direction:column;
 }
-header {
-  display:flex; align-items:center; gap:.75rem; flex:none; flex-wrap:wrap;
-  padding:.7rem 1rem; border-bottom:1px solid var(--line); background:var(--panel);
-  position:sticky; top:0; z-index:5;
-}
-header h1 { font-size:1rem; margin:0; letter-spacing:.14em; text-transform:uppercase;
-            color:var(--muted); font-weight:700; white-space:nowrap; }
-header .dot { width:7px; height:7px; border-radius:50%; background:var(--ok);
-              box-shadow:0 0 8px var(--ok); flex:none; }
-header .dot.warn { background:var(--warn); box-shadow:0 0 8px var(--warn); }
-header .dot.bad  { background:var(--bad);  box-shadow:0 0 8px var(--bad); }
-header .spacer { flex:1; }
-header .navlink { color:var(--muted); text-decoration:none; font-size:.75rem; white-space:nowrap;
-                  padding:.3rem .6rem; border-radius:6px; border:1px solid var(--line); }
-header .navlink:hover { color:var(--fg); background:var(--panel-2); }
-header .stat { color:var(--muted); font-size:.78rem; font-variant-numeric:tabular-nums;
-               white-space:nowrap; }
+header { position:sticky; top:0; z-index:5; }
+/* The health dot keeps the headline company on the page's side of the
+   navbar, coloured by the worst check. */
+header .health { display:flex; align-items:center; gap:.5rem; }
+header .health .dot { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+header .health .dot.warn { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+header .health .dot.bad  { background:var(--bad);  box-shadow:0 0 8px var(--bad); }
 
 main { flex:1; overflow-y:auto; padding:1.1rem 1.25rem 3rem; }
 .wrap { max-width:1180px; margin:0 auto; }
@@ -139,12 +129,12 @@ td.dim { color:var(--muted); }
 </head>
 <body>
 <header>
-  <span class="dot" id="healthdot"></span>
-  <h1>System status</h1>
-  <a class="navlink" href="/">&larr; Timeline</a>
-  <a class="navlink" href="/library" id="librarylink" hidden>People &amp; plates</a>
+  <!--__NAV__-->
   <span class="spacer"></span>
-  <span class="stat" id="stat">Loading&hellip;</span>
+  <span class="health">
+    <span class="dot" id="healthdot"></span>
+    <span class="stat" id="stat">Loading&hellip;</span>
+  </span>
   <button class="btn" id="refresh">Refresh</button>
 </header>
 

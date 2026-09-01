@@ -4,11 +4,12 @@ Each page's markup lives under templates/ as a real .html file, where an
 editor treats it as HTML instead of as the inside of a Python string.
 load_page reads one and stitches in the fragments every page shares -- the
 favicon, the palette and resets in templates/base.css, the helpers in
-templates/shared.js -- so each of those exists exactly once. The stitching
-happens in Python, at import time: every page is still served whole in a
-single request, there is still no build step, and the standard library is
-still the only dependency.
+templates/shared.js, the navbar in templates/nav.html -- so each of those
+exists exactly once. The stitching happens in Python, at import time: every
+page is still served whole in a single request, there is still no build step,
+and the standard library is still the only dependency.
 """
+import re
 from importlib.resources import files
 
 FAVICON = (
@@ -28,6 +29,23 @@ def _read(name: str) -> str:
     return (_TEMPLATES / name).read_text(encoding="utf-8")
 
 
+def _navbar(page: str) -> str:
+    """The shared navbar with this page's own link marked as the current one.
+
+    Links in nav.html carry a data-page marker naming the template they lead
+    to. The one matching this page becomes aria-current, which is what the
+    stylesheet lights up; the markers come off the rest, having done their
+    job. A page the navbar has no link for is a mistake, not a page without
+    a current item.
+    """
+    nav = _read("nav.html")
+    marker = f'data-page="{page}"'
+    if nav.count(marker) != 1:
+        raise ValueError(f"nav.html has no link for {page}")
+    nav = nav.replace(marker, 'aria-current="page"')
+    return re.sub(r' data-page="[^"]*"', "", nav)
+
+
 def load_page(name: str) -> str:
     """A template with the shared fragments stitched in, ready to serve.
 
@@ -39,6 +57,7 @@ def load_page(name: str) -> str:
     for placeholder, value, required in (
         ("/*__BASE_CSS__*/", _read("base.css"), True),
         ("//__SHARED_JS__", _read("shared.js"), False),
+        ("<!--__NAV__-->", _navbar(name.removesuffix(".html")), True),
         ("__FAVICON__", FAVICON, True),
     ):
         if required and placeholder not in page:

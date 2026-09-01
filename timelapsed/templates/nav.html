@@ -1,0 +1,13 @@
+<!-- The navbar every page shares. Stitched in by timelapsed.pages.load_page,
+     which turns the data-page marker on the current page's link into
+     aria-current, so the page itself never has to know which one it is.
+     The library link starts hidden: each page shows it once it knows
+     recognition is on, and the library page shows it because being there
+     is the proof. -->
+<h1 class="brand"><a href="/"><span class="dot"></span>Timelapsed</a></h1>
+<nav aria-label="Pages">
+  <a href="/" data-page="index">Timeline</a>
+  <a href="/live" data-page="live">Live</a>
+  <a href="/library" data-page="library" id="librarylink" hidden>People &amp; plates</a>
+  <a href="/status" data-page="status">System</a>
+</nav>

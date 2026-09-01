@@ -9,3 +9,31 @@
 }
 * { box-sizing:border-box; }
 html, body { height:100%; }
+
+/* The navbar: templates/nav.html on the left, whatever the page wants on the
+   right. Static on purpose -- the same brand and the same four links on every
+   page, with the current page's link lit -- so nothing moves or goes missing
+   between pages. It wraps rather than clips: on a phone the links take a row
+   of their own under the brand and the stat. */
+header {
+  display:flex; align-items:center; flex-wrap:wrap; gap:.5rem .9rem; flex:none;
+  padding:.55rem 1rem; border-bottom:1px solid var(--line); background:var(--panel);
+}
+header .brand { margin:0; font-size:.95rem; font-weight:700; letter-spacing:.14em;
+                text-transform:uppercase; white-space:nowrap; }
+header .brand a { display:flex; align-items:center; gap:.55rem; color:var(--fg);
+                  text-decoration:none; }
+header .dot { width:7px; height:7px; border-radius:50%; flex:none;
+              background:var(--accent); box-shadow:0 0 8px var(--accent); }
+header nav { display:flex; flex-wrap:wrap; gap:.15rem; }
+header nav a { color:var(--muted); text-decoration:none; font-size:.8rem; white-space:nowrap;
+               padding:.3rem .65rem; border-radius:6px; border:1px solid transparent; }
+header nav a:hover { color:var(--fg); }
+header nav a[aria-current="page"] { color:var(--fg); background:var(--panel-2);
+                                    border-color:var(--line); }
+header .spacer { flex:1; }
+header .stat { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular-nums;
+               white-space:nowrap; }
+@media (max-width:760px) {
+  header nav { order:1; flex-basis:100%; }
+}

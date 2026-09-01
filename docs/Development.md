@@ -49,6 +49,7 @@ random port and drive it with `urllib`.
 | `test_web_recognition.py` | The recognition routes and the activity lanes |
 | `test_system_status.py` | The library scan, the status arithmetic on top of it, `/status` and `/api/system` |
 | `test_nginx_config.py` | The generated nginx config: routes, headers, what stays proxied |
+| `test_pages.py` | The page loader: the shared navbar lands on every page with the current page's link lit |
 
 The clock is frozen in `test_daemon.py` by patching `timelapsed.timelapsed.datetime` and driving
 `time.sleep`, so a test covering a week of rollovers runs in milliseconds.
@@ -94,7 +95,7 @@ timelapsed/
   catalogue.py              what the viewer serves, read off the disk: clips, stills, archive
   recognition_reader.py     the viewer's read access to the recognition index
   pages.py                  loads templates/ and stitches in the shared fragments
-  templates/                the pages' markup, plus base.css and shared.js
+  templates/                the pages' markup, plus base.css, shared.js and the navbar in nav.html
   library_page.py           the people and plates page
   live_page.py              the live wall
   status_page.py            the system status page
