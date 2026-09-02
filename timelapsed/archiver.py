@@ -31,6 +31,7 @@ the recycle frontier and the frontier moves. A probe that fails leaves that
 channel unfiltered: wrongly fetching a doomed segment costs a fast failure,
 wrongly skipping a live one loses footage.
 """
+import json
 import logging
 import shutil
 import signal
@@ -77,9 +78,22 @@ HORIZON_SLACK = timedelta(hours=1)
 # The probe's search window opens slightly before the mirror's oldest row for
 # the channel, absorbing the clock translation at the device edge.
 HORIZON_PROBE_MARGIN = timedelta(hours=1)
+# A failed fetch is retried on a per-segment exponential backoff, never parked
+# for good: these devices fail transiently as a matter of course (the Hikvision
+# answers 401 in storms, both 400 under back-to-back load), and a permanent
+# park turns a bad hour into a hole in the replica that only a restart heals.
+# Doubling from ten minutes to a six-hour ceiling means a passing storm heals
+# within minutes of ending, while a persistent refusal costs the device four
+# requests a day per segment until its own retention recycles the recording.
+RETRY_FIRST_DELAY = timedelta(minutes=10)
+RETRY_CEILING = timedelta(hours=6)
 
 STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 SCRATCH_DIRECTORY_NAME = ".scratch"
+# What this daemon knows that the archive tree cannot say -- horizons, failure
+# backoffs, expired counts -- published for the status page, which otherwise
+# reads mirror-minus-files and calls recycled-forever segments a backlog.
+STATUS_FILENAME = ".archiver-status.json"
 
 shutting_down = False
 
@@ -98,6 +112,17 @@ class PendingSegment:
     ended_at: datetime
     size_bytes: int
     playback_uri: str
+
+
+@dataclass
+class FailedFetch:
+    """One segment's failure history: how often it has failed and when it may
+    be tried again. Lives until the fetch succeeds or the device recycles the
+    segment -- never until a restart."""
+    channel: str
+    started_at: datetime
+    attempts: int
+    next_attempt_at: datetime
 
 
 def stamp(moment: datetime) -> str:
@@ -156,10 +181,16 @@ class SegmentArchiver:
         # Device segment names already on disk. Seeded from a full scan, then
         # maintained incrementally -- fetches add, reclaim removes.
         self._archived: set[str] = set()
-        # Names that failed this run. Retried only on restart: a broken fetch
-        # tends to fail identically all day, and retrying it every pass would
-        # starve the fetches that can still succeed.
-        self._failed: set[str] = set()
+        # Failure history by device segment name. A failed fetch waits out a
+        # per-segment backoff and is then tried again -- forever, until it
+        # succeeds or the device recycles the segment. Retrying every pass
+        # would starve the fetches that can still succeed; never retrying
+        # turned every transient storm into a permanent hole in the replica.
+        self._failed: dict[str, FailedFetch] = {}
+        # Per channel, how many mirror rows the last pending() pass skipped as
+        # expired on the device. Published in the status file so the status
+        # page can stop calling recycled-forever segments a backlog.
+        self._expired_last_pass: dict[str, int] = {}
         # Per channel, when the oldest segment its device still holds starts.
         # A channel absent here is not filtered at all -- the probe failed or
         # answered nothing, and the safe reading of both is "fetch as always".
@@ -244,7 +275,9 @@ class SegmentArchiver:
 
         Segments the device itself has already recycled are left out and not
         remembered as failures -- expiry is the device's retention at work, not
-        an error, and the horizon test is re-run fresh every pass.
+        an error, and the horizon test is re-run fresh every pass. A segment
+        whose last fetch failed stays out only while its backoff runs; once
+        that elapses it queues like any other.
         """
         settled_before = now - SETTLE
         # Anything retention would delete tomorrow must not be fetched today,
@@ -262,10 +295,16 @@ class SegmentArchiver:
                 if cutoff is not None and ended_at < cutoff:
                     continue
                 name = uri_segment_name(row["playback_uri"])
-                if not name or name in self._archived or name in self._failed:
+                if not name or name in self._archived:
                     continue
                 if self._expired_on_device(channel, ended_at):
                     expired[channel] = expired.get(channel, 0) + 1
+                    # Recycled is final: whatever failures it collected while
+                    # the device still held it no longer mean anything.
+                    self._failed.pop(name, None)
+                    continue
+                failure = self._failed.get(name)
+                if failure is not None and failure.next_attempt_at > now:
                     continue
                 found.append(PendingSegment(
                     channel=channel,
@@ -288,6 +327,7 @@ class SegmentArchiver:
                 ),
             )
         found.sort(key=lambda segment: segment.started_at)
+        self._expired_last_pass = expired
         return found
 
     # --- fetching ---
@@ -325,6 +365,7 @@ class SegmentArchiver:
             final = destination / segment_filename(segment.started_at, segment.ended_at, segment.name)
             remuxed.replace(final)
             self._archived.add(segment.name)
+            self._failed.pop(segment.name, None)
 
             elapsed = time.monotonic() - started
             telemetry.record_metric("Custom/archiver/bytes_archived", written)
@@ -399,19 +440,75 @@ class SegmentArchiver:
         """The backlog as the alerts see it: segments still waiting, and how
         old the oldest one is.
 
+        Waiting includes every segment sitting out a failure backoff. It has
+        to: those are exactly the segments the replica is missing, and a gauge
+        that forgot them once read hours behind as fully caught up while
+        thousands of refused segments aged toward the recycle frontier.
+
         Reported every pass including zero -- the zero is the heartbeat that
         tells an idle archiver apart from a dead one -- and again after every
         fetch, because a backfill pass runs for days and a gauge quiet that
         long reads as a dead daemon.
         """
         remaining = queue[position:]
-        telemetry.record_metric("Custom/archiver/backlog_segments", len(remaining))
+        queued_names = {segment.name for segment in remaining}
+        waiting = [
+            failure for name, failure in self._failed.items()
+            if name not in queued_names
+        ]
+        oldest_starts = [segment.started_at for segment in remaining[:1]]
+        oldest_starts += [failure.started_at for failure in waiting]
         oldest_days = 0.0
-        if remaining:
-            age = datetime.now(tz=timezone.utc) - remaining[0].started_at
+        if oldest_starts:
+            age = datetime.now(tz=timezone.utc) - min(oldest_starts)
             oldest_days = max(age.total_seconds() / 86400, 0.0)
+        telemetry.record_metric(
+            "Custom/archiver/backlog_segments", len(remaining) + len(waiting)
+        )
         telemetry.record_metric("Custom/archiver/backlog_oldest_days", oldest_days)
+        telemetry.record_metric("Custom/archiver/deferred_segments", len(waiting))
         telemetry.record_metric("Custom/archiver/disk_free_gb", self._free_bytes() / 1e9)
+        self._write_status(remaining, waiting)
+
+    def _write_status(
+        self, remaining: list[PendingSegment], waiting: list[FailedFetch]
+    ) -> None:
+        """Publish what only this daemon knows, for the status page.
+
+        The page can count files against mirror rows on its own, but it cannot
+        tell a fetchable backlog from footage the device recycled before it was
+        ever fetched, and it cannot see failures waiting out a backoff. Written
+        atomically beside the archive itself on every backlog report, so it is
+        at most one fetch stale; a page that finds it old just falls back to
+        raw counting.
+        """
+        channels: dict[str, dict] = {
+            channel: {
+                "pending": 0,
+                "waiting_retry": 0,
+                "expired": self._expired_last_pass.get(channel, 0),
+                "horizon": (
+                    self._horizons[channel].isoformat()
+                    if channel in self._horizons else None
+                ),
+            }
+            for channel in self.channels
+        }
+        for segment in remaining:
+            channels[segment.channel]["pending"] += 1
+        for failure in waiting:
+            if failure.channel in channels:
+                channels[failure.channel]["waiting_retry"] += 1
+        payload = {
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "channels": channels,
+        }
+        try:
+            scratch = self.root / (STATUS_FILENAME + ".tmp")
+            scratch.write_text(json.dumps(payload))
+            scratch.replace(self.root / STATUS_FILENAME)
+        except OSError:
+            logger.warning("Could not write %s", STATUS_FILENAME, exc_info=True)
 
     def run_once(self, now: datetime) -> int:
         """One full pass: fetch everything pending, then enforce retention."""
@@ -445,14 +542,24 @@ class SegmentArchiver:
                     self.fetch(segment)
                     fetched += 1
                 except Exception:
-                    # One bad segment -- recycled behind a stale or unprobed
-                    # horizon (the first-chunk magic check is the backstop),
-                    # malformed PS -- must not stop the replica behind it.
-                    self._failed.add(segment.name)
+                    # One bad segment -- a device refusing in a 401/400 storm,
+                    # recycled behind a stale or unprobed horizon (the
+                    # first-chunk magic check is the backstop), malformed PS --
+                    # must not stop the replica behind it. It backs off and is
+                    # retried until it succeeds or the device recycles it.
+                    previous = self._failed.get(segment.name)
+                    attempts = previous.attempts + 1 if previous else 1
+                    delay = min(RETRY_FIRST_DELAY * 2 ** (attempts - 1), RETRY_CEILING)
+                    self._failed[segment.name] = FailedFetch(
+                        channel=segment.channel,
+                        started_at=segment.started_at,
+                        attempts=attempts,
+                        next_attempt_at=now + delay,
+                    )
                     telemetry.notice_error()
                     logger.exception(
-                        "Failed to archive %s segment %s, skipping until restart",
-                        segment.channel, segment.name,
+                        "Failed to archive %s segment %s (attempt %d), retrying in %s",
+                        segment.channel, segment.name, attempts, delay,
                     )
             self._report_backlog(queue, position)
         with telemetry.task("archiver/reclaim"):

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from timelapsed.archiver import parse_segment_filename
+from timelapsed.archiver import STATUS_FILENAME, parse_segment_filename
 from timelapsed.config import validate_config
 from timelapsed.image_capture_library import (
     FRAME_STEM,
@@ -258,6 +258,31 @@ class ArchiveChannelScan:
     bytes: int = 0
     oldest_start: datetime | None = None
     newest_end: datetime | None = None
+
+
+# How stale the archiver's own status file may grow before the page stops
+# trusting it. The archiver rewrites it on every backlog report -- at least
+# once per fetch and once a minute idle -- so anything older means the daemon
+# is down or wedged, and the page falls back to raw mirror-minus-files counts.
+ARCHIVER_STATUS_MAX_AGE = timedelta(minutes=30)
+
+
+def read_archiver_status(root: Path, now: datetime) -> dict[str, dict]:
+    """The archiver's own account of its queue, if fresh enough to trust.
+
+    {channel: {pending, waiting_retry, expired, horizon}} from the daemon's
+    status file. Empty when the file is missing, unreadable or stale: what only
+    the archiver knows must not outlive the archiver that knew it.
+    """
+    try:
+        payload = json.loads((root / STATUS_FILENAME).read_text())
+        generated_at = datetime.fromisoformat(payload["generated_at"])
+        channels = payload["channels"]
+        if not isinstance(channels, dict) or now - generated_at > ARCHIVER_STATUS_MAX_AGE:
+            return {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return channels
 
 
 def scan_archive_channel(directory: Path) -> ArchiveChannelScan:
@@ -1232,11 +1257,14 @@ class SystemStatusCollector:
             except Exception:
                 logger.exception("Could not read the footage mirror for the status page")
 
+        daemon = read_archiver_status(config.archive_root, now)
+
         rows = []
         total_files = total_bytes = 0
         for channel in channels:
             scan = scan_archive_channel(config.archive_root / channel)
             held = mirror.get(channel, {})
+            extra = daemon.get(channel) or {}
             newest_recorded = (
                 datetime.fromtimestamp(held["newest"], tz=timezone.utc)
                 if held.get("newest") else None
@@ -1256,8 +1284,14 @@ class SystemStatusCollector:
                 "recorded_segments": held.get("segments"),
                 "recorded_bytes": held.get("bytes"),
                 "lag_seconds": lag,
+                # What the device recycled before it was ever fetched; those
+                # mirror rows are gone for good and are no one's backlog.
+                "expired_segments": extra.get("expired"),
+                # Failed their last fetch, waiting out a retry backoff.
+                "failing_segments": extra.get("waiting_retry"),
                 "backlog_segments": (
-                    max(held["segments"] - scan.files, 0) if held.get("segments") is not None else None
+                    max(held["segments"] - scan.files - (extra.get("expired") or 0), 0)
+                    if held.get("segments") is not None else None
                 ),
             })
 
@@ -1293,6 +1327,12 @@ class SystemStatusCollector:
             ),
             "backlog_segments": sum(
                 row["backlog_segments"] or 0 for row in rows
+            ),
+            "expired_segments": sum(
+                row["expired_segments"] or 0 for row in rows
+            ),
+            "failing_segments": sum(
+                row["failing_segments"] or 0 for row in rows
             ),
         }
 
@@ -1445,6 +1485,13 @@ class SystemStatusCollector:
                     f"{_humanise(archive['worst_lag_seconds'])}. Normal while the "
                     f"oldest-first backfill runs; if it persists, check "
                     f"`systemctl status timelapsed-archiver`.")
+            if archive.get("failing_segments"):
+                add("warn", "Segments are failing to archive",
+                    f"{archive['failing_segments']} segment(s) failed their last fetch "
+                    f"and are waiting out a retry backoff. Each is retried until it "
+                    f"succeeds or the device recycles it; a count that only grows means "
+                    f"the device is refusing them outright -- see "
+                    f"`journalctl -u timelapsed-archiver`.")
 
         services = report["services"] or {}
         if services.get("unavailable"):

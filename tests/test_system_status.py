@@ -950,3 +950,56 @@ def test_an_empty_archive_reports_itself_rather_than_failing(config, tmp_path):
     assert archive["enabled"] and archive["total_files"] == 0
     assert all(row["files"] == 0 for row in archive["channels"])
     assert any(check["title"] == "The archive is empty" for check in report["checks"])
+
+
+def test_the_archiver_status_file_splits_expired_from_the_backlog(config, index, tmp_path, now):
+    from timelapsed.archiver import STATUS_FILENAME
+
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    old = now - timedelta(days=10)
+    # The mirror lists three segments, none replicated: two the device has
+    # already recycled, one failing its fetches.
+    index.record_segments("1", [
+        (to_epoch(old), to_epoch(old + timedelta(minutes=1)), 512, "rtsp://nvr/x?name=ch01_001&size=512"),
+        (to_epoch(old + timedelta(hours=1)), to_epoch(old + timedelta(hours=1, minutes=1)), 512,
+         "rtsp://nvr/x?name=ch01_002&size=512"),
+        (to_epoch(now - timedelta(hours=2)), to_epoch(now - timedelta(hours=1)), 900,
+         "rtsp://nvr/x?name=ch01_003&size=900"),
+    ], swept_through=to_epoch(now))
+    (config.archive_root / STATUS_FILENAME).write_text(json.dumps({
+        "generated_at": now.isoformat(),
+        "channels": {"1": {"pending": 0, "waiting_retry": 1, "expired": 2, "horizon": None}},
+    }))
+
+    report = SystemStatusCollector(config).report(recognition=Reader(index))
+    archive = report["archive"]
+    row = next(entry for entry in archive["channels"] if entry["channel"] == "1")
+
+    assert row["expired_segments"] == 2 and row["failing_segments"] == 1
+    assert row["backlog_segments"] == 1  # three listed, two recycled forever
+    assert archive["expired_segments"] == 2 and archive["failing_segments"] == 1
+    assert any(check["title"] == "Segments are failing to archive" for check in report["checks"])
+
+
+def test_a_stale_archiver_status_file_is_ignored(config, index, tmp_path, now):
+    from timelapsed.archiver import STATUS_FILENAME
+
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    index.record_segments("1", [
+        (to_epoch(now - timedelta(hours=2)), to_epoch(now - timedelta(hours=1)), 900,
+         "rtsp://nvr/x?name=ch01_003&size=900"),
+    ], swept_through=to_epoch(now))
+    (config.archive_root / STATUS_FILENAME).write_text(json.dumps({
+        "generated_at": (now - timedelta(hours=2)).isoformat(),
+        "channels": {"1": {"pending": 0, "waiting_retry": 5, "expired": 1, "horizon": None}},
+    }))
+
+    report = SystemStatusCollector(config).report(recognition=Reader(index))
+    row = next(entry for entry in report["archive"]["channels"] if entry["channel"] == "1")
+
+    # A dead daemon's last words must not keep dressing up the numbers.
+    assert row["expired_segments"] is None and row["failing_segments"] is None
+    assert row["backlog_segments"] == 1
+    assert not any(check["title"] == "Segments are failing to archive" for check in report["checks"])

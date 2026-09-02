@@ -1,4 +1,5 @@
 """The segment archiver: what it fetches, where it files it, what it deletes."""
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,7 +9,9 @@ from tests.conftest import BASE_TIME
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.archiver import (
     HORIZON_PROBE_MARGIN,
+    RETRY_FIRST_DELAY,
     SETTLE,
+    STATUS_FILENAME,
     SegmentArchiver,
     parse_segment_filename,
     segment_filename,
@@ -193,7 +196,7 @@ def test_older_than_retention_is_never_fetched(index, tmp_path, fake_remux):
     assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
-def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
+def test_one_failure_neither_stops_the_pass_nor_hammers_the_next(archiver, index):
     seed_segment(index, "5", "ch05_gone", NOW - timedelta(hours=3), NOW - timedelta(hours=3, minutes=-1))
     seed_segment(index, "5", "ch05_fine", NOW - timedelta(hours=2), NOW - timedelta(hours=2, minutes=-1))
     archiver.client.failures.add("ch05_gone")
@@ -203,10 +206,91 @@ def test_one_failure_neither_stops_the_pass_nor_is_retried(archiver, index):
     assert not list(archiver.root.glob("**/*ch05_gone*"))
     assert list((archiver.root / ".scratch").glob("*")) == []
 
-    # The next pass does not hammer the segment the device has expired.
+    # An immediate next pass leaves the failure to its backoff.
     archiver.client.calls.clear()
     archiver.run_once(NOW)
     assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_a_failure_is_retried_once_its_backoff_elapses(archiver, index):
+    started = NOW - timedelta(hours=3)
+    seed_segment(index, "5", "ch05_flaky", started, started + timedelta(minutes=1))
+    archiver.client.failures.add("ch05_flaky")
+    archiver.run_once(NOW)
+    archiver.client.calls.clear()
+
+    # The device heals; the archiver comes back for the segment on its own.
+    archiver.client.failures.clear()
+    archiver.run_once(NOW + RETRY_FIRST_DELAY + timedelta(seconds=1))
+    assert archiver.client.calls == ["ch05_flaky"]  # pyright: ignore[reportAttributeAccessIssue]
+    assert len(list(archiver.root.glob("**/*ch05_flaky*"))) == 1
+
+
+def test_repeated_failures_back_off_exponentially(archiver, index):
+    started = NOW - timedelta(hours=3)
+    seed_segment(index, "5", "ch05_stuck", started, started + timedelta(minutes=1))
+    archiver.client.failures.add("ch05_stuck")
+
+    archiver.run_once(NOW)  # first failure: retry after one delay
+    second_attempt_at = NOW + RETRY_FIRST_DELAY + timedelta(seconds=1)
+    archiver.run_once(second_attempt_at)  # second failure: the delay doubles
+    archiver.client.calls.clear()
+
+    archiver.run_once(second_attempt_at + RETRY_FIRST_DELAY + timedelta(seconds=1))
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
+    archiver.run_once(second_attempt_at + 2 * RETRY_FIRST_DELAY + timedelta(seconds=2))
+    assert archiver.client.calls == ["ch05_stuck"]  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_an_expired_segment_sheds_its_failure_history(archiver, index):
+    started = NOW - timedelta(days=20)
+    seed_segment(index, "5", "ch05_doomed", started, started + timedelta(minutes=2))
+    archiver.client.failures.add("ch05_doomed")
+
+    archiver.run_once(NOW)
+    assert "ch05_doomed" in archiver._failed
+    # The device recycles it before any retry succeeds: the history goes too.
+    archiver.client.horizons["5"] = NOW - timedelta(days=2)
+    archiver.refresh_horizons()
+    archiver.run_once(NOW + RETRY_FIRST_DELAY * 2)
+    assert "ch05_doomed" not in archiver._failed
+
+
+def test_the_backlog_gauges_count_segments_waiting_out_a_backoff(archiver, index, monkeypatch):
+    recorded = {}
+    monkeypatch.setattr(
+        "timelapsed.telemetry.record_metric",
+        lambda name, value: recorded.__setitem__(name, value),
+    )
+    started = NOW - timedelta(days=2)
+    seed_segment(index, "5", "ch05_refused", started, started + timedelta(minutes=1))
+    archiver.client.failures.add("ch05_refused")
+    archiver.run_once(NOW)
+
+    archiver.run_once(NOW)  # deferred now, not queued -- but still owed
+    assert recorded["Custom/archiver/backlog_segments"] == 1
+    assert recorded["Custom/archiver/deferred_segments"] == 1
+    age_days = (datetime.now(tz=timezone.utc) - started).total_seconds() / 86400
+    assert recorded["Custom/archiver/backlog_oldest_days"] == pytest.approx(age_days, rel=0.01)
+
+
+def test_the_status_file_tells_the_page_what_the_tree_cannot(archiver, index):
+    gone_start = NOW - timedelta(days=20)
+    seed_segment(index, "5", "ch05_gone", gone_start, gone_start + timedelta(minutes=2))
+    seed_segment(index, "5", "ch05_refused", NOW - timedelta(hours=3), NOW - timedelta(hours=2))
+    archiver.client.horizons["5"] = NOW - timedelta(days=2)
+    archiver.client.failures.add("ch05_refused")
+
+    archiver.run_once(NOW)
+    payload = json.loads((archiver.root / STATUS_FILENAME).read_text())
+
+    assert payload["channels"]["5"]["expired"] == 1
+    assert payload["channels"]["5"]["waiting_retry"] == 1
+    assert payload["channels"]["5"]["pending"] == 0
+    assert payload["channels"]["5"]["horizon"] == (NOW - timedelta(days=2)).isoformat()
+    assert payload["channels"]["6"] == {
+        "pending": 0, "waiting_retry": 0, "expired": 0, "horizon": None,
+    }
 
 
 # --- the device's retention horizon ---

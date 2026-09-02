@@ -648,13 +648,19 @@ function drawArchive(report) {
          {num: true, dim: row.lag_seconds === null}),
     cell(row.backlog_segments === null ? "\u2014" : count(row.backlog_segments),
          {num: true, dim: row.backlog_segments === null}),
+    cell(row.failing_segments ? count(row.failing_segments) : "\u2014",
+         {num: true, dim: !row.failing_segments}),
+    cell(row.expired_segments ? count(row.expired_segments) : "\u2014",
+         {num: true, dim: !row.expired_segments}),
   ]);
 
   const box = panel([
     el("b", "", count(archive.total_files) + " segments \u00b7 " + bytes(archive.total_bytes)),
     archive.backlog_segments
-      ? count(archive.backlog_segments) + " listed by the NVR but not fetched yet"
-      : "everything the NVR lists is replicated",
+      ? count(archive.backlog_segments) + " fetchable segments not replicated yet"
+        + (archive.failing_segments
+           ? " · " + count(archive.failing_segments) + " failing, in retry backoff" : "")
+      : "everything still fetchable is replicated",
   ]);
   box.body.appendChild(table([
     {label: "Camera"},
@@ -664,6 +670,8 @@ function drawArchive(report) {
     {label: "Newest", num: true},
     {label: "Behind", num: true},
     {label: "Backlog", num: true},
+    {label: "Failing", num: true},
+    {label: "Expired", num: true},
   ], rows));
 
   const disk = archive.disk || {};
@@ -679,7 +687,10 @@ function drawArchive(report) {
     "Behind is the newest recording the NVR reports against the newest segment "
     + "replicated here \u2014 large numbers are normal while the initial backfill "
     + "runs, because it fetches oldest first. Backlog compares the footage "
-    + "mirror's segment count with the files on this volume."));
+    + "mirror's segment count with the files on this volume, less Expired \u2014 "
+    + "footage the device recycled before it was ever fetched, gone for good. "
+    + "Failing is segments whose last fetch the device refused; the archiver "
+    + "retries each on a growing backoff until the device serves or recycles it."));
   return section("Archive", box);
 }
 
