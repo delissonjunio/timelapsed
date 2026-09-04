@@ -157,6 +157,9 @@ zermatt records continuously plus events; this device records **only motion even
   not 40 GB/day of continuous video. The existing oldest-first sequential replication model fits
   as-is.
 * **Timelapse capture is unaffected** — stills come from `snapshot.cgi` live, not from recordings.
+* **No sound.** Its archived segments carry a video track only, where every zermatt segment also
+  carries the camera's AAC audio; the viewer's sound toggle greys out on them where the browser
+  can tell.
 * On-device retention depth is unknown; measure it once a driver can sweep the whole history
   (mind whether this firmware has a search-session result cap like zermatt's 4,000-match silent
   truncation — unverified here).

@@ -93,6 +93,15 @@ pause.
 Frame stepping needs the rate the clip was rendered at, and an MP4 carries no frame rate a media
 element will report — so the server sends it, per cadence, in the page.
 
+Archived footage plays with the camera's sound — every zermatt segment carries its audio track and
+the archiver's remux keeps it — but it starts muted. Unmuted autoplay is the one kind browsers
+refuse, and a camera's audio arriving unasked is not what anyone opened the page for. The speaker
+button on the transport bar (or `m`) unmutes; the choice then sticks for the rest of the visit,
+through every segment played after it, and a reload starts muted again. Timelapses have no sound
+track at all, so the button is only drawn for footage. Archived Intelbras footage has none either:
+Safari and Firefox can tell from the file and grey the button out, Chrome cannot and offers a
+toggle that unmutes silence. Past a few times normal speed, browsers silence audio on their own.
+
 When an hourly clip ends the player rolls into the next hour rather than looping, and it warms the
 next clip's header before the seam so the handover does not stall. A clip with nothing after it
 loops, as before.

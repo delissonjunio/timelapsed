@@ -284,6 +284,24 @@ def test_the_player_ships_its_own_transport(base_url):
     assert b"screen.innerHTML" not in body
 
 
+def test_footage_starts_muted_and_offers_a_sound_toggle(base_url):
+    """Archived footage carries the camera's audio; a timelapse has no sound
+    track at all. Playback starts muted -- unmuted autoplay is the one kind
+    browsers refuse -- and the transport offers the toggle, for footage only.
+    """
+    _, _, body = get(base_url + "/")
+
+    assert b"video.muted = true" in body
+    assert b'sound.id = "sound"' in body
+    assert b'toggle.id = "soundtoggle"' in body
+    # Drawn for footage alone: a timelapse has nothing to unmute.
+    assert b'entry.cadence !== "footage"' in body
+    # The group inherits a `display` from .tlbar .grp, so `hidden` needs the
+    # explicit rule the transport and the overlay already have.
+    assert b"#sound[hidden] { display:none; }" in body
+    assert b'ev.key === "m"' in body
+
+
 def test_a_crafted_filename_stays_data_in_the_embedded_payload(base_url, stocked_library):
     # Everything before the first underscore is read back as the cadence name, so
     # a file on disk controls a string the page renders. A path cannot contain a

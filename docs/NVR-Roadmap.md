@@ -428,7 +428,9 @@ Hard-won specifics for whoever implements this.
 * **Downloads arrive as MPEG-PS**, not MP4 — and not bare: the stream opens with Hikvision's
   proprietary `IMKH` pseudo-header, with the standard `00 00 01 BA` pack header 32 bytes in.
   ffmpeg skips the wrapper; anything validating the first bytes has to accept both openings.
-  Remux with `-c copy`; 0.17s for a 50s clip.
+  Remux with `-c copy`; 0.17s for a 50s clip. The PS carries the camera's audio next to the
+  HEVC — AAC, mono, 16 kHz on this device — and the copy keeps it, so archived footage plays
+  with sound. The Intelbras `.dav` downloads yield video only.
 * **Back-to-back downloads draw intermittent HTTP 400s.** During the bulk replication roughly
   half the requests were refused — and every refused URI succeeded on manual replay seconds
   later. Nothing distinguishes a refused request from an accepted one; the device just wants a
