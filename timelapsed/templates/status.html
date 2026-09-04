@@ -716,13 +716,17 @@ function drawRenders(report) {
       const holder = el("div");
       holder.style.textAlign = "right";
       const missing = entry.missing_periods;
+      const unfed = entry.no_footage_periods;
       holder.appendChild(el("div", "", count(entry.files) + " clip" + (entry.files === 1 ? "" : "s")));
       const sub = el("div", "");
       sub.style.fontSize = ".7rem";
       sub.style.color = missing ? "var(--warn)" : "var(--muted)";
-      sub.textContent = missing
-        ? missing + " due \u00b7 " + bytes(entry.bytes)
-        : (entry.newest_written_at ? ago(entry.newest_written_at) : "none") + " \u00b7 " + bytes(entry.bytes);
+      const parts = [];
+      if (missing) parts.push(missing + " due");
+      if (unfed) parts.push(unfed + " no footage");
+      if (!parts.length) parts.push(entry.newest_written_at ? ago(entry.newest_written_at) : "none");
+      parts.push(bytes(entry.bytes));
+      sub.textContent = parts.join(" \u00b7 ");
       holder.appendChild(sub);
       line.push(nodeCell(holder));
     }
@@ -731,13 +735,15 @@ function drawRenders(report) {
 
   const box = panel([
     el("b", "", count(renders.outstanding) + " outstanding"),
-    "closed periods inside retention with no video on disk",
+    "closed periods inside retention with frames but no video on disk"
+      + (renders.no_footage ? " \u00b7 " + count(renders.no_footage) + " with no footage to render" : ""),
   ]);
   box.body.appendChild(table(columns, rows));
   box.body.appendChild(el("p", "note",
-    "Counted from the videos on disk rather than from the renderer's own queue, so "
-    + "a period the renderer skipped for holding too few frames is reported here as "
-    + "due \u2014 which, on disk, it is."));
+    "Counted from the videos on disk rather than from the renderer's own queue. "
+    + "A closed period holding fewer frames than the renderer's minimum is never "
+    + "rendered, so it is listed as no footage rather than due: a camera outage is "
+    + "not a render backlog."));
   return section("Renders", box);
 }
 

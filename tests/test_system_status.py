@@ -82,6 +82,20 @@ def test_scan_counts_frames_past_each_cutoff_it_is_given(capture, config, now):
     assert scan.recent_bytes["hour"] == 3 * len(FRAME)
 
 
+def test_scan_counts_frames_between_two_instants(capture, config, now):
+    """Period boundaries are whole minutes, so the minute buckets answer them exactly."""
+    top = now.replace(minute=0, second=0, microsecond=0)
+    capture("1", [top - timedelta(seconds=1), top, top + timedelta(minutes=30), top + timedelta(minutes=59, seconds=59),
+                  top + timedelta(hours=1)])
+
+    scan = scan_frames(config.image_capture_library_root / "1" / "image")
+
+    assert scan.frames_between(top, top + timedelta(hours=1)) == 3
+    assert scan.frames_between(top - timedelta(hours=1), top) == 1
+    assert scan.frames_between(top + timedelta(hours=2), top + timedelta(hours=3)) == 0
+    assert scan.frames_between(top + timedelta(hours=1), top) == 0
+
+
 def test_scan_of_a_directory_that_does_not_exist_is_empty_rather_than_an_error(tmp_path):
     """A camera added to the config an hour ago has no directory yet."""
     scan = scan_frames(tmp_path / "nothing" / "here", {"hour": datetime.now(timezone.utc)})
@@ -483,6 +497,64 @@ def test_periods_from_before_the_camera_captured_anything_are_not_counted_as_due
 
 def test_a_channel_with_no_frames_at_all_has_nothing_outstanding(config):
     assert SystemStatusCollector(config).report()["renders"]["outstanding"] == 0
+
+
+def test_a_closed_period_with_too_few_frames_is_no_footage_rather_than_due(capture, config, now):
+    """The renderer never makes a video out of fewer than min_frames, so it is not behind on one.
+
+    Frames for the whole of the hour before last, none for the hour that just
+    closed: one render owed, one hour the camera simply did not capture.
+    """
+    closed = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    earlier = closed - timedelta(hours=1)
+    capture("1", [earlier + timedelta(minutes=offset) for offset in range(30)])
+
+    report = SystemStatusCollector(config).report()
+    row = next(entry for entry in report["renders"]["channels"] if entry["channel"] == "1")
+    hourly = next(entry for entry in row["cadences"] if entry["cadence"] == "hourly")
+
+    assert hourly["missing_periods"] == 1
+    assert hourly["no_footage_periods"] == 1
+    assert hourly["latest_rendered"] is None
+    assert report["renders"]["outstanding"] == 1
+    assert report["renders"]["no_footage"] == 1
+
+
+def test_hours_without_footage_do_not_read_as_the_renderer_falling_behind(capture, config, now):
+    """A day-long outage used to be reported as every camera a day of renders behind."""
+    closed = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    before_outage = closed - timedelta(hours=5)
+    capture("1", [before_outage + timedelta(minutes=offset) for offset in range(30)])
+
+    report = SystemStatusCollector(config).report()
+    row = next(entry for entry in report["renders"]["channels"] if entry["channel"] == "1")
+    hourly = next(entry for entry in row["cadences"] if entry["cadence"] == "hourly")
+
+    assert hourly["missing_periods"] == 1
+    assert hourly["no_footage_periods"] == 5
+    assert not [check for check in report["checks"] if "renders are behind" in check["title"]]
+
+
+def test_an_anchored_render_with_too_few_keyframes_yet_is_not_outstanding(capture, config, now):
+    """A camera on its first day of keyframes owes no progress video."""
+    from dataclasses import replace
+    from timelapsed.schema import CADENCES
+
+    config = replace(config, timelapse_cadences=[CADENCES["hourly"], CADENCES["progress"]])
+    days_ago = [now - timedelta(days=offset) for offset in (3, 2)]
+    capture("1", days_ago)
+    for still, moment in zip(sorted((config.image_capture_library_root / "1" / "image").iterdir()), days_ago):
+        capture.library.store_keyframe("1", still, moment)
+
+    row = next(
+        entry for entry in SystemStatusCollector(config).report()["renders"]["channels"]
+        if entry["channel"] == "1"
+    )
+    progress = next(entry for entry in row["cadences"] if entry["cadence"] == "progress")
+
+    assert progress["missing_periods"] == 0
+    assert progress["no_footage_periods"] == 1
+    assert progress["latest_rendered"] is None
 
 
 def test_a_video_covering_a_period_counts_even_if_it_does_not_start_on_the_hour(capture, config, now):

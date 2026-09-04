@@ -31,6 +31,7 @@ import time
 from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from itertools import accumulate
 from pathlib import Path
 
 from timelapsed.archiver import STATUS_FILENAME, parse_segment_filename
@@ -100,6 +101,15 @@ def _stem_at(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
 
 
+# The stem up to the minute, "YYYYMMDD_HHMM". Frames are bucketed by it so that
+# "how many frames between two instants" can be answered from the scan.
+MINUTE_KEY_LENGTH = len("YYYYMMDD_HHMM")
+
+
+def _minute_key(moment: datetime) -> str:
+    return _stem_at(moment)[:MINUTE_KEY_LENGTH]
+
+
 def _moment_of(stem: str) -> datetime:
     return datetime.strptime(stem, TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
 
@@ -132,10 +142,26 @@ class FrameScan:
     # many frames, and how many bytes, fall at or after that cutoff.
     recent_files: dict[str, int] = field(default_factory=dict)
     recent_bytes: dict[str, int] = field(default_factory=dict)
+    # Frames per minute: the sorted minute keys and, alongside, a running total
+    # of frames up to and including each. "How many frames between two
+    # instants" is then two bisections rather than a second pass over the
+    # directory -- exact when both instants are whole minutes, which every
+    # period boundary is.
+    minutes: tuple[str, ...] = field(default=(), repr=False)
+    minute_totals: tuple[int, ...] = field(default=(), repr=False)
 
     @property
     def unique_bytes(self) -> int:
         return self.bytes - self.shared_bytes
+
+    def frames_between(self, start: datetime, end: datetime) -> int:
+        """How many frames fall in [start, end)."""
+        first = bisect_left(self.minutes, _minute_key(start))
+        last = bisect_left(self.minutes, _minute_key(end))
+        return max(self._frames_through(last) - self._frames_through(first), 0)
+
+    def _frames_through(self, position: int) -> int:
+        return self.minute_totals[position - 1] if position else 0
 
     def as_dict(self) -> dict:
         return {
@@ -165,6 +191,7 @@ def scan_frames(directory: Path, cutoffs: dict[str, datetime] | None = None) -> 
 
     files = total = shared = 0
     oldest = newest = None
+    per_minute: dict[str, int] = {}
 
     try:
         listing = os.scandir(directory)
@@ -194,11 +221,14 @@ def scan_frames(directory: Path, cutoffs: dict[str, datetime] | None = None) -> 
                 oldest = stem
             if newest is None or stem > newest:
                 newest = stem
+            minute = stem[:MINUTE_KEY_LENGTH]
+            per_minute[minute] = per_minute.get(minute, 0) + 1
             for label, threshold in thresholds.items():
                 if stem >= threshold:
                     recent_files[label] += 1
                     recent_bytes[label] += info.st_size
 
+    minutes = tuple(sorted(per_minute))
     return FrameScan(
         files=files,
         bytes=total,
@@ -207,6 +237,8 @@ def scan_frames(directory: Path, cutoffs: dict[str, datetime] | None = None) -> 
         newest=_moment_of(newest) if newest else None,
         recent_files=recent_files,
         recent_bytes=recent_bytes,
+        minutes=minutes,
+        minute_totals=tuple(accumulate(per_minute[minute] for minute in minutes)),
     )
 
 
@@ -883,9 +915,10 @@ class SystemStatusCollector:
                 newest = max(of_cadence, key=lambda video: video.starts, default=None)
                 # A period is only outstanding if there were ever frames to
                 # render it from, so the search stops at the oldest frame on the
-                # track this cadence reads.
+                # track this cadence reads -- and a period that track cannot
+                # feed is reported as such, not as a render owed.
                 missing = self._missing_periods(
-                    now, cadence, scans[channel][cadence.source].oldest,
+                    now, cadence, scans[channel][cadence.source],
                     starts_by_cadence, reach_by_cadence,
                 )
                 cadence_rows.append({
@@ -899,6 +932,7 @@ class SystemStatusCollector:
                         (now - newest.written_at).total_seconds() if newest else None
                     ),
                     "missing_periods": missing["count"],
+                    "no_footage_periods": missing["no_footage"],
                     "latest_period": _iso(missing["latest_period"]),
                     "latest_rendered": missing["latest_rendered"],
                     "fps": self.config.output_fps_for(cadence.name),
@@ -912,20 +946,28 @@ class SystemStatusCollector:
             "outstanding": sum(
                 entry["missing_periods"] for row in rows for entry in row["cadences"]
             ),
+            "no_footage": sum(
+                entry["no_footage_periods"] for row in rows for entry in row["cadences"]
+            ),
         }
 
     def _missing_periods(
-        self, now, cadence: Cadence, first_frame, starts_by_cadence, reach_by_cadence
+        self, now, cadence: Cadence, scan: FrameScan, starts_by_cadence, reach_by_cadence
     ) -> dict:
-        """Closed periods with no stored video, counted from the videos on disk.
+        """Closed periods with no stored video, split by whether one was ever possible.
 
         Deliberately *not* the renderer's own queue. `pending_render_windows`
-        needs every frame timestamp on the source track to apply its min-frames
-        rule, which is the one scan this page is built to avoid. Counting the
-        gaps in what was actually produced answers the same question -- is the
-        renderer keeping up -- from data already in hand, and it stays honest
-        about the difference: a period skipped for having too few frames is
-        reported here as missing, because on disk it is.
+        needs every frame timestamp on the source track, which is the one scan
+        this page is built to avoid. Counting the gaps in what was actually
+        produced answers the same question -- is the renderer keeping up -- from
+        data already in hand, with one distinction the page has to draw itself:
+        the renderer never produces a period holding fewer than `min_frames`
+        frames, so such a period is not a render it is behind on, it is footage
+        the camera never captured. Those go in `no_footage`; `count` is only
+        what the renderer still owes. Before the split, the host freezing for
+        nineteen hours read as every camera nineteen renders behind, and stayed
+        that way for the week it took retention to forget it. The per-minute
+        counts the scan already carries make the test two bisections a period.
 
         A video is matched to a period by its start *falling inside* the period
         rather than equalling it. Windows are clock-aligned now, but the library
@@ -937,10 +979,10 @@ class SystemStatusCollector:
         zone = self.config.render_timezone
         stored = starts_by_cadence.get(cadence.name, [])
         latest_period = cadence.floor(now.astimezone(zone))
+        min_frames = self.config.min_frames_for(cadence.name)
+        first_frame = scan.oldest
 
-        def is_rendered(period_start: datetime) -> bool:
-            start = period_start.astimezone(timezone.utc)
-            end = cadence.end_of(period_start).astimezone(timezone.utc)
+        def is_rendered(start: datetime, end: datetime) -> bool:
             position = bisect_left(stored, start)
             return position < len(stored) and stored[position] < end
 
@@ -949,36 +991,53 @@ class SystemStatusCollector:
             # rendered. A camera configured this morning is not a week behind on
             # weeklies, and a channel whose stills have all been pruned is not
             # behind on anything.
-            return {"count": 0, "latest_period": None, "latest_rendered": None}
+            return {"count": 0, "no_footage": 0, "latest_period": None, "latest_rendered": None}
 
         if cadence.anchored:
             # An anchored render's start never moves, so it is judged on how far
             # it reaches rather than on where it begins: outstanding while
-            # nothing stored already covers the period that just closed.
+            # nothing stored already covers the period that just closed -- and
+            # only once the track holds enough frames for a render at all, which
+            # a camera on its first day of keyframes does not.
+            end = latest_period.astimezone(timezone.utc)
+            if end <= first_frame:
+                return {"count": 0, "no_footage": 0, "latest_period": end, "latest_rendered": None}
             reach = reach_by_cadence.get(cadence.name)
-            rendered = reach is not None and reach >= latest_period.astimezone(timezone.utc)
+            rendered = reach is not None and reach >= end
+            starved = not rendered and scan.frames_between(first_frame, end) < min_frames
             return {
-                "count": 0 if rendered else 1,
-                "latest_period": latest_period.astimezone(timezone.utc),
-                "latest_rendered": rendered,
+                "count": 0 if rendered or starved else 1,
+                "no_footage": 1 if starved else 0,
+                "latest_period": end,
+                "latest_rendered": None if starved else rendered,
             }
 
         # Only closed periods can have been rendered; the one containing `now`
         # is still filling.
         period = cadence.previous_start(latest_period)
         horizon = self._render_horizon(now, cadence, first_frame)
-        count = 0
-        latest_rendered = None
+        count = no_footage = 0
+        latest_rendered: bool | None = None
+        newest = True
         while period.astimezone(timezone.utc) >= horizon:
-            present = is_rendered(period)
-            if latest_rendered is None:
-                latest_rendered = present
-            if not present:
+            start = period.astimezone(timezone.utc)
+            end = cadence.end_of(period).astimezone(timezone.utc)
+            if is_rendered(start, end):
+                present = True
+            elif scan.frames_between(start, end) < min_frames:
+                no_footage += 1
+                present = None
+            else:
                 count += 1
+                present = False
+            if newest:
+                latest_rendered = present
+                newest = False
             period = cadence.previous_start(period)
 
         return {
             "count": count,
+            "no_footage": no_footage,
             "latest_period": cadence.previous_start(latest_period).astimezone(timezone.utc),
             "latest_rendered": latest_rendered,
         }
@@ -1450,7 +1509,8 @@ class SystemStatusCollector:
             for entry in row["cadences"]:
                 if entry["missing_periods"] >= 3:
                     add("warn", f"{entry['cadence']} renders are behind on camera {row['channel']}",
-                        f"{entry['missing_periods']} closed periods within retention have no video.")
+                        f"{entry['missing_periods']} closed periods within retention have frames "
+                        f"but no video.")
 
         analysis = report["analysis"]
         if analysis["enabled"] and not analysis["reachable"]:

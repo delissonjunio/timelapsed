@@ -29,7 +29,7 @@ Six numbers, and if all six look right nothing below them needs reading.
 | **Cameras live** | How many configured channels wrote a frame recently | Amber if any camera is late, red if none are writing |
 | **Analysis lag** | The worst per-camera lag, and the total frames still to analyse | Amber past six hours, red if any channel is losing ground |
 | **Growth** | Bytes written in the last 24 hours, and where retention parks the library | Amber if the steady state does not fit the disk |
-| **Renders due** | Closed periods inside retention with no video on disk | Amber past six |
+| **Renders due** | Closed periods inside retention with frames but no video on disk | Amber past six |
 
 ### Checks
 
@@ -88,14 +88,18 @@ of magnitude and is what decides how big the file gets, so an over-generous
 
 ### Renders
 
-A camera-by-cadence matrix: how many clips each holds, how long ago the newest was written, and how
-many closed periods inside retention have no video.
+A camera-by-cadence matrix: how many clips each holds, how long ago the newest was written, how
+many closed periods inside retention are **due** — frames on disk, no video — and how many have
+**no footage**: fewer frames than the renderer's `min_frames`, so no video will ever be made.
 
-That count is derived from the videos on disk, **not** from the renderer's own queue — working out
-the queue exactly would mean parsing every frame timestamp in the library, which is the one scan
-this page exists to avoid. A period the renderer skipped for holding too few frames is therefore
-reported as due, because on disk it is. Periods from before the camera captured anything are never
-counted.
+Both counts are derived from the videos on disk, **not** from the renderer's own queue — working
+out the queue exactly would mean parsing every frame timestamp in the library, which is the one
+scan this page exists to avoid. The split between the two comes from the same directory scan,
+which buckets frames by minute as it counts them, so deciding whether a period could have been
+rendered is two bisections rather than a second pass. The distinction matters: before it, the host
+freezing for nineteen hours read as every camera nineteen renders behind, and stayed that way for
+the week it took retention to forget those hours. A camera outage is not a render backlog. Periods
+from before the camera captured anything are never counted either way.
 
 A video counts for a period if its start falls *inside* it, not if it equals the period's start.
 Windows are clock-aligned now, but a library that has been running a while also holds videos written
