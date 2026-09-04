@@ -27,6 +27,8 @@ listing, you can debug it.
   viable; what supporting a second NVR takes (probed, not built)
 * **[Alarm Plan](Alarm-Plan.md)** — alert when a person shows up where and when one shouldn't,
   LLM-confirmed first (planned, not built)
+* **[Captions Plan](Captions-Plan.md)** — speech on archived footage as closed captions and a
+  transcript: a near-free voice gate, then speech-to-text on those seconds alone (planned, measured)
 
 ## The two things that trip people up
 
