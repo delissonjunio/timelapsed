@@ -8,7 +8,10 @@ import pytest
 from tests.conftest import BASE_TIME
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.archiver import (
+    ABANDON_AFTER_ATTEMPTS,
+    ABANDONED_FILENAME,
     HORIZON_PROBE_MARGIN,
+    RETRY_CEILING,
     RETRY_FIRST_DELAY,
     SETTLE,
     STATUS_FILENAME,
@@ -289,8 +292,76 @@ def test_the_status_file_tells_the_page_what_the_tree_cannot(archiver, index):
     assert payload["channels"]["5"]["pending"] == 0
     assert payload["channels"]["5"]["horizon"] == (NOW - timedelta(days=2)).isoformat()
     assert payload["channels"]["6"] == {
-        "pending": 0, "waiting_retry": 0, "expired": 0, "horizon": None,
+        "pending": 0, "waiting_retry": 0, "abandoned": 0, "expired": 0, "horizon": None,
     }
+
+
+def abandon(archiver, name: str, starting_at):
+    """Fail `name` through every backoff until the archiver writes it off."""
+    archiver.client.failures.add(name)
+    at = starting_at
+    for _ in range(ABANDON_AFTER_ATTEMPTS):
+        archiver.run_once(at)
+        at += RETRY_CEILING + timedelta(seconds=1)  # far past any backoff
+    return at
+
+
+def test_persistent_failures_are_written_off_after_the_limit(archiver, index):
+    started = NOW - timedelta(hours=6)
+    seed_segment(index, "5", "ch05_dead", started, started + timedelta(minutes=1))
+    at = abandon(archiver, "ch05_dead", NOW)
+    archiver.client.calls.clear()
+
+    # Written off: never asked for again, and out of the failure ledger.
+    archiver.run_once(at)
+    assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
+    assert "ch05_dead" not in archiver._failed
+    tombstones = json.loads((archiver.root / ABANDONED_FILENAME).read_text())
+    assert tombstones["ch05_dead"]["channel"] == "5"
+    assert tombstones["ch05_dead"]["attempts"] == ABANDON_AFTER_ATTEMPTS
+
+
+def test_write_offs_survive_a_restart(index, tmp_path, fake_remux):
+    first = make_archiver(index, tmp_path / "archive", ["5", "6"])
+    started = NOW - timedelta(hours=6)
+    seed_segment(index, "5", "ch05_dead", started, started + timedelta(minutes=1))
+    at = abandon(first, "ch05_dead", NOW)
+
+    reborn = make_archiver(index, tmp_path / "archive", ["5", "6"])
+    reborn.scan()
+    reborn.run_once(at)
+    assert reborn.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_a_written_off_segment_expiring_clears_its_tombstone(archiver, index):
+    started = NOW - timedelta(days=20)
+    seed_segment(index, "5", "ch05_dead", started, started + timedelta(minutes=2))
+    at = abandon(archiver, "ch05_dead", NOW)
+
+    # The device's own retention catches up with the write-off.
+    archiver.client.horizons["5"] = NOW - timedelta(days=2)
+    archiver.refresh_horizons()
+    archiver.run_once(at)
+    tombstones = json.loads((archiver.root / ABANDONED_FILENAME).read_text())
+    assert "ch05_dead" not in tombstones
+
+
+def test_written_off_segments_leave_the_backlog_gauges(archiver, index, monkeypatch):
+    recorded = {}
+    monkeypatch.setattr(
+        "timelapsed.telemetry.record_metric",
+        lambda name, value: recorded.__setitem__(name, value),
+    )
+    started = NOW - timedelta(hours=6)
+    seed_segment(index, "5", "ch05_dead", started, started + timedelta(minutes=1))
+    at = abandon(archiver, "ch05_dead", NOW)
+
+    archiver.run_once(at)
+    assert recorded["Custom/archiver/backlog_segments"] == 0
+    assert recorded["Custom/archiver/backlog_oldest_days"] == 0.0
+    assert recorded["Custom/archiver/abandoned_segments"] == 1
+    payload = json.loads((archiver.root / STATUS_FILENAME).read_text())
+    assert payload["channels"]["5"]["abandoned"] == 1
 
 
 # --- the device's retention horizon ---

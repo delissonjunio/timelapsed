@@ -650,6 +650,8 @@ function drawArchive(report) {
          {num: true, dim: row.backlog_segments === null}),
     cell(row.failing_segments ? count(row.failing_segments) : "\u2014",
          {num: true, dim: !row.failing_segments}),
+    cell(row.abandoned_segments ? count(row.abandoned_segments) : "\u2014",
+         {num: true, dim: !row.abandoned_segments}),
     cell(row.expired_segments ? count(row.expired_segments) : "\u2014",
          {num: true, dim: !row.expired_segments}),
   ]);
@@ -660,7 +662,11 @@ function drawArchive(report) {
       ? count(archive.backlog_segments) + " fetchable segments not replicated yet"
         + (archive.failing_segments
            ? " · " + count(archive.failing_segments) + " failing, in retry backoff" : "")
-      : "everything still fetchable is replicated",
+        + (archive.abandoned_segments
+           ? " · " + count(archive.abandoned_segments) + " given up on" : "")
+      : "everything still fetchable is replicated"
+        + (archive.abandoned_segments
+           ? " · " + count(archive.abandoned_segments) + " given up on" : ""),
   ]);
   box.body.appendChild(table([
     {label: "Camera"},
@@ -671,6 +677,7 @@ function drawArchive(report) {
     {label: "Behind", num: true},
     {label: "Backlog", num: true},
     {label: "Failing", num: true},
+    {label: "Given up", num: true},
     {label: "Expired", num: true},
   ], rows));
 
@@ -688,9 +695,11 @@ function drawArchive(report) {
     + "replicated here \u2014 large numbers are normal while the initial backfill "
     + "runs, because it fetches oldest first. Backlog compares the footage "
     + "mirror's segment count with the files on this volume, less Expired \u2014 "
-    + "footage the device recycled before it was ever fetched, gone for good. "
-    + "Failing is segments whose last fetch the device refused; the archiver "
-    + "retries each on a growing backoff until the device serves or recycles it."));
+    + "footage the device recycled before it was ever fetched, gone for good \u2014 "
+    + "and Given up, segments written off after repeated refusals. Failing is "
+    + "segments whose last fetch the device refused, waiting out a retry "
+    + "backoff; after enough failures the archiver gives up on them for good, "
+    + "so the backlog always means footage still expected to arrive."));
   return section("Archive", box);
 }
 

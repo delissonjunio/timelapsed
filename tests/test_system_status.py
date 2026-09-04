@@ -969,16 +969,21 @@ def test_the_archiver_status_file_splits_expired_from_the_backlog(config, index,
     ], swept_through=to_epoch(now))
     (config.archive_root / STATUS_FILENAME).write_text(json.dumps({
         "generated_at": now.isoformat(),
-        "channels": {"1": {"pending": 0, "waiting_retry": 1, "expired": 2, "horizon": None}},
+        "channels": {"1": {
+            "pending": 0, "waiting_retry": 1, "abandoned": 1, "expired": 1, "horizon": None,
+        }},
     }))
 
     report = SystemStatusCollector(config).report(recognition=Reader(index))
     archive = report["archive"]
     row = next(entry for entry in archive["channels"] if entry["channel"] == "1")
 
-    assert row["expired_segments"] == 2 and row["failing_segments"] == 1
-    assert row["backlog_segments"] == 1  # three listed, two recycled forever
-    assert archive["expired_segments"] == 2 and archive["failing_segments"] == 1
+    assert row["expired_segments"] == 1 and row["failing_segments"] == 1
+    assert row["abandoned_segments"] == 1
+    # Three listed: one recycled forever, one written off, one truly owed.
+    assert row["backlog_segments"] == 1
+    assert archive["expired_segments"] == 1 and archive["failing_segments"] == 1
+    assert archive["abandoned_segments"] == 1
     assert any(check["title"] == "Segments are failing to archive" for check in report["checks"])
 
 

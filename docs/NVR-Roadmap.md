@@ -335,14 +335,19 @@ keeps its single writer and a crash can only ever lose a scratch file. A segment
 once its end is 30 minutes settled (an open segment's end keeps walking), and never fetched at
 all if retention would delete it tomorrow. Configuration is the `[archive]` section; on this
 deployment it points at the 1.4 TB volume. A failed fetch is retried on a per-segment
-exponential backoff — ten minutes doubling to a six-hour ceiling, forever, until the fetch
-succeeds or the device recycles the segment (2026-09-02; before that, failures were parked
-until restart, which turned the Hikvision's 401 storms into thousands-of-segment holes in the
-replica that nothing ever healed). The backoff keeps a broken fetch from starving the queue;
-the retry keeps a transient refusal from becoming a permanent gap. The daemon also publishes
-`.archiver-status.json` beside the archive — per-channel pending/failing/expired counts and
-horizons — which is how the status page tells a fetchable backlog from footage recycled
-before it was ever fetched.
+exponential backoff — ten minutes doubling to a six-hour ceiling (2026-09-02; before that,
+failures were parked until restart, which turned the Hikvision's 401 storms into
+thousands-of-segment holes in the replica that nothing ever healed). After five failed
+attempts the segment is written off for good into `.abandoned.json` beside the archive
+(2026-09-04): the device is refusing it or has recycled it, and a backlog that keeps
+counting it can never answer "is the replica caught up". Write-offs survive restarts, are
+pruned once the device's own retention passes the segment, and are always visible — their
+own gauge, their own status-page column. The backoff keeps a broken fetch from starving the
+queue; the retry keeps a transient refusal from becoming a permanent gap; the write-off
+keeps a permanent refusal from poisoning the gauges. The daemon also publishes
+`.archiver-status.json` beside the archive — per-channel pending/failing/given-up/expired
+counts and horizons — which is how the status page tells a fetchable backlog from footage
+recycled before it was ever fetched.
 
 Expired footage is not a failure at all (2026-08-31): both devices recycle oldest footage when
 their disk wraps, the mirror remembers those rows forever, and the Intelbras even answers a

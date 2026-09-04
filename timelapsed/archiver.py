@@ -87,6 +87,15 @@ HORIZON_PROBE_MARGIN = timedelta(hours=1)
 # requests a day per segment until its own retention recycles the recording.
 RETRY_FIRST_DELAY = timedelta(minutes=10)
 RETRY_CEILING = timedelta(hours=6)
+# After this many failed attempts a segment is written off for good:
+# tombstoned in the abandoned file beside the archive, never fetched again,
+# counted on its own gauge. Five attempts spread over roughly three hours of
+# backoff -- long enough to outlast a storm that is actually transient, short
+# enough that a recording the device has recycled or refuses outright stops
+# polluting the backlog gauges the same day. The give-up is deliberate and
+# visible, never silent: the backlog must mean "still expected to arrive", or
+# "is the replica caught up" stops being answerable at all.
+ABANDON_AFTER_ATTEMPTS = 5
 
 STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 SCRATCH_DIRECTORY_NAME = ".scratch"
@@ -94,6 +103,9 @@ SCRATCH_DIRECTORY_NAME = ".scratch"
 # backoffs, expired counts -- published for the status page, which otherwise
 # reads mirror-minus-files and calls recycled-forever segments a backlog.
 STATUS_FILENAME = ".archiver-status.json"
+# The write-offs, beside the archive so they survive a restart -- without
+# that, every restart re-grinds the whole refused band at ~20 s a segment.
+ABANDONED_FILENAME = ".abandoned.json"
 
 shutting_down = False
 
@@ -187,6 +199,11 @@ class SegmentArchiver:
         # would starve the fetches that can still succeed; never retrying
         # turned every transient storm into a permanent hole in the replica.
         self._failed: dict[str, FailedFetch] = {}
+        # Segments written off after ABANDON_AFTER_ATTEMPTS failures, by device
+        # name: {"channel", "attempts", "abandoned_at"}. Loaded from and saved
+        # to ABANDONED_FILENAME; pruned when the device recycles the segment,
+        # so the tombstone file cleans itself as retention catches up.
+        self._abandoned: dict[str, dict] = {}
         # Per channel, how many mirror rows the last pending() pass skipped as
         # expired on the device. Published in the status file so the status
         # page can stop calling recycled-forever segments a backlog.
@@ -220,6 +237,34 @@ class SegmentArchiver:
                 continue
             self._archived.add(name)
         logger.info("Archive at %s holds %d segment(s)", self.root, len(self._archived))
+        self._load_abandoned()
+
+    def _load_abandoned(self) -> None:
+        loaded: dict[str, dict] = {}
+        try:
+            raw = json.loads((self.root / ABANDONED_FILENAME).read_text())
+            if isinstance(raw, dict):
+                loaded = {
+                    name: entry for name, entry in raw.items() if isinstance(entry, dict)
+                }
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read %s; starting with no write-offs",
+                ABANDONED_FILENAME, exc_info=True,
+            )
+        self._abandoned = loaded
+        if loaded:
+            logger.info("%d segment(s) stand written off as unfetchable", len(loaded))
+
+    def _save_abandoned(self) -> None:
+        try:
+            scratch = self.root / (ABANDONED_FILENAME + ".tmp")
+            scratch.write_text(json.dumps(self._abandoned))
+            scratch.replace(self.root / ABANDONED_FILENAME)
+        except OSError:
+            logger.warning("Could not write %s", ABANDONED_FILENAME, exc_info=True)
 
     # --- the device's retention horizon ---
 
@@ -286,6 +331,7 @@ class SegmentArchiver:
 
         found: list[PendingSegment] = []
         expired: dict[str, int] = {}
+        tombstones_pruned = False
         for channel in self.channels:
             for row in self.index.segments(channel=channel, limit=ALL_SEGMENTS):
                 started_at = datetime.fromisoformat(row["starts"])
@@ -299,9 +345,14 @@ class SegmentArchiver:
                     continue
                 if self._expired_on_device(channel, ended_at):
                     expired[channel] = expired.get(channel, 0) + 1
-                    # Recycled is final: whatever failures it collected while
-                    # the device still held it no longer mean anything.
+                    # Recycled is final: whatever failure history or write-off
+                    # it collected while the device still held it no longer
+                    # means anything.
                     self._failed.pop(name, None)
+                    if self._abandoned.pop(name, None) is not None:
+                        tombstones_pruned = True
+                    continue
+                if name in self._abandoned:
                     continue
                 failure = self._failed.get(name)
                 if failure is not None and failure.next_attempt_at > now:
@@ -326,6 +377,8 @@ class SegmentArchiver:
                     for channel, count in sorted(expired.items())
                 ),
             )
+        if tombstones_pruned:
+            self._save_abandoned()
         found.sort(key=lambda segment: segment.started_at)
         self._expired_last_pass = expired
         return found
@@ -467,6 +520,7 @@ class SegmentArchiver:
         )
         telemetry.record_metric("Custom/archiver/backlog_oldest_days", oldest_days)
         telemetry.record_metric("Custom/archiver/deferred_segments", len(waiting))
+        telemetry.record_metric("Custom/archiver/abandoned_segments", len(self._abandoned))
         telemetry.record_metric("Custom/archiver/disk_free_gb", self._free_bytes() / 1e9)
         self._write_status(remaining, waiting)
 
@@ -486,6 +540,7 @@ class SegmentArchiver:
             channel: {
                 "pending": 0,
                 "waiting_retry": 0,
+                "abandoned": 0,
                 "expired": self._expired_last_pass.get(channel, 0),
                 "horizon": (
                     self._horizons[channel].isoformat()
@@ -499,6 +554,10 @@ class SegmentArchiver:
         for failure in waiting:
             if failure.channel in channels:
                 channels[failure.channel]["waiting_retry"] += 1
+        for tombstone in self._abandoned.values():
+            channel = tombstone.get("channel")
+            if channel in channels:
+                channels[channel]["abandoned"] += 1
         payload = {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "channels": channels,
@@ -549,18 +608,32 @@ class SegmentArchiver:
                     # retried until it succeeds or the device recycles it.
                     previous = self._failed.get(segment.name)
                     attempts = previous.attempts + 1 if previous else 1
-                    delay = min(RETRY_FIRST_DELAY * 2 ** (attempts - 1), RETRY_CEILING)
-                    self._failed[segment.name] = FailedFetch(
-                        channel=segment.channel,
-                        started_at=segment.started_at,
-                        attempts=attempts,
-                        next_attempt_at=now + delay,
-                    )
                     telemetry.notice_error()
-                    logger.exception(
-                        "Failed to archive %s segment %s (attempt %d), retrying in %s",
-                        segment.channel, segment.name, attempts, delay,
-                    )
+                    if attempts >= ABANDON_AFTER_ATTEMPTS:
+                        self._failed.pop(segment.name, None)
+                        self._abandoned[segment.name] = {
+                            "channel": segment.channel,
+                            "attempts": attempts,
+                            "abandoned_at": now.isoformat(),
+                        }
+                        self._save_abandoned()
+                        logger.exception(
+                            "Giving up on %s segment %s after %d failed attempts; "
+                            "written off as unfetchable",
+                            segment.channel, segment.name, attempts,
+                        )
+                    else:
+                        delay = min(RETRY_FIRST_DELAY * 2 ** (attempts - 1), RETRY_CEILING)
+                        self._failed[segment.name] = FailedFetch(
+                            channel=segment.channel,
+                            started_at=segment.started_at,
+                            attempts=attempts,
+                            next_attempt_at=now + delay,
+                        )
+                        logger.exception(
+                            "Failed to archive %s segment %s (attempt %d), retrying in %s",
+                            segment.channel, segment.name, attempts, delay,
+                        )
             self._report_backlog(queue, position)
         with telemetry.task("archiver/reclaim"):
             if not self.reclaim(datetime.now(tz=timezone.utc)):

@@ -69,13 +69,18 @@ forwarded by the agent's logging integration, which is on by default.
 Alongside the transactions there are a few custom metrics, all under
 `Custom/`: images stored, keyframes promoted and cycle overruns for capture;
 frames analysed for the analyzer; segments and bytes archived for the
-archiver, plus its backlog gauges (`backlog_segments`, `backlog_oldest_days`
-and `deferred_segments`, reported every pass and every fetch -- the zero is
-the heartbeat that tells an idle archiver apart from a dead one). The backlog
-gauges count segments waiting out a failure backoff too: those are exactly the
-segments the replica is missing, and a gauge that forgot them once read hours
-behind as fully caught up while thousands of refused segments sat parked.
-`deferred_segments` alone is that failing subset. Both volumes
+archiver, plus its backlog gauges (`backlog_segments`, `backlog_oldest_days`,
+`deferred_segments` and `abandoned_segments`, reported every pass and every
+fetch -- the zero is the heartbeat that tells an idle archiver apart from a
+dead one). The backlog gauges count segments waiting out a failure backoff
+too: those are exactly the segments the replica is missing, and a gauge that
+forgot them once read hours behind as fully caught up while thousands of
+refused segments sat parked. `deferred_segments` alone is that failing
+subset. Segments that keep failing are eventually written off and move to
+`abandoned_segments` instead, so the backlog means footage still expected to
+arrive -- "is the replica caught up" stays answerable, and a device refusing
+everything shows as deferred and abandoned climbing, never as silence. Both
+volumes
 report their headroom as `disk_free_gb` gauges: the capture workers cover the
 library filesystem every cycle, the archiver covers the archive volume with
 each backlog report. They exist for

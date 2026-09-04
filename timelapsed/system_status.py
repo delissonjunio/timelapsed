@@ -1289,8 +1289,14 @@ class SystemStatusCollector:
                 "expired_segments": extra.get("expired"),
                 # Failed their last fetch, waiting out a retry backoff.
                 "failing_segments": extra.get("waiting_retry"),
+                # Written off after repeated failures; never fetched again.
+                "abandoned_segments": extra.get("abandoned"),
                 "backlog_segments": (
-                    max(held["segments"] - scan.files - (extra.get("expired") or 0), 0)
+                    max(
+                        held["segments"] - scan.files
+                        - (extra.get("expired") or 0) - (extra.get("abandoned") or 0),
+                        0,
+                    )
                     if held.get("segments") is not None else None
                 ),
             })
@@ -1333,6 +1339,9 @@ class SystemStatusCollector:
             ),
             "failing_segments": sum(
                 row["failing_segments"] or 0 for row in rows
+            ),
+            "abandoned_segments": sum(
+                row["abandoned_segments"] or 0 for row in rows
             ),
         }
 
