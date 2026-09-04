@@ -84,6 +84,7 @@ def build_analyzer(config: Config, index: AnalysisIndex) -> FrameAnalyzer:
         identity_matcher=matcher,
         plate_channels=tuple(config.analysis_plate_channels),
         plate_confidence=config.analysis_plate_confidence,
+        ignore_vehicles_on=tuple(config.analysis_ignore_vehicles_on),
     )
 
 
@@ -192,11 +193,13 @@ def run() -> None:
         sys.exit(1)
 
     logger.info(
-        "Analyzer watching channels %s (score >= %.2f, re-ID %s, plates on %s)",
+        "Analyzer watching channels %s (score >= %.2f, re-ID %s, plates on %s, "
+        "vehicles ignored on %s)",
         ", ".join(config.channels),
         config.analysis_score_threshold,
         "on" if config.analysis_reid_enabled else "off",
         ", ".join(config.analysis_plate_channels) or "no channels",
+        ", ".join(config.analysis_ignore_vehicles_on) or "no channels",
     )
     for channel, through in sorted(index.watermarks().items()):
         logger.info("  channel %s analysed through %s", channel, from_epoch(through))

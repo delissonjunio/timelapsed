@@ -217,6 +217,13 @@ plate_channels =
 # is one guard of three.
 plate_confidence = 0.7
 
+# Channels where vehicle detections are dropped outright, comma separated.
+# For indoor cameras: nothing that parks there is a car, but static clutter
+# can sit right at score_threshold and open a fresh one-frame vehicle event
+# every time its score flickers across the line. Raising score_threshold
+# instead would cost real detections on every other camera.
+# ignore_vehicles_on =
+
 [archive]
 # Full-segment replica of what the NVR itself records, kept by the archiver
 # daemon (timelapsed-archiver). It downloads every recorded segment the footage

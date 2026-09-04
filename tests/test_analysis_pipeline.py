@@ -422,6 +422,21 @@ def test_analyzer_skips_plates_on_channels_not_configured_for_them(index, tmp_pa
     analyzer.analyse("1", frame, BASE_TIME)  # channel 1 is not in plate_channels
 
 
+def test_analyzer_drops_vehicles_on_channels_configured_to_ignore_them(index, tmp_path, frame):
+    """An indoor camera has no vehicles to see, only clutter the detector scores
+    as one. The kind is dropped for the channel; people still get through."""
+    analyzer = FrameAnalyzer(
+        index=index,
+        crops_root=tmp_path / "crops",
+        detector=FakeDetector([[vehicle((10, 10, 200, 150)), person((300, 10, 100, 300))]]),
+        score_threshold=0.5,
+        ignore_vehicles_on=("1",),
+    )
+    analyzer.analyse("1", frame, BASE_TIME)
+
+    assert [event.kind for event in index.events(channel="1")] == ["person"]
+
+
 def test_a_visit_is_filed_under_one_identity_however_many_frames_it_spans(index, tmp_path, frame):
     """A person walking towards the camera gives a better crop every frame.
     Matching on each one would file one visit under several identities and

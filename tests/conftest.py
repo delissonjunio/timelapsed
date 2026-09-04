@@ -122,6 +122,7 @@ def config(tmp_path: Path) -> Config:
         analysis_reid_window=timedelta(hours=12),
         analysis_plate_channels=["1"],
         analysis_plate_confidence=0.7,
+        analysis_ignore_vehicles_on=[],
         logging_level=logging.INFO,
     )
 

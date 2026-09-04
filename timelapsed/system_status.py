@@ -1233,6 +1233,7 @@ class SystemStatusCollector:
                 "reid_threshold": config.analysis_reid_threshold,
                 "plate_channels": list(config.analysis_plate_channels),
                 "plate_confidence": config.analysis_plate_confidence,
+                "ignore_vehicles_on": list(config.analysis_ignore_vehicles_on),
             },
         }
 

@@ -283,6 +283,10 @@ class Config:
     # one channel here. Empty disables it entirely.
     analysis_plate_channels: list[str]
     analysis_plate_confidence: float
+    # Channels where a "vehicle" can only be a misread. An indoor camera sees
+    # clutter the detector scores right at the threshold, flooding the timeline
+    # with one-frame vehicle events; vehicle detections there are dropped.
+    analysis_ignore_vehicles_on: list[str]
 
     logging_level: int
 

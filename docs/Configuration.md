@@ -299,6 +299,7 @@ default. See [Recognition](Recognition.md) for what it does, and
 | `reid_window_hours` | no | `12` | How far back to look for a match. |
 | `plate_channels` | no | *(empty)* | Channels to read plates on. Empty disables plate reading. |
 | `plate_confidence` | no | `0.7` | Minimum OCR confidence per read. |
+| `ignore_vehicles_on` | no | *(empty)* | Channels where vehicle detections are discarded outright. For indoor cameras. |
 
 ### Do not lower `score_threshold`
 
@@ -316,6 +317,15 @@ Plate OCR needs roughly 50 px of plate width. Measured across six cameras here, 
 channel clears it: 52–65 px, reading cleanly. The others sit near 40 px and return garbage.
 Enabling every channel does not find more plates, it just spends CPU producing reads that the
 confidence and format guards then throw away.
+
+### `ignore_vehicles_on` exists for indoor cameras
+
+On an indoor camera, nothing that appears can be a vehicle -- but static clutter can look like
+one to the detector. Measured here on a workshop channel: a pile of crates and metal tubes
+scored 0.50-0.58, straddling `score_threshold` frame to frame, and every flicker across the
+line opened another one-frame vehicle event -- hundreds a day, drowning the channel's timeline.
+Raising `score_threshold` would have cost real people and vehicles on the outdoor cameras, so
+the kind is dropped per channel instead. Person detection on the listed channels is unaffected.
 
 ### `reid_threshold` trades recall for precision
 

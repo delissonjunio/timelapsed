@@ -395,6 +395,7 @@ class FrameAnalyzer:
         identity_matcher=None,
         plate_channels: tuple[str, ...] = (),
         plate_confidence: float = 0.7,
+        ignore_vehicles_on: tuple[str, ...] = (),
         tracker: EventTracker | None = None,
     ):
         self.index = index
@@ -406,6 +407,7 @@ class FrameAnalyzer:
         self.identity_matcher = identity_matcher
         self.plate_channels = plate_channels
         self.plate_confidence = plate_confidence
+        self.ignore_vehicles_on = ignore_vehicles_on
         self.tracker = tracker or EventTracker(
             index,
             store_crop=self._store_crop,
@@ -418,6 +420,12 @@ class FrameAnalyzer:
         at = to_epoch(captured_at)
         image = np.asarray(Image.open(path).convert("RGB"))
         detections = self.detector(image, self.score_threshold)
+        if channel in self.ignore_vehicles_on:
+            # An indoor camera has no vehicles to see, only clutter the detector
+            # scores as one -- right at the threshold, so it flickers into a new
+            # one-frame event every few minutes. Dropping the kind here beats
+            # raising the threshold for every camera at once.
+            detections = [d for d in detections if d.kind != "vehicle"]
         paired = self.tracker.update(channel, at, detections)
 
         for detection, event in paired:

@@ -473,6 +473,11 @@ def get_config(config_paths: tuple[str, ...] = CONFIG_PATHS) -> Config:
         analysis_plate_confidence=parser.getfloat(
             "analysis", "plate_confidence", fallback=DEFAULT_ANALYSIS_PLATE_CONFIDENCE
         ),
+        analysis_ignore_vehicles_on=[
+            channel.strip()
+            for channel in parser.get("analysis", "ignore_vehicles_on", fallback="").split(",")
+            if channel.strip()
+        ],
 
         logging_level=logging.getLevelName(parser.get("general", "logging_level", fallback="INFO").upper()),
     )

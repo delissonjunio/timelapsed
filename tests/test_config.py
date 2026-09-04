@@ -95,7 +95,19 @@ def test_optional_settings_fall_back_to_defaults(tmp_path: Path):
     assert config.image_retention == timedelta(days=8)  # one day clear of the weekly window
     assert [c.name for c in config.timelapse_cadences] == ["hourly", "daily", "weekly"]
     assert config.retention_for("weekly") is None
+    assert config.analysis_ignore_vehicles_on == []
     assert config.logging_level == logging.INFO
+
+
+def test_vehicle_ignores_are_parsed_per_channel(tmp_path: Path):
+    path = write_config(
+        tmp_path / "timelapsed.ini",
+        MINIMAL_CONFIG + "\n[analysis]\nignore_vehicles_on = 1, garage-1\n",
+    )
+
+    config = get_config((str(path),))
+
+    assert config.analysis_ignore_vehicles_on == ["1", "garage-1"]
 
 
 def test_the_archive_is_off_until_a_root_is_configured(tmp_path: Path):

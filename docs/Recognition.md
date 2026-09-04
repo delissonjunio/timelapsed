@@ -280,6 +280,7 @@ curl -s localhost:8080/api/plates
 | `attempt to write a readonly database` in the viewer | `timelapsed-web.service` lost its `ReadWritePaths=/var/lib/timelapsed/index` | WAL needs to write sidecars even to read; restore the line and `daemon-reload` |
 | Watermarks falling behind | Backfill in progress, or the guest is short on CPU | Check `journalctl -u timelapsed-analyzer`; it logs ms/frame per pass |
 | One person appears as many unnamed groups | Expected at `reid_threshold = 0.8` | Lower it toward 0.7 for more merging, accepting ~15% wrong merges |
+| Vehicle events all day on an indoor channel | Static clutter scoring right at `score_threshold`, opening a one-frame event per flicker | List the channel in `ignore_vehicles_on`; raising the threshold would cost real detections elsewhere |
 
 ### Turning it off
 
