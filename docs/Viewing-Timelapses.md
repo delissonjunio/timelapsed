@@ -73,11 +73,13 @@ that one conversion, in both directions:
 | Double-tap the left or right of the picture | Jump ten seconds back or forward, same as the `↺ 10` / `10 ↻` buttons |
 | Watch it play | A playhead tracks across every lane, and sightings light up as it passes through them |
 
-The transport bar under the picture states **what time is on screen**. Nothing in the picture says
-so, and on a weekly clip a second of video is nearly three hours of the world. It also carries
-play/pause, ten-second skips, frame stepping, 0.5×–32× (half speed is the only way to watch a
-weekly; at the fast end a day goes by in seconds, and a browser that caps the rate — Chrome stops
-at 16× — simply shows fewer buttons), and full screen. Space plays and pauses, `,` and `.` step a
+The transport bar under the picture states **what time is on screen**, in the browser's local
+zone — the `Local`/`UTC` button on the timeline bar switches it, and every other stamp on the
+page, to UTC. Nothing in the picture says so, and on a weekly clip a second of video is nearly
+three hours of the world. It also carries play/pause, ten-second skips, frame stepping, 0.5×–32×
+(half speed is the only way to watch a weekly; at the fast end a day goes by in seconds, and a
+browser that caps the rate — Chrome stops at 16× — simply shows fewer buttons), and full screen.
+A rate stays put as clips chain into one another. Space plays and pauses, `,` and `.` step a
 frame, the arrow keys move a clip at a time.
 
 The ten-second skip is ten seconds **of the video**, not of the world — on a weekly render that is
@@ -118,6 +120,15 @@ That download is wasted whenever the viewer is opened on a specific moment (`?at
 seek cannot be applied until the header arrives and playback then restarts elsewhere. Fetching
 metadata alone gets the header quickly — it is at the front, thanks to `-movflags +faststart` — so
 the seek lands first and buffering begins at the moment actually being watched.
+
+The clip after the one playing is the exception: it is fetched whole, into a Blob, from the
+moment its predecessor is selected, and the player is handed the blob at the seam. Chaining hourly
+clips at 16× is a seam every four seconds, and a warm that only spared the header round trip still
+paused for the first seconds of media at each one; with the bytes already local the handoff is
+free and every seek inside the clip is instant. At most two blobs are alive — the current clip's
+is revoked at the next swap — and a clip over 128 MB is not fetched this way, so a phone never
+holds two weeklies; those get the header-only warm. Selecting something else abandons a fetch in
+flight.
 
 Autoplay is normally allowed for a muted video, but not on every browser and not after every
 navigation. When it is refused the player says so and offers a tap, rather than leaving a picture

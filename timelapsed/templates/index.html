@@ -233,7 +233,7 @@ header { grid-column:1/-1; }
     <div class="grp" id="cadences"></div>
     <span class="spacer"></span>
     <span class="range" id="viewrange"></span>
-    <div class="grp"><button id="tz" aria-pressed="false">UTC</button></div>
+    <div class="grp"><button id="tz" aria-pressed="true">Local</button></div>
   </div>
   <div id="lanes"></div>
   <div id="axis"></div>
@@ -268,7 +268,9 @@ const state = {
   // rest back on without a reload.
   show: Object.fromEntries(CADENCES.map(
     c => [c, !CADENCES.includes(params.get("cadence")) || params.get("cadence") === c])),
-  utc: true,
+  // Times show in the browser's own zone; the button on the timeline bar
+  // switches every stamp on the page to UTC, which is what the filenames say.
+  utc: false,
   start: 0, end: 0,
   selected: null,
   // Recognition state is kept apart from ENTRIES on purpose: clip selection is
@@ -943,12 +945,53 @@ video.muted = true; video.playsInline = true; video.loop = true;
 video.preload = "metadata";
 $("screen").appendChild(video);
 
-// Never played and never on screen: this exists so the successor's moov is
-// already in hand when a clip ends. Without it every seam stalls on a round
-// trip, which on hourly clips is once a minute.
+// The successor is pulled whole, into a Blob, from the moment a clip with one
+// is selected, and the player is handed the blob URL at the seam. A metadata
+// warm only spared the moov round trip; the first seconds of media still had
+// to arrive before playback resumed, and at 16x -- where an hourly is under
+// four seconds and a seam comes every one of them -- that pause is most of the
+// experience. With the bytes already local the handoff costs nothing and every
+// seek inside the clip is instant.
+//
+// The cap is what keeps a phone from holding two weeklies at once: the current
+// clip's blob stays alive until the next swap, so at most two are ever held.
+// Past it the successor gets the old moov-only warm instead of nothing.
+const PREFETCH_MAX_BYTES = 128 * 1048576;
 const prefetch = document.createElement("video");
 prefetch.preload = "metadata"; prefetch.muted = true;
-let prefetchFor = null;
+// {entry, controller, blob}: the clip being warmed. blob is null until the bytes
+// are all in, and stays null when the fetch was aborted or failed.
+let warm = null;
+// The blob URL the player is currently playing from, revoked at the next swap.
+let held = null;
+
+function warmSuccessor(entry) {
+  const next = neighbour(entry, 1);
+  if (warm && warm.entry === next) return;
+  if (warm) { warm.controller.abort(); if (warm.blob) URL.revokeObjectURL(warm.blob); warm = null; }
+  if (!next) return;
+  if (!(next.size_bytes <= PREFETCH_MAX_BYTES)) { prefetch.src = next.url; return; }
+  const controller = new AbortController();
+  const w = warm = {entry: next, controller, blob: null};
+  fetch(next.url, {signal: controller.signal})
+    .then(r => r.ok ? r.blob() : Promise.reject(new Error("HTTP " + r.status)))
+    .then(b => { if (warm === w) w.blob = URL.createObjectURL(b); })
+    .catch(() => { if (warm === w) warm = null; });
+}
+
+// What to feed the player for this clip: the warmed blob when it is this clip
+// and has landed, else the URL. A warm still in flight for it is abandoned --
+// the player is about to fetch the same bytes itself.
+function sourceFor(entry) {
+  let src = entry.url;
+  if (warm && warm.entry === entry) {
+    if (warm.blob) src = warm.blob; else warm.controller.abort();
+    warm = null;
+  }
+  if (held) URL.revokeObjectURL(held);
+  held = src === entry.url ? null : src;
+  return src;
+}
 
 const duration = () => (video.duration && isFinite(video.duration)) ? video.duration : 0;
 // The wall-clock moment currently on screen. Null until a clip is loaded and its
@@ -1012,8 +1055,8 @@ function select(entry, atMs) {
     // Loop only where there is nowhere to go. With a successor the clip has to
     // be allowed to end, because "ended" is what hands over to it.
     video.loop = !neighbour(entry, 1);
-    video.src = entry.url;
-    prefetchFor = null;
+    video.src = sourceFor(entry);
+    warmSuccessor(entry);
   }
   seekToMoment(entry, atMs);
   play();
@@ -1025,14 +1068,6 @@ function select(entry, atMs) {
 video.addEventListener("ended", () => {
   const next = state.selected && neighbour(state.selected, 1);
   if (next) select(next, next.s);
-});
-
-// Warm the successor before the seam, not at it. timeupdate is coarse (~4Hz),
-// which is ample for a decision made once per clip.
-video.addEventListener("timeupdate", () => {
-  if (!state.selected || !duration() || video.currentTime < duration() * 0.8) return;
-  const next = neighbour(state.selected, 1);
-  if (next && prefetchFor !== next.url) { prefetchFor = next.url; prefetch.src = next.url; }
 });
 
 // Double tap a side to jump, single tap the middle to play or pause -- the
@@ -1294,11 +1329,16 @@ function drawTransport() {
   // Rates earn their place here in a way they would not on ordinary footage: a
   // weekly is seven days in sixty seconds, and half speed is the only way to
   // watch it.
+  //
+  // Both rates are set, not just playbackRate: assigning .src runs the load
+  // algorithm, which puts playbackRate back to defaultPlaybackRate, so a rate
+  // set on the live one alone lasted exactly until the clip chained into the
+  // next. Setting the default is what makes 8x survive the seam.
   const rates = el("div", "grp");
   for (const rate of RATES) {
     const button = el("button", "", rate + "×");
     button.dataset.rate = String(rate);
-    button.onclick = () => { video.playbackRate = rate; syncRates(); };
+    button.onclick = () => { video.defaultPlaybackRate = video.playbackRate = rate; syncRates(); };
     rates.appendChild(button);
   }
 
