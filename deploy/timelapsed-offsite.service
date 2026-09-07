@@ -1,0 +1,38 @@
+[Unit]
+Description=Copy the footage archive off-site to Backblaze B2
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/Operations.md
+# Opt-in: no key file, nothing to do. The timer still fires and systemd skips
+# the run without marking it failed.
+ConditionPathExists=/etc/backblaze.cfg
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/timelapsed/deploy/timelapsed-offsite.sh
+# Root, because the key file is root-only; the script writes nothing outside
+# /var/lib/timelapsed (its state, and the status file beside the archive).
+
+# Uploading is bandwidth work. Keep it beside the archiver, below capture.
+Nice=15
+CPUWeight=20
+IOWeight=20
+
+# rclone holds the listing of both sides in memory: a few hundred bytes per
+# object, so the cap is a leak stop, not a working limit.
+MemoryAccounting=true
+MemoryHigh=768M
+MemoryMax=1G
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/var/lib/timelapsed

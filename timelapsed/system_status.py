@@ -317,6 +317,57 @@ def read_archiver_status(root: Path, now: datetime) -> dict[str, dict]:
     return channels
 
 
+# Written by deploy/timelapsed-offsite.sh beside the archive: at the start of
+# a run, after every day the backfill finishes, and at the end. The script and
+# this constant must agree on the name.
+OFFSITE_STATUS_FILENAME = ".offsite-status.json"
+
+# The timer is hourly and every run rewrites the file at least twice, so a file
+# this old means the timer is off, the key file went away, or a run has hung.
+OFFSITE_STATUS_MAX_AGE = timedelta(hours=3)
+
+
+def read_offsite_status(root: Path, now: datetime) -> dict:
+    """What the off-site copy last said about itself, and how old that is.
+
+    `{"configured": False}` when nothing has ever written the file: the copy
+    is opt-in, so absence is silence, not a warning. Otherwise the script's own
+    fields, an age, and `stale` once nothing has rewritten it for
+    OFFSITE_STATUS_MAX_AGE -- unlike the archiver's status this is not
+    discarded when stale, because "it stopped" is exactly the thing to say.
+    """
+    try:
+        payload = json.loads((root / OFFSITE_STATUS_FILENAME).read_text())
+        written_at = datetime.fromisoformat(payload["written_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"configured": False}
+    if written_at.tzinfo is None:
+        written_at = written_at.replace(tzinfo=timezone.utc)
+
+    def number(key: str) -> int | float | None:
+        value = payload.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    state = payload.get("state")
+    phase = payload.get("phase")
+    age = (now - written_at).total_seconds()
+    return {
+        "configured": True,
+        "remote": str(payload.get("remote") or ""),
+        "state": state if state in ("running", "ok", "failed") else "unknown",
+        "phase": phase if phase in ("backfill", "steady") else "unknown",
+        "days_done": number("days_done"),
+        "days_total": number("days_total"),
+        "errors": number("errors"),
+        "run_seconds": number("run_seconds"),
+        "remote_objects": number("remote_objects"),
+        "remote_bytes": number("remote_bytes"),
+        "written_at": _iso(written_at),
+        "age_seconds": age,
+        "stale": age > OFFSITE_STATUS_MAX_AGE.total_seconds(),
+    }
+
+
 def scan_archive_channel(directory: Path) -> ArchiveChannelScan:
     """One channel of the replica, counted without parsing every filename.
 
@@ -1384,6 +1435,8 @@ class SystemStatusCollector:
             "retention_seconds": _seconds(config.archive_retention),
             "minimum_free_bytes": config.archive_minimum_free_bytes,
             "disk": disk,
+            # The hourly rclone copy to B2, if one has been set up on this host.
+            "offsite": read_offsite_status(config.archive_root, now),
             "channels": rows,
             "total_files": total_files,
             "total_bytes": total_bytes,
@@ -1555,6 +1608,25 @@ class SystemStatusCollector:
                     f"{_humanise(archive['worst_lag_seconds'])}. Normal while the "
                     f"oldest-first backfill runs; if it persists, check "
                     f"`systemctl status timelapsed-archiver`.")
+            offsite = archive.get("offsite") or {}
+            if offsite.get("configured"):
+                if offsite["stale"]:
+                    add("warn", "The off-site copy has stopped running",
+                        f"Its status file was last written {_humanise(offsite['age_seconds'])} "
+                        f"ago and the timer runs hourly. Check `systemctl status "
+                        f"timelapsed-offsite.timer` and `journalctl -u timelapsed-offsite`.")
+                elif offsite["state"] == "failed":
+                    errors = offsite["errors"]
+                    add("warn", "The last off-site copy run failed",
+                        f"{errors if errors is not None else 'Some'} rclone run(s) in it "
+                        f"errored; the next hourly run retries whatever did not land. "
+                        f"`journalctl -u timelapsed-offsite` has the reason.")
+                elif offsite["phase"] == "backfill":
+                    add("info", "The off-site copy is still backfilling",
+                        f"{offsite['days_done'] or 0} of {offsite['days_total'] or 0} archived "
+                        f"days are on {offsite['remote']}. Oldest first, the same order the "
+                        f"floor drops them in, so the days nearest deletion are the first "
+                        f"ones safe.")
             if archive.get("failing_segments"):
                 add("warn", "Segments are failing to archive",
                     f"{archive['failing_segments']} segment(s) failed their last fetch "

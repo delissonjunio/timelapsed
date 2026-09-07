@@ -136,6 +136,10 @@ echo "==> Installing systemd units"
 cp "${REPO_DIR}"/deploy/timelapsed*.service "${REPO_DIR}"/deploy/tailscale-local-subnet-route.{service,timer} "${REPO_DIR}"/deploy/timelapsed*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now timelapsed-web-restart.timer
+# The off-site copy is opt-in: its unit has ConditionPathExists on the key
+# file, so enabling the timer everywhere costs nothing until one is created.
+# See docs/Operations.md, "The footage archive, off-site".
+systemctl enable --now timelapsed-offsite.timer
 
 # Only relevant where Tailscale is providing the route to the NVR. The timer
 # owns the rule now; installs from before it enabled the service directly.

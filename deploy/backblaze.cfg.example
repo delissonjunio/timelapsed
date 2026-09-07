@@ -1,0 +1,17 @@
+# Backblaze B2 credentials for the off-site copy of the footage archive.
+#
+# Create it as /etc/backblaze.cfg, root-only, and the hourly
+# timelapsed-offsite.timer starts copying on its next tick; without the file
+# the unit is skipped. Same reasoning as the New Relic key: systemd runs the
+# script as root, so nobody else needs to read it.
+#
+#   sudo install -m 600 -o root -g root deploy/backblaze.cfg.example /etc/backblaze.cfg
+#   sudoedit /etc/backblaze.cfg
+#
+# Make the application key in the B2 console restricted to the one bucket,
+# with read and write. Its keyID and applicationKey are shown once.
+keyID=
+keyName=timelapsed
+applicationKey=
+# The bucket; defaults to keyName when left out. Objects land under archive/.
+# bucket=timelapsed

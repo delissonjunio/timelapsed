@@ -106,6 +106,17 @@ Windows are clock-aligned now, but a library that has been running a while also 
 before they were — an hourly starting at 12:04:41 rather than 12:00:00 — and on exact equality every
 one of those reads as a missing hour.
 
+### Archive
+
+The NVR footage replica, when an `[archive]` root is configured: per camera, what is on the
+volume against what the footage mirror says the device holds, so a fetchable backlog reads apart
+from footage the device recycled before it was ever fetched, from segments failing their fetches,
+and from ones the archiver has given up on. Below the table, the volume's own free space against
+its floor, the retention rule, and **Off-site**: the hourly rclone copy to Backblaze B2 described
+in [Operations](Operations.md), when one is set up on the host — what the bucket holds, how far a
+backfill has got, and when the copy last reported. Without one it says so plainly, because then
+the archive volume is the only copy of that footage.
+
 ### Retention, host and configuration
 
 How full each retention window is, what the host is doing (uptime, load, memory, and `systemctl`'s

@@ -1080,3 +1080,98 @@ def test_a_stale_archiver_status_file_is_ignored(config, index, tmp_path, now):
     assert row["expired_segments"] is None and row["failing_segments"] is None
     assert row["backlog_segments"] == 1
     assert not any(check["title"] == "Segments are failing to archive" for check in report["checks"])
+
+
+def offsite_status(config, written_at: datetime, **fields) -> None:
+    """What deploy/timelapsed-offsite.sh writes beside the archive, with overrides."""
+    from timelapsed.system_status import OFFSITE_STATUS_FILENAME
+
+    payload = {
+        "written_at": written_at.isoformat(), "remote": "b2:timelapsed/archive",
+        "state": "ok", "phase": "steady", "days_done": 512, "days_total": 512, "errors": 0,
+        "run_started_at": written_at.isoformat(), "run_seconds": 40,
+        "remote_objects": 202000, "remote_bytes": 1_300_000_000_000,
+    }
+    payload.update(fields)
+    (config.archive_root / OFFSITE_STATUS_FILENAME).write_text(json.dumps(payload))
+
+
+def test_the_archive_reports_no_offsite_copy_until_one_writes_status(config, tmp_path):
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+
+    report = SystemStatusCollector(config).report()
+
+    # Opt-in: silence, not a warning, when nothing has ever run.
+    assert report["archive"]["offsite"] == {"configured": False}
+    assert not any("off-site" in check["title"] for check in report["checks"])
+
+
+def test_a_backfilling_offsite_copy_is_progress_not_a_problem(config, tmp_path, now):
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    offsite_status(config, now - timedelta(minutes=10), state="running", phase="backfill",
+                   days_done=120, days_total=512, remote_objects=None, remote_bytes=None)
+
+    report = SystemStatusCollector(config).report()
+    offsite = report["archive"]["offsite"]
+
+    assert offsite["configured"] and offsite["phase"] == "backfill"
+    assert (offsite["days_done"], offsite["days_total"]) == (120, 512)
+    assert offsite["remote_objects"] is None and offsite["stale"] is False
+    assert 500 < offsite["age_seconds"] < 700
+    check = next(check for check in report["checks"]
+                 if check["title"] == "The off-site copy is still backfilling")
+    assert check["level"] == "info" and "120 of 512" in check["detail"]
+
+
+def test_a_finished_offsite_copy_shows_what_the_bucket_holds(config, tmp_path, now):
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    offsite_status(config, now - timedelta(minutes=5))
+
+    report = SystemStatusCollector(config).report()
+    offsite = report["archive"]["offsite"]
+
+    assert offsite["state"] == "ok" and offsite["phase"] == "steady"
+    assert offsite["remote_objects"] == 202000 and offsite["remote_bytes"] == 1_300_000_000_000
+    assert not any("off-site" in check["title"] for check in report["checks"])
+
+
+def test_an_offsite_copy_that_stopped_running_is_a_warning(config, tmp_path, now):
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    offsite_status(config, now - timedelta(hours=5))
+
+    report = SystemStatusCollector(config).report()
+
+    # Unlike the archiver's own status, a stale file is not discarded: "it
+    # stopped" is precisely the news.
+    assert report["archive"]["offsite"]["stale"] is True
+    check = next(check for check in report["checks"]
+                 if check["title"] == "The off-site copy has stopped running")
+    assert check["level"] == "warn"
+
+
+def test_a_failed_offsite_run_is_a_warning(config, tmp_path, now):
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    offsite_status(config, now - timedelta(minutes=5), state="failed", errors=3)
+
+    report = SystemStatusCollector(config).report()
+
+    check = next(check for check in report["checks"]
+                 if check["title"] == "The last off-site copy run failed")
+    assert check["level"] == "warn" and "3 rclone run(s)" in check["detail"]
+
+
+def test_a_garbled_offsite_status_reads_as_unconfigured(config, tmp_path):
+    from timelapsed.system_status import OFFSITE_STATUS_FILENAME
+
+    config.archive_root = tmp_path / "archive"
+    config.archive_root.mkdir(parents=True)
+    (config.archive_root / OFFSITE_STATUS_FILENAME).write_text("{not json")
+
+    report = SystemStatusCollector(config).report()
+
+    assert report["archive"]["offsite"] == {"configured": False}

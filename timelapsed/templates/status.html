@@ -627,6 +627,27 @@ function drawAnalysis(report) {
   return section("Analysis", box, index);
 }
 
+function offsiteLine(offsite) {
+  if (!offsite || !offsite.configured) {
+    return "none — the archive volume is the only copy";
+  }
+  const parts = [offsite.remote || "configured"];
+  if (offsite.remote_objects !== null && offsite.remote_objects !== undefined) {
+    parts.push(count(offsite.remote_objects) + " objects · "
+      + bytes(offsite.remote_bytes || 0));
+  }
+  if (offsite.phase === "backfill" && offsite.days_total) {
+    parts.push("backfill " + count(offsite.days_done || 0) + " of "
+      + count(offsite.days_total) + " days");
+  }
+  const when = offsite.age_seconds === null ? "" : " " + dur(offsite.age_seconds) + " ago";
+  parts.push(offsite.stale ? "stale, last heard from" + when
+    : offsite.state === "running" ? "running, updated" + when
+    : offsite.state === "failed" ? "last run failed" + when
+    : "last run finished" + when);
+  return parts.join(" · ");
+}
+
 function drawArchive(report) {
   const archive = report.archive;
   if (!archive || !archive.enabled) {
@@ -689,6 +710,7 @@ function drawArchive(report) {
     ["Floor", bytes(archive.minimum_free_bytes)],
     ["Retention", archive.retention_seconds === null
       ? "until the floor bites, oldest days first" : dur(archive.retention_seconds)],
+    ["Off-site", offsiteLine(archive.offsite)],
   ]));
   box.body.appendChild(el("p", "note",
     "Behind is the newest recording the NVR reports against the newest segment "
@@ -699,7 +721,9 @@ function drawArchive(report) {
     + "and Given up, segments written off after repeated refusals. Failing is "
     + "segments whose last fetch the device refused, waiting out a retry "
     + "backoff; after enough failures the archiver gives up on them for good, "
-    + "so the backlog always means footage still expected to arrive."));
+    + "so the backlog always means footage still expected to arrive. Off-site is "
+    + "the hourly rclone copy to Backblaze B2, where one is configured: copy, "
+    + "never sync, so the days the floor drops here stay there."));
   return section("Archive", box);
 }
 

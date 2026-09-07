@@ -354,6 +354,59 @@ rsync -av --include='*/' --include='*/timelapse/***' --include='*/keyframe/***' 
 Note that `--exclude-path /var/lib/timelapsed/` above drops the keyframes from the `vzdump` too, so
 the `rsync` is the thing actually protecting them. Worth a cron entry rather than a one-off.
 
+### The footage archive, off-site
+
+The archive volume is the only copy of the NVR footage once the devices recycle it, and it lives on
+whatever disks the archive was given. `deploy/timelapsed-offsite.sh` copies it to a Backblaze B2
+bucket from `timelapsed-offsite.timer`, hourly. It is opt-in: the timer is enabled on every
+install, but the service has `ConditionPathExists=/etc/backblaze.cfg` and is skipped without it.
+
+```ini
+# /etc/backblaze.cfg — root-only, like the New Relic key; deploy/backblaze.cfg.example
+keyID=004e...
+keyName=timelapsed
+applicationKey=K004...
+# bucket=timelapsed        # defaults to keyName; objects land under archive/
+```
+
+Make the application key restricted to that one bucket, read and write. `rclone` comes from the
+distribution (`apt install rclone`); the remote is defined by environment, so there is no
+`rclone.conf` anywhere.
+
+What it does, and why it is shaped that way:
+
+* **Copy, never sync.** The archiver's `reclaim` deletes the oldest local days when the volume
+  hits its floor. A sync would faithfully delete them from the bucket too, which is the opposite
+  of the point. The bucket only ever grows; prune it with a B2 lifecycle rule on the bucket if a
+  ceiling is wanted, not from here.
+* **Oldest day first, across channels.** The backfill walks every `channel/YYYYMMDD` directory
+  in date order — the same order `reclaim` deletes in — so the days nearest deletion are the
+  first ones safe. Each finished day is recorded in `/var/lib/timelapsed/offsite/days.done` and
+  never re-listed. Then one whole-tree pass catches today's tail and late arrivals into old days;
+  once the backfill is through, that pass *is* the hourly run, and it costs a listing and the
+  hour's new segments.
+* **Bandwidth is a timetable.** `--bwlimit "07:00,8M 23:00,14M"` in the script: 8 MB/s by day,
+  14 MB/s at night, on a home uplink measured at about 17 MB/s. Edit the script if the line
+  changes.
+* **Status beside the archive.** `.offsite-status.json` in the archive root — state, phase, days
+  done, what the bucket holds — rewritten as the run goes. The [status page](System-Status.md)
+  shows it on the Archive panel and turns it into checks: information while the backfill runs, a
+  warning when a run fails or when nothing has written the file for three hours.
+
+To restore a day, or look around, the script runs `rclone` with the same credentials:
+
+```bash
+sudo /opt/timelapsed/deploy/timelapsed-offsite.sh rclone lsd b2:timelapsed/archive/6
+sudo /opt/timelapsed/deploy/timelapsed-offsite.sh rclone copy \
+  b2:timelapsed/archive/6/20260817 /var/lib/timelapsed/archive/6/20260817
+sudo chown -R timelapsed:timelapsed /var/lib/timelapsed/archive/6/20260817
+```
+
+A restored day is ordinary archive again: the archiver's index picks the files up on its next
+pass, and `reclaim` will delete them again when the floor says so. Cost is B2's: about US$6 per
+TB-month stored, egress free up to three times what is stored, so a full restore is not the bill
+it would be from S3.
+
 ## Monitoring
 
 Start at the viewer's **[system status page](System-Status.md)**, at `/status`. It answers most of

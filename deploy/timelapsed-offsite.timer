@@ -1,0 +1,15 @@
+[Unit]
+Description=Copy the footage archive off-site hourly
+Documentation=https://github.com/delissonjunio/timelapsed/blob/main/docs/Operations.md
+
+[Timer]
+# Hourly is the tail's freshness; the backfill ignores the schedule, because
+# a run still going when the next tick arrives simply is not started again.
+OnBootSec=10m
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=timelapsed-offsite.service
+
+[Install]
+WantedBy=timers.target
