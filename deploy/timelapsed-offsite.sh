@@ -59,6 +59,13 @@ BUCKET=${BUCKET:-$(cfg keyName)}
 BUCKET=${BUCKET:-timelapsed}
 REMOTE="b2:${BUCKET}/archive"
 
+# The bandwidth timetable below is wall-clock time, and "night on the uplink"
+# means the household's night, not UTC's: borrow the [timelapse] timezone the
+# renders already use. Everything else here stays UTC -- `date -u` throughout,
+# and the day directories are UTC by the archiver's rule.
+TZ=$(ini timelapse timezone)
+export TZ=${TZ:-UTC}
+
 # The remote is defined entirely by environment, so no rclone.conf is read or
 # written. The cache dir moves because the unit's ProtectHome hides /root.
 export RCLONE_CONFIG=/dev/null
@@ -85,7 +92,8 @@ touch "$DONE"
 
 # Segments land by rename, so nothing here is ever half-written; --min-age is
 # belt and braces. Dotfiles are the daemons' own status and write-off files.
-# The bandwidth cap is a timetable: the home uplink is shared by day.
+# The bandwidth cap is a timetable in the [timelapse] timezone: the home
+# uplink is shared by day.
 RCLONE=(
     rclone copy
     --transfers 4 --checkers 8 --fast-list --min-age 2m

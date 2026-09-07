@@ -386,8 +386,9 @@ What it does, and why it is shaped that way:
   once the backfill is through, that pass *is* the hourly run, and it costs a listing and the
   hour's new segments.
 * **Bandwidth is a timetable.** `--bwlimit "07:00,8M 23:00,14M"` in the script: 8 MB/s by day,
-  14 MB/s at night, on a home uplink measured at about 17 MB/s. Edit the script if the line
-  changes.
+  14 MB/s at night, on a home uplink measured at about 17 MB/s. The hours are read in the
+  `[timelapse]` timezone, so night means the household's night rather than the guest's UTC
+  clock. Edit the script if the line changes.
 * **Status beside the archive.** `.offsite-status.json` in the archive root — state, phase, days
   done, what the bucket holds — rewritten as the run goes. The [status page](System-Status.md)
   shows it on the Archive panel and turns it into checks: information while the backfill runs, a
