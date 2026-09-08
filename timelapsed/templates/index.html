@@ -158,17 +158,13 @@ header { grid-column:1/-1; }
 /* With a replica behind the lane, each run says what became of it there.
    Archived is the solid, playable case; pending stays the plain grey; the
    three ways footage fails to arrive get their own colours so a hole in the
-   replica reads as "refused" or "recycled" rather than "not yet". */
-.seg.archived { background:var(--archived); opacity:.8; }
-.seg.pending { opacity:.4; }
-.seg.failing { background:var(--failing); opacity:.85; }
-.seg.abandoned { background:var(--abandoned); opacity:.85; }
-.seg.expired { background:var(--muted); opacity:.22; }
-.lane.legend { height:14px; margin-bottom:6px; }
-.lane.legend .track { background:none; font-size:.62rem; color:var(--muted);
-                      display:flex; align-items:center; gap:.9rem; }
-.lane.legend .sw { position:static; display:inline-block; width:10px; height:7px;
-                   border-radius:2px; margin-right:4px; vertical-align:middle; }
+   replica reads as "refused" or "recycled" rather than "not yet". A data
+   attribute, not a class: `.pending` is already the activity lanes' hatching. */
+.seg[data-status="archived"] { background:var(--archived); opacity:.8; }
+.seg[data-status="pending"] { opacity:.4; }
+.seg[data-status="failing"] { background:var(--failing); opacity:.85; }
+.seg[data-status="abandoned"] { background:var(--abandoned); opacity:.85; }
+.seg[data-status="expired"] { background:var(--muted); opacity:.22; }
 .lane.footage .track.clickable { cursor:pointer; }
 .lane.footage .track.clickable:hover { outline:1px solid var(--line); }
 /* The jump from a sighting to its real footage. Dressed like the cadence tag
@@ -645,7 +641,8 @@ function drawFootageLane(lanes, pct) {
   const track = el("div", "track");
   for (const run of state.footage) {
     if (run.f < state.start || run.s > state.end) continue;
-    const mark = el("div", "seg" + (run.status ? " " + run.status : ""));
+    const mark = el("div", "seg");
+    if (run.status) mark.dataset.status = run.status;
     mark.style.left = pct(run.s) + "%";
     mark.style.width = Math.max(pct(run.f) - pct(run.s), 0.15) + "%";
     mark.title = (FOOTAGE_STATUS[run.status] || "NVR footage") + "  "
@@ -656,8 +653,12 @@ function drawFootageLane(lanes, pct) {
     track.appendChild(mark);
   }
   // With the replica running, the lane is a way in, not just a map: a click
-  // resolves to the archived segment covering that moment and plays it.
+  // resolves to the archived segment covering that moment and plays it. The
+  // colour key lives on the track's own tooltip -- the lanes are crowded
+  // enough without a legend row, and the marks explain themselves on hover.
   if (HAS_ARCHIVE) {
+    track.title = "Footage the NVR recorded. Green: archived, click to play. "
+      + "Grey: not fetched yet. Amber: fetch failing. Red: given up. Faint: recycled by the NVR.";
     track.classList.add("clickable");
     track.onclick = ev => {
       const box = track.getBoundingClientRect();
@@ -667,35 +668,16 @@ function drawFootageLane(lanes, pct) {
   }
   lane.appendChild(track);
   lanes.appendChild(lane);
-
-  // The colours only mean something with a replica; without one every run
-  // is plain "the device recorded here" and a legend would be noise.
-  if (HAS_ARCHIVE) {
-    const legend = el("div", "lane legend");
-    legend.append(el("span", "label", ""));
-    const key = el("div", "track");
-    for (const [status, words] of Object.entries(FOOTAGE_LEGEND)) {
-      const item = el("span", "");
-      item.append(el("i", "sw seg " + status), words);
-      key.appendChild(item);
-    }
-    legend.appendChild(key);
-    lanes.appendChild(legend);
-  }
 }
 
-// What the replica made of a stretch of the NVR's footage, as the lane's
-// tooltip says it and as the legend abbreviates it.
+// What the replica made of a stretch of the NVR's footage, as each mark's
+// tooltip says it.
 const FOOTAGE_STATUS = {
   archived: "Archived footage",
   pending: "On the NVR, not replicated yet",
   failing: "On the NVR; its fetch keeps failing, waiting to retry",
   abandoned: "On the NVR; given up on after repeated refusals",
   expired: "Recycled by the NVR before it was fetched",
-};
-const FOOTAGE_LEGEND = {
-  archived: "archived", pending: "not fetched yet", failing: "failing",
-  abandoned: "given up", expired: "recycled by the NVR",
 };
 const FOOTAGE_MISSING = {
   pending: "recorded on the NVR, not replicated yet",

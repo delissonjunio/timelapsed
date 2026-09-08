@@ -385,9 +385,10 @@ row against the replica — `archived` (on the volume, playable), `pending` (the
 the archiver has not got there), `failing` (waiting out a fetch backoff, from the archiver's
 status file), `abandoned` (written off in `.abandoned.json`), `expired` (ended before the
 device's retention horizon, so recycled before anyone fetched it) — and merges adjacent rows only
-within one status, so a run never spans two. The viewer colours the five apart, keeps a legend
-under the lane, and a click on anything but archived says which of the four it was rather than a
-blanket "not yet". Without a replica the lane is the plain mirror it always was.
+within one status, so a run never spans two. The viewer colours the five apart (green, grey,
+amber, red, faint; the key is the lane's own tooltip — a legend row cost more height than the
+crowded lanes could spare), and a click on anything but archived says which of the four it was
+rather than a blanket "not yet". Without a replica the lane is the plain mirror it always was.
 
 ## What does not change
 
