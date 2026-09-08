@@ -29,6 +29,10 @@ listing, you can debug it.
   LLM-confirmed first (planned, not built)
 * **[Captions Plan](Captions-Plan.md)** — speech on archived footage as closed captions and a
   transcript: a near-free voice gate, then speech-to-text on those seconds alone (planned, measured)
+* **[Frigate Plan](Frigate-Plan.md)** — retire both NVRs: a recorder at each site, Timelapsed
+  as the interface, and the archiver's job deleted rather than moved (planned, measured)
+* **[Multi-Site](Multi-Site.md)** — one page over two sites: metadata through the portal, media
+  straight from the site that holds it (planned)
 
 ## The two things that trip people up
 

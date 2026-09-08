@@ -52,6 +52,74 @@ curl -v --digest -u 'admin:PASSWORD' \
 Some Hikvision firmware rate-limits snapshot requests. If captures succeed and then start failing
 in bursts, raise `interval_seconds`.
 
+### The Intelbras stops answering its CGI API
+
+Every channel of one Dahua-speaking device goes quiet at once, the journal fills with read
+timeouts, and nothing recovers:
+
+```
+HTTPConnectionPool(host='192.168.50.170', port=80): Read timed out. (read timeout=20.0)
+```
+
+**All channels together, and only that device, is the signature.** One camera failing is a camera
+problem; five failing in the same second is the device's HTTP server. On 2026-09-08 this ran from
+05:54 UTC for over twelve hours and cost the home site's timelapse the whole day.
+
+Probe it in this order, from the guest. The point of the order is that the first two pass, which
+is what makes this look like a network problem when it is not:
+
+```bash
+ping -c3 192.168.50.170                       # answers, sub-millisecond
+curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://192.168.50.170/     # 200, ~6ms
+# and then, with the credentials from /etc/timelapsed.ini:
+timeout 30 curl -s --digest -u "$U:$P" -o /tmp/t.jpg \
+  'http://192.168.50.170/cgi-bin/snapshot.cgi?channel=1'                          # hangs
+timeout 20 curl -s --digest -u "$U:$P" \
+  'http://192.168.50.170/cgi-bin/magicBox.cgi?action=getSystemInfo'                # hangs
+```
+
+The unauthenticated web root answering in milliseconds while every authenticated CGI call hangs
+past 30 seconds places the fault in the CGI and digest-auth subsystem specifically.
+
+**RTSP keeps working throughout**, which is worth confirming because it tells you the recorder and
+the cameras are fine and only the API is gone. The password contains characters that must be
+percent-encoded before it goes in a URL, or ffmpeg reads `#` as a fragment and fails with
+`Port missing in uri`:
+
+```bash
+PE=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$P")
+ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name,width,height -of csv=p=0 \
+  "rtsp://$U:$PE@192.168.50.170:554/cam/realmonitor?channel=1&subtype=0"
+# hevc,960,1080
+```
+
+The suspected cause is the polling load itself: five channels at a ten-second interval, each with
+a fresh digest handshake, is roughly 43,000 authenticated CGI requests a day against firmware that
+leaks session slots. Raising `interval_seconds` reduces the rate but not the mechanism. The
+[Frigate Plan](Frigate-Plan.md) removes the CGI calls from the capture loop entirely, which is the
+real fix.
+
+#### Recovering it remotely
+
+**Only a power cycle clears this.** `magicBox.cgi?action=rebootSystem` is itself a CGI call, so it
+hangs like everything else, and the web UI's reboot button goes through the same path.
+
+The DVR has no ATX front-panel header, so a NanoKVM's power and reset GPIO wires have nothing to
+attach to — unlike on pve1, where they drive the motherboard header. Split the job:
+
+* **A switched plug** does the power cycle. Anything Home Assistant on VM 210 already speaks
+  (Shelly, Tasmota, Zigbee). Give it a manual button, and if it is automated, gate it on twenty
+  minutes of failed authenticated CGI and rate-limit it to one cycle every six hours — a
+  power-cycle loop against a device that is merely slow is worse than the outage.
+* **A NanoKVM** gives the DVR's local console over HDMI plus USB HID, which is the only way to
+  reach the Dahua on-device menus that the web UI does not expose. Set it up the way pve1's is
+  (see the Proxmox host notes for the API and the Tailscale Serve wrapper), and keep it off the
+  public internet for the same reason.
+
+Cutting power mid-write can corrupt the DVR's own recording filesystem. Under the Frigate plan
+those recordings stop being the system of record, which is what makes this acceptable; until then
+it is a real cost of each cycle.
+
 ### No timelapses are being produced
 
 Check for the startup warning first:
@@ -451,3 +519,28 @@ covers the web service itself.
 `Restart=always` with `RestartSec=10` means both services come back on their own after a crash or
 an OOM kill, so alerting on "no new images for 15 minutes" catches the cases that matter without
 firing on transient restarts.
+
+### Alert per channel, not per daemon
+
+The New Relic condition "no capture cycles for 10 minutes" counts transactions across every
+channel at once, and that is not enough. On 2026-09-08 five of twelve channels stopped for twelve
+hours and it never fired, because the other seven kept cycling at full rate and the daemon-wide
+count never dropped. The "daemon errors > 30 in 10 min" condition opened once on the same
+outage, closed, and stayed closed while the failure continued.
+
+Both conditions are correct about the daemon and blind to the channel, so the missing one is
+faceted:
+
+```sql
+SELECT count(*) FROM Transaction
+WHERE appName = 'timelapsed-capture' AND name LIKE '%capture/cycle/%'
+FACET channel   -- one signal per channel; alert on a gap in any of them
+```
+
+A faceted condition opens an incident per channel, which is what "camera 6 is down" should look
+like. The same argument applies to `Custom/capture/images_stored`, which is a gauge rather than a
+count of attempts and so distinguishes "cycling but failing" from "not cycling" — the 2026-09-08
+outage was the first, and the loop kept running and kept losing.
+
+This matters more once there are two sites. A whole site going quiet must not be invisible behind
+the other site's healthy traffic. See [Multi-Site](Multi-Site.md#status).
