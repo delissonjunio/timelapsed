@@ -13,6 +13,7 @@
 :root {
   --hourly:#5b9dff; --daily:#a78bfa; --weekly:#34d399; --monthly:#f59e0b; --progress:#ec4899;
   --person:#22d3ee; --vehicle:#a3e635; --footage:#94a3b8;
+  --archived:#34d399; --failing:#fbbf24; --abandoned:#f87171;
 }
 body {
   margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
@@ -154,6 +155,20 @@ header { grid-column:1/-1; }
 .seg { position:absolute; top:6px; bottom:6px; border-radius:2px;
        background:var(--footage); opacity:.55; min-width:2px; }
 .seg:hover { opacity:.85; }
+/* With a replica behind the lane, each run says what became of it there.
+   Archived is the solid, playable case; pending stays the plain grey; the
+   three ways footage fails to arrive get their own colours so a hole in the
+   replica reads as "refused" or "recycled" rather than "not yet". */
+.seg.archived { background:var(--archived); opacity:.8; }
+.seg.pending { opacity:.4; }
+.seg.failing { background:var(--failing); opacity:.85; }
+.seg.abandoned { background:var(--abandoned); opacity:.85; }
+.seg.expired { background:var(--muted); opacity:.22; }
+.lane.legend { height:14px; margin-bottom:6px; }
+.lane.legend .track { background:none; font-size:.62rem; color:var(--muted);
+                      display:flex; align-items:center; gap:.9rem; }
+.lane.legend .sw { position:static; display:inline-block; width:10px; height:7px;
+                   border-radius:2px; margin-right:4px; vertical-align:middle; }
 .lane.footage .track.clickable { cursor:pointer; }
 .lane.footage .track.clickable:hover { outline:1px solid var(--line); }
 /* The jump from a sighting to its real footage. Dressed like the cadence tag
@@ -630,13 +645,14 @@ function drawFootageLane(lanes, pct) {
   const track = el("div", "track");
   for (const run of state.footage) {
     if (run.f < state.start || run.s > state.end) continue;
-    const mark = el("div", "seg");
+    const mark = el("div", "seg" + (run.status ? " " + run.status : ""));
     mark.style.left = pct(run.s) + "%";
     mark.style.width = Math.max(pct(run.f) - pct(run.s), 0.15) + "%";
-    mark.title = "NVR footage  " + fmtFull(run.s) + "  to  " + fmtFull(run.f)
+    mark.title = (FOOTAGE_STATUS[run.status] || "NVR footage") + "  "
+      + fmtFull(run.s) + "  to  " + fmtFull(run.f)
       + "  (" + run.segments + " segment" + (run.segments === 1 ? "" : "s")
       + ", " + fmtSize(run.size_bytes) + ")"
-      + (HAS_ARCHIVE ? " — click to play" : "");
+      + (run.status === "archived" ? " — click to play" : "");
     track.appendChild(mark);
   }
   // With the replica running, the lane is a way in, not just a map: a click
@@ -651,7 +667,42 @@ function drawFootageLane(lanes, pct) {
   }
   lane.appendChild(track);
   lanes.appendChild(lane);
+
+  // The colours only mean something with a replica; without one every run
+  // is plain "the device recorded here" and a legend would be noise.
+  if (HAS_ARCHIVE) {
+    const legend = el("div", "lane legend");
+    legend.append(el("span", "label", ""));
+    const key = el("div", "track");
+    for (const [status, words] of Object.entries(FOOTAGE_LEGEND)) {
+      const item = el("span", "");
+      item.append(el("i", "sw seg " + status), words);
+      key.appendChild(item);
+    }
+    legend.appendChild(key);
+    lanes.appendChild(legend);
+  }
 }
+
+// What the replica made of a stretch of the NVR's footage, as the lane's
+// tooltip says it and as the legend abbreviates it.
+const FOOTAGE_STATUS = {
+  archived: "Archived footage",
+  pending: "On the NVR, not replicated yet",
+  failing: "On the NVR; its fetch keeps failing, waiting to retry",
+  abandoned: "On the NVR; given up on after repeated refusals",
+  expired: "Recycled by the NVR before it was fetched",
+};
+const FOOTAGE_LEGEND = {
+  archived: "archived", pending: "not fetched yet", failing: "failing",
+  abandoned: "given up", expired: "recycled by the NVR",
+};
+const FOOTAGE_MISSING = {
+  pending: "recorded on the NVR, not replicated yet",
+  failing: "recorded on the NVR; fetching it keeps failing",
+  abandoned: "recorded on the NVR; the archiver gave up on it",
+  expired: "the NVR recycled this before it was fetched",
+};
 
 // --- the replica ---
 
@@ -685,12 +736,14 @@ async function playArchived(atMs) {
     select(archiveEntry(seg), atMs);
     return;
   }
-  // The mirror says footage exists but the replica has not caught up to it --
-  // or the click landed in a gap. Either way, say so rather than doing nothing.
+  // Nothing archived here. The lane knows why -- which run the click landed
+  // in and what became of it -- so say that rather than a blanket "not yet".
+  const run = state.footage.find(r => r.s <= atMs && atMs <= r.f);
+  const why = run ? (FOOTAGE_MISSING[run.status] || "no archived footage covers this moment yet")
+                  : "the NVR recorded nothing at this moment";
   const box = $("nowplaying");
   box.textContent = "";
-  box.append(el("span", "when", fmtFull(atMs)),
-             el("span", "", "no archived footage covers this moment yet"));
+  box.append(el("span", "when", fmtFull(atMs)), el("span", "", why));
 }
 
 // The sighting's real footage, one click away, once the replica holds it.

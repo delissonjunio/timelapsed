@@ -324,7 +324,15 @@ def build_app(config: Config) -> Flask:
                 abort(400, description="channel, start and end are required")
             # About a pixel of the lane. Zoomed out, the lane could not show a
             # smaller gap anyway; zoomed in, the runs fall apart into segments.
-            payload = recognition.footage_runs(channel, start, end, max((end - start) // 1000, 1))
+            max_gap = max((end - start) // 1000, 1)
+            if archive is None:
+                payload = recognition.footage_runs(channel, start, end, max_gap)
+            else:
+                # With a replica, each run also says what became of it there.
+                payload = archive.footage_runs(
+                    channel, recognition.footage_segments(channel, start, end),
+                    from_epoch(start), from_epoch(end), max_gap,
+                )
         elif endpoint == "events":
             payload = [
                 event.as_dict()

@@ -60,6 +60,15 @@ class RecognitionReader:
         with self._lock:
             return self._connection().recent_counts(start, end)
 
+    def footage_segments(self, channel: str, start: int, end: int) -> list[dict]:
+        """Every mirror row overlapping [start, end], for the lane to classify
+        against the replica. Same pre-mirror-schema tolerance as footage_runs."""
+        with self._lock:
+            try:
+                return self._connection().segments(channel=channel, start=start, end=end, limit=1_000_000)
+            except sqlite3.OperationalError:
+                return []
+
     def footage_runs(self, channel: str, start: int, end: int, max_gap: int) -> list[dict]:
         with self._lock:
             try:

@@ -379,6 +379,16 @@ player, whose linear moment mapping is exact on real footage — and a selected 
 "▶ footage" button that jumps from the recognition event to the NVR's own recording of it. A
 moment the replica has not caught up to says so instead of doing nothing.
 
+Since 2026-09-08 the lane is painted by what the replica made of each stretch, not just by
+whether the device recorded it. With an `[archive]` root, `/api/footage` classifies every mirror
+row against the replica — `archived` (on the volume, playable), `pending` (the device holds it,
+the archiver has not got there), `failing` (waiting out a fetch backoff, from the archiver's
+status file), `abandoned` (written off in `.abandoned.json`), `expired` (ended before the
+device's retention horizon, so recycled before anyone fetched it) — and merges adjacent rows only
+within one status, so a run never spans two. The viewer colours the five apart, keeps a legend
+under the lane, and a click on anything but archived says which of the four it was rather than a
+blanket "not yet". Without a replica the lane is the plain mirror it always was.
+
 ## What does not change
 
 * **The 10-second snapshot poller stays.** It is the timelapse source and the input recognition
@@ -422,6 +432,16 @@ Hard-won specifics for whoever implements this.
   last returned segment's `endTime`; results arrive in ascending time order (also measured), so
   the seam costs one duplicated straddling segment. Treat a session that returned exactly 4,000
   as truncated — a real 4,000-segment result costs one extra near-empty session.
+* **Segment names are reused once the disk wraps.** The `name=` in a search result is the
+  device's own segment id, and it is *not* unique over time: numbering cycles with the disk, so
+  once the device recycles footage a name comes back on a new recording months later (seen
+  2026-09-08: `00000000045001913` was a 4 February segment on channel 1 and, seven months on, a
+  3 September one). A segment's identity is its name *and* its start (`segment_key` in the
+  archiver, which is also what the filename already carried); keyed by name alone, "already
+  archived" was true for every reused name and the replica quietly stopped fetching that
+  channel's new footage while the status page's mirror-minus-files backlog climbed past four
+  thousand. Names *are* unique across channels at any one moment, which is all the earlier note
+  on globally unique names ever established.
 * **Downloads are per-recorded-segment.** An arbitrary time range without the `name=` and `size=`
   fields from a search result is rejected. The search index is the unit of fetch, so a clip window
   has to be mapped onto the segments covering it.

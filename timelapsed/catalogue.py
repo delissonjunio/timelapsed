@@ -5,16 +5,25 @@ and no caching (the thumbnail bytes aside): the directories are small, the
 filenames carry the metadata, and a stale answer is more annoying than a
 directory scan is expensive.
 """
+import json
 import logging
+import os
 import re
 import subprocess
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from timelapsed.archiver import parse_segment_filename
+from timelapsed.archiver import (
+    ABANDONED_FILENAME,
+    HORIZON_SLACK,
+    parse_segment_filename,
+    segment_key,
+    uri_segment_name,
+)
+from timelapsed.system_status import read_archiver_status
 from timelapsed.image_capture_library import ImageCaptureLibrary, parse_timelapse_filename
 
 logger = logging.getLogger(__name__)
@@ -169,6 +178,62 @@ class TimelapseCatalogue:
         return candidate if candidate.is_file() else None
 
 
+# What the replica has made of a mirror row, in the order the lane's legend
+# lists them. `pending` is the plain case: the device holds it, nothing has
+# gone wrong, the archiver just has not got there.
+FOOTAGE_STATUSES = ("archived", "pending", "failing", "abandoned", "expired")
+
+
+def footage_status_runs(
+    segments: list[dict], max_gap: int, *,
+    archived: set[str], abandoned: set[str], waiting: set[str], horizon: datetime | None,
+) -> list[dict]:
+    """Mirror rows merged into runs, split wherever the replica's answer changes.
+
+    The footage lane used to paint one colour: "the device recorded here".
+    With a replica behind it the interesting question is what happened to each
+    piece -- copied, still queued, failing its fetches, given up on, or
+    recycled by the device before anyone fetched it -- so runs carry a status
+    and a run never spans two. Adjacent rows with the same status closer than
+    `max_gap` seconds merge, exactly as the single-colour runs did.
+    """
+    merged: list[list] = []  # [started_at, ended_at, count, bytes, status]
+    rows = sorted(segments, key=lambda row: row["starts"])
+    for row in rows:
+        started_at = datetime.fromisoformat(row["starts"])
+        ended_at = datetime.fromisoformat(row["finishes"])
+        name = uri_segment_name(row["playback_uri"])
+        key = segment_key(name, started_at) if name else None
+        if key in archived:
+            status = "archived"
+        elif horizon is not None and ended_at < horizon - HORIZON_SLACK:
+            status = "expired"
+        elif key in abandoned:
+            status = "abandoned"
+        elif key in waiting:
+            status = "failing"
+        else:
+            status = "pending"
+        start, end = int(started_at.timestamp()), int(ended_at.timestamp())
+        if merged and merged[-1][4] == status and start - merged[-1][1] <= max_gap:
+            last = merged[-1]
+            last[1] = max(last[1], end)
+            last[2] += 1
+            last[3] += row["size_bytes"] or 0
+        else:
+            merged.append([start, end, 1, row["size_bytes"] or 0, status])
+    return [
+        {
+            "starts": datetime.fromtimestamp(run_start, tz=timezone.utc).isoformat(),
+            "finishes": datetime.fromtimestamp(run_end, tz=timezone.utc).isoformat(),
+            "segments": count,
+            "size_bytes": size,
+            "status": status,
+        }
+        for run_start, run_end, count, size, status in merged
+    ]
+
+
 class ArchiveCatalogue:
     """What the archiver has replicated, read straight off its filenames.
 
@@ -211,6 +276,70 @@ class ArchiveCatalogue:
                 })
         found.sort(key=lambda segment: segment["starts"])
         return found[:limit]
+
+    def keys(self, channel: str, start: datetime, end: datetime) -> set[str]:
+        """segment_key of every archived segment overlapping [start, end].
+
+        Names only, no stat: the lane asks this for a whole viewport, which at
+        a year is a few hundred day directories and tens of thousands of names.
+        """
+        found: set[str] = set()
+        day = start.date() - timedelta(days=1)
+        while day <= end.date():
+            directory = self.root / channel / day.strftime("%Y%m%d")
+            day += timedelta(days=1)
+            try:
+                names = os.listdir(directory)
+            except OSError:
+                continue
+            for filename in names:
+                if not filename.endswith(".mp4"):
+                    continue
+                try:
+                    started_at, ended_at, name = parse_segment_filename(filename[:-4])
+                except ValueError:
+                    continue
+                if ended_at < start or started_at > end:
+                    continue
+                found.add(segment_key(name, started_at))
+        return found
+
+    def abandoned_keys(self, channel: str) -> set[str]:
+        """The archiver's write-offs for a channel, read off its tombstone file."""
+        try:
+            raw = json.loads((self.root / ABANDONED_FILENAME).read_text())
+        except (OSError, ValueError):
+            return set()
+        if not isinstance(raw, dict):
+            return set()
+        return {
+            key for key, entry in raw.items()
+            if isinstance(entry, dict) and entry.get("channel") == channel
+        }
+
+    def footage_runs(
+        self, channel: str, segments: list[dict], start: datetime, end: datetime, max_gap: int,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """The mirror's rows for a window, merged into runs by what the replica
+        made of each: see footage_status_runs. The daemon's own view -- its
+        retention horizon and the fetches waiting out a backoff -- comes from
+        its status file, and is simply absent when that is stale."""
+        daemon = read_archiver_status(self.root, now or datetime.now(tz=timezone.utc)).get(channel) or {}
+        horizon = None
+        if isinstance(daemon.get("horizon"), str):
+            try:
+                horizon = datetime.fromisoformat(daemon["horizon"])
+            except ValueError:
+                horizon = None
+        waiting = {key for key in daemon.get("waiting") or [] if isinstance(key, str)}
+        return footage_status_runs(
+            segments, max_gap,
+            archived=self.keys(channel, start, end),
+            abandoned=self.abandoned_keys(channel),
+            waiting=waiting,
+            horizon=horizon,
+        )
 
     def resolve(self, channel: str, day: str, filename: str) -> Path | None:
         """Resolve an archived file, refusing anything that escapes the root."""
