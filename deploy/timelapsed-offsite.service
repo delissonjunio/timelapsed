@@ -9,9 +9,14 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/timelapsed/deploy/timelapsed-offsite.sh
-# Root, because the key file is root-only; the script writes nothing outside
+ExecStart=/opt/timelapsed/.venv/bin/python -m timelapsed.offsite
+WorkingDirectory=/opt/timelapsed
+# Root, because the key file is root-only; the run writes nothing outside
 # /var/lib/timelapsed (its state, and the status file beside the archive).
+
+# New Relic; the key file is optional on purpose -- see timelapsed-web.service.
+Environment=NEW_RELIC_APP_NAME=timelapsed-offsite
+EnvironmentFile=-/etc/timelapsed-newrelic.env
 
 # Uploading is bandwidth work. Keep it beside the archiver, below capture.
 Nice=15

@@ -56,6 +56,18 @@ far longer than any single transaction could usefully report -- plus one per
 reclaim that actually removed files. An idle daemon charts nothing, which is
 the normal look for a replica that is caught up.
 
+**timelapsed-offsite** is a oneshot rather than a daemon: one background
+transaction per finished run, named `offsite/full` or `offsite/tail`, carrying
+the pass, the outcome, the seconds and the bytes as attributes -- the run's
+heartbeat and its verdict in one event. While it transfers it records
+`Custom/offsite/bytes_uploaded` (the delta since the previous stats line, so
+a sum is throughput) and `Custom/offsite/progress_ratio` every ten minutes;
+at the end `run_seconds`, `failed_runs` (0 or 1, so a day's sum is the
+count) and `remote_bytes` / `remote_objects` as measured after the last full
+pass. The agent starts for the run and is flushed at exit, the way a render
+worker's is. The "External storage" page of the dashboard is drawn from
+these.
+
 The capture daemon's workers are forked processes, and the agent's harvest
 thread does not survive a fork -- a worker that inherits the parent's agent
 records transactions nobody ever sends. `telemetry.child()` resets the agent

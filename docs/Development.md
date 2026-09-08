@@ -101,6 +101,7 @@ timelapsed/
   status_page.py            the system status page
   system_status.py          the status report: library scan, health arithmetic, checks
   analyzer.py               the recognition daemon: run(), run_once(), prune()
+  offsite.py                the off-site copy: one rclone run per hour, full or tail; status file + metrics
   analysis/
     index.py                SQLite schema and queries
     models.py               ONNX wrappers: detector, re-ID, plate detect + OCR
@@ -110,6 +111,7 @@ deploy/
   install.sh                Debian/Ubuntu installer
   fetch-models.sh           downloads and verifies the ONNX models
   timelapsed.service        capture daemon unit
+  timelapsed-offsite.timer  hourly off-site copy of the archive, opt-in via /etc/backblaze.cfg
   timelapsed-web.service    viewer unit
   timelapsed-analyzer.service  recognition daemon unit
 docs/                       this wiki

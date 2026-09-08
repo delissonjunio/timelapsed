@@ -357,9 +357,10 @@ the `rsync` is the thing actually protecting them. Worth a cron entry rather tha
 ### The footage archive, off-site
 
 The archive volume is the only copy of the NVR footage once the devices recycle it, and it lives on
-whatever disks the archive was given. `deploy/timelapsed-offsite.sh` copies it to a Backblaze B2
-bucket from `timelapsed-offsite.timer`, hourly. It is opt-in: the timer is enabled on every
-install, but the service has `ConditionPathExists=/etc/backblaze.cfg` and is skipped without it.
+whatever disks the archive was given. `timelapsed-offsite` (the `timelapsed.offsite` module)
+copies it to a Backblaze B2 bucket from `timelapsed-offsite.timer`, hourly. It is opt-in: the
+timer is enabled on every install, but the service has `ConditionPathExists=/etc/backblaze.cfg`
+and is skipped without it.
 
 ```ini
 # /etc/backblaze.cfg — root-only, like the New Relic key; deploy/backblaze.cfg.example
@@ -392,25 +393,26 @@ What it does, and why it is shaped that way:
   channel by channel in date order. The first full pass is the backfill; after that one runs
   about daily. Every other hour is a *tail* pass: only today's and yesterday's day directories
   are listed and copied, about forty calls. Late arrivals into old days — the archiver fetches
-  NVR history oldest-first too — ride the next full pass. `timelapsed-offsite.sh full` forces
+  NVR history oldest-first too — ride the next full pass. `timelapsed-offsite full` forces
   one. The first design walked every day directory in its own rclone run, which was six
   transactions a directory and burnt the free daily allowance before the backfill was a tenth
   through; hence this shape.
-* **Bandwidth is a timetable.** `--bwlimit "07:00,8M 23:00,14M"` in the script: 8 MB/s by day,
-  14 MB/s at night, on a home uplink measured at about 17 MB/s. The hours are read in the
-  `[timelapse]` timezone, so night means the household's night rather than the guest's UTC
-  clock. Edit the script if the line changes.
+* **Bandwidth is a timetable.** `--bwlimit "07:00,8M 23:00,14M"` (`BANDWIDTH_TIMETABLE` in
+  `timelapsed/offsite.py`): 8 MB/s by day, 14 MB/s at night, on a home uplink measured at about
+  17 MB/s. The hours are read in the `[timelapse]` timezone, so night means the household's
+  night rather than the guest's UTC clock. Edit the constant if the line changes.
 * **Status beside the archive.** `.offsite-status.json` in the archive root — state, which pass,
   rclone's own progress line while transferring, what the bucket held after the last full pass —
   rewritten at start, on every stats line, and at the end. The [status page](System-Status.md)
   shows it on the Archive panel and turns it into checks: information while the backfill runs, a
-  warning when a run fails or when nothing has written the file for three hours.
+  warning when a run fails or when nothing has written the file for three hours. The same
+  numbers reach New Relic as the `timelapsed-offsite` app — see [Monitoring](Monitoring.md).
 
-To restore a day, or look around, the script runs `rclone` with the same credentials:
+To restore a day, or look around, the same entry point runs `rclone` with the same credentials:
 
 ```bash
-sudo /opt/timelapsed/deploy/timelapsed-offsite.sh rclone lsd b2:timelapsed/archive/6
-sudo /opt/timelapsed/deploy/timelapsed-offsite.sh rclone copy \
+sudo /opt/timelapsed/.venv/bin/timelapsed-offsite rclone lsd b2:timelapsed/archive/6
+sudo /opt/timelapsed/.venv/bin/timelapsed-offsite rclone copy \
   b2:timelapsed/archive/6/20260817 /var/lib/timelapsed/archive/6/20260817
 sudo chown -R timelapsed:timelapsed /var/lib/timelapsed/archive/6/20260817
 ```

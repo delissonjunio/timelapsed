@@ -35,6 +35,7 @@ from itertools import accumulate
 from pathlib import Path
 
 from timelapsed.archiver import STATUS_FILENAME, parse_segment_filename
+from timelapsed.offsite import STATUS_FILENAME as OFFSITE_STATUS_FILENAME
 from timelapsed.config import validate_config
 from timelapsed.image_capture_library import (
     FRAME_STEM,
@@ -317,12 +318,9 @@ def read_archiver_status(root: Path, now: datetime) -> dict[str, dict]:
     return channels
 
 
-# Written by deploy/timelapsed-offsite.sh beside the archive: at the start of
-# a run, on every rclone stats line while it transfers, and at the end. The
-# script and this constant must agree on the name.
-OFFSITE_STATUS_FILENAME = ".offsite-status.json"
-
-# The timer is hourly and a run rewrites the file at least twice, every ten
+# OFFSITE_STATUS_FILENAME is written by timelapsed.offsite beside the archive:
+# at the start of a run, on every rclone stats line while it transfers, and at
+# the end. The timer is hourly and a run rewrites the file at least twice, every ten
 # minutes while transferring, so a file this old means the timer is off, the
 # key file went away, or a run has hung.
 OFFSITE_STATUS_MAX_AGE = timedelta(hours=3)

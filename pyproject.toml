@@ -33,6 +33,7 @@ timelapsed = "timelapsed.timelapsed:run"
 timelapsed-web = "timelapsed.web:run"
 timelapsed-analyzer = "timelapsed.analyzer:run"
 timelapsed-archiver = "timelapsed.archiver:run"
+timelapsed-offsite = "timelapsed.offsite:run"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
