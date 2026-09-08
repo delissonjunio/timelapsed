@@ -18,11 +18,12 @@ Nice=15
 CPUWeight=20
 IOWeight=20
 
-# rclone holds the listing of both sides in memory: a few hundred bytes per
-# object, so the cap is a leak stop, not a working limit.
+# A full pass holds the listing of both sides in memory, and --check-first
+# the whole transfer list on top: roughly a kilobyte per object, so a few
+# hundred MB at two hundred thousand segments. The cap is a leak stop.
 MemoryAccounting=true
-MemoryHigh=768M
-MemoryMax=1G
+MemoryHigh=1G
+MemoryMax=1536M
 
 NoNewPrivileges=true
 PrivateTmp=true

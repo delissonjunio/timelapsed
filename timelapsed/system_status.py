@@ -318,12 +318,13 @@ def read_archiver_status(root: Path, now: datetime) -> dict[str, dict]:
 
 
 # Written by deploy/timelapsed-offsite.sh beside the archive: at the start of
-# a run, after every day the backfill finishes, and at the end. The script and
-# this constant must agree on the name.
+# a run, on every rclone stats line while it transfers, and at the end. The
+# script and this constant must agree on the name.
 OFFSITE_STATUS_FILENAME = ".offsite-status.json"
 
-# The timer is hourly and every run rewrites the file at least twice, so a file
-# this old means the timer is off, the key file went away, or a run has hung.
+# The timer is hourly and a run rewrites the file at least twice, every ten
+# minutes while transferring, so a file this old means the timer is off, the
+# key file went away, or a run has hung.
 OFFSITE_STATUS_MAX_AGE = timedelta(hours=3)
 
 
@@ -348,20 +349,31 @@ def read_offsite_status(root: Path, now: datetime) -> dict:
         value = payload.get(key)
         return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
+    def text(key: str) -> str | None:
+        value = payload.get(key)
+        return value if isinstance(value, str) and value else None
+
     state = payload.get("state")
     phase = payload.get("phase")
+    run = payload.get("pass")
     age = (now - written_at).total_seconds()
     return {
         "configured": True,
         "remote": str(payload.get("remote") or ""),
         "state": state if state in ("running", "ok", "failed") else "unknown",
+        # backfill until the first full pass has completed, steady after.
         "phase": phase if phase in ("backfill", "steady") else "unknown",
-        "days_done": number("days_done"),
-        "days_total": number("days_total"),
+        # full: both sides listed, everything missing copied. tail: only the
+        # two newest day directories, which is what the hourly runs do.
+        "pass": run if run in ("full", "tail") else "unknown",
+        # rclone's own one-line stats while transferring, e.g.
+        # "412 GiB / 1.3 TiB, 31%, 8.1 MiB/s, ETA 26h"; null otherwise.
+        "progress": text("progress"),
         "errors": number("errors"),
         "run_seconds": number("run_seconds"),
         "remote_objects": number("remote_objects"),
         "remote_bytes": number("remote_bytes"),
+        "full_finished_at": text("full_finished_at"),
         "written_at": _iso(written_at),
         "age_seconds": age,
         "stale": age > OFFSITE_STATUS_MAX_AGE.total_seconds(),
@@ -1623,10 +1635,12 @@ class SystemStatusCollector:
                         f"`journalctl -u timelapsed-offsite` has the reason.")
                 elif offsite["phase"] == "backfill":
                     add("info", "The off-site copy is still backfilling",
-                        f"{offsite['days_done'] or 0} of {offsite['days_total'] or 0} archived "
-                        f"days are on {offsite['remote']}. Oldest first, the same order the "
-                        f"floor drops them in, so the days nearest deletion are the first "
-                        f"ones safe.")
+                        (f"{offsite['progress']} into {offsite['remote']}. "
+                         if offsite["progress"] else
+                         f"The first full pass into {offsite['remote']} has not reported "
+                         f"progress yet. ")
+                        + "Each channel goes oldest day first; nothing in the bucket "
+                          "counts as safe until this pass finishes.")
             if archive.get("failing_segments"):
                 add("warn", "Segments are failing to archive",
                     f"{archive['failing_segments']} segment(s) failed their last fetch "

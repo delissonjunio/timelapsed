@@ -373,24 +373,36 @@ Make the application key restricted to that one bucket, read and write. `rclone`
 distribution (`apt install rclone`); the remote is defined by environment, so there is no
 `rclone.conf` anywhere.
 
+**Raise the account's daily caps before the first run.** A fresh B2 account caps storage at its
+free 10 GB and Class C transactions at the free 2,500 a day, and refuses everything past either
+with a `403 storage_cap_exceeded` / `transaction_cap_exceeded` — the archive is a terabyte and a
+half, and every listing, authorisation and upload-URL fetch is a Class C call. In the console
+under Caps & Alerts, set the storage cap above the archive's size with room to grow, Class C to
+tens of thousands a day (cents: US$0.004 per thousand), and Class B to a few thousand for the
+day a restore is needed. Uploads themselves are free.
+
 What it does, and why it is shaped that way:
 
 * **Copy, never sync.** The archiver's `reclaim` deletes the oldest local days when the volume
   hits its floor. A sync would faithfully delete them from the bucket too, which is the opposite
   of the point. The bucket only ever grows; prune it with a B2 lifecycle rule on the bucket if a
   ceiling is wanted, not from here.
-* **Oldest day first, across channels.** The backfill walks every `channel/YYYYMMDD` directory
-  in date order — the same order `reclaim` deletes in — so the days nearest deletion are the
-  first ones safe. Each finished day is recorded in `/var/lib/timelapsed/offsite/days.done` and
-  never re-listed. Then one whole-tree pass catches today's tail and late arrivals into old days;
-  once the backfill is through, that pass *is* the hourly run, and it costs a listing and the
-  hour's new segments.
+* **Two kinds of pass, because listings cost and uploads do not.** A *full* pass lists both
+  sides once (`--fast-list`, one call per thousand objects) and copies whatever is missing,
+  channel by channel in date order. The first full pass is the backfill; after that one runs
+  about daily. Every other hour is a *tail* pass: only today's and yesterday's day directories
+  are listed and copied, about forty calls. Late arrivals into old days — the archiver fetches
+  NVR history oldest-first too — ride the next full pass. `timelapsed-offsite.sh full` forces
+  one. The first design walked every day directory in its own rclone run, which was six
+  transactions a directory and burnt the free daily allowance before the backfill was a tenth
+  through; hence this shape.
 * **Bandwidth is a timetable.** `--bwlimit "07:00,8M 23:00,14M"` in the script: 8 MB/s by day,
   14 MB/s at night, on a home uplink measured at about 17 MB/s. The hours are read in the
   `[timelapse]` timezone, so night means the household's night rather than the guest's UTC
   clock. Edit the script if the line changes.
-* **Status beside the archive.** `.offsite-status.json` in the archive root — state, phase, days
-  done, what the bucket holds — rewritten as the run goes. The [status page](System-Status.md)
+* **Status beside the archive.** `.offsite-status.json` in the archive root — state, which pass,
+  rclone's own progress line while transferring, what the bucket held after the last full pass —
+  rewritten at start, on every stats line, and at the end. The [status page](System-Status.md)
   shows it on the Archive panel and turns it into checks: information while the backfill runs, a
   warning when a run fails or when nothing has written the file for three hours.
 

@@ -636,15 +636,17 @@ function offsiteLine(offsite) {
     parts.push(count(offsite.remote_objects) + " objects · "
       + bytes(offsite.remote_bytes || 0));
   }
-  if (offsite.phase === "backfill" && offsite.days_total) {
-    parts.push("backfill " + count(offsite.days_done || 0) + " of "
-      + count(offsite.days_total) + " days");
+  if (offsite.phase === "backfill") {
+    parts.push("backfilling");
+  }
+  if (offsite.state === "running" && offsite.progress) {
+    parts.push(offsite.progress);
   }
   const when = offsite.age_seconds === null ? "" : " " + dur(offsite.age_seconds) + " ago";
   parts.push(offsite.stale ? "stale, last heard from" + when
-    : offsite.state === "running" ? "running, updated" + when
-    : offsite.state === "failed" ? "last run failed" + when
-    : "last run finished" + when);
+    : offsite.state === "running" ? (offsite.pass || "") + " pass running, updated" + when
+    : offsite.state === "failed" ? "last " + (offsite.pass || "") + " pass failed" + when
+    : "last " + (offsite.pass || "") + " pass finished" + when);
   return parts.join(" · ");
 }
 

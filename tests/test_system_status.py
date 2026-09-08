@@ -1088,10 +1088,13 @@ def offsite_status(config, written_at: datetime, **fields) -> None:
 
     payload = {
         "written_at": written_at.isoformat(), "remote": "b2:timelapsed/archive",
-        "state": "ok", "phase": "steady", "days_done": 512, "days_total": 512, "errors": 0,
-        "run_started_at": written_at.isoformat(), "run_seconds": 40,
+        "state": "ok", "pass": "tail", "phase": "steady", "errors": 0,
+        "run_started_at": written_at.isoformat(), "run_seconds": 40, "progress": None,
         "remote_objects": 202000, "remote_bytes": 1_300_000_000_000,
+        "full_finished_at": (written_at - timedelta(hours=6)).isoformat(),
     }
+    if "pass_" in fields:
+        fields["pass"] = fields.pop("pass_")
     payload.update(fields)
     (config.archive_root / OFFSITE_STATUS_FILENAME).write_text(json.dumps(payload))
 
@@ -1110,19 +1113,20 @@ def test_the_archive_reports_no_offsite_copy_until_one_writes_status(config, tmp
 def test_a_backfilling_offsite_copy_is_progress_not_a_problem(config, tmp_path, now):
     config.archive_root = tmp_path / "archive"
     config.archive_root.mkdir(parents=True)
-    offsite_status(config, now - timedelta(minutes=10), state="running", phase="backfill",
-                   days_done=120, days_total=512, remote_objects=None, remote_bytes=None)
+    offsite_status(config, now - timedelta(minutes=10), state="running", pass_="full",
+                   phase="backfill", progress="412 GiB / 1.3 TiB, 31%, 8.1 MiB/s, ETA 26h",
+                   remote_objects=None, remote_bytes=None, full_finished_at=None)
 
     report = SystemStatusCollector(config).report()
     offsite = report["archive"]["offsite"]
 
     assert offsite["configured"] and offsite["phase"] == "backfill"
-    assert (offsite["days_done"], offsite["days_total"]) == (120, 512)
+    assert offsite["pass"] == "full" and offsite["progress"].startswith("412 GiB")
     assert offsite["remote_objects"] is None and offsite["stale"] is False
     assert 500 < offsite["age_seconds"] < 700
     check = next(check for check in report["checks"]
                  if check["title"] == "The off-site copy is still backfilling")
-    assert check["level"] == "info" and "120 of 512" in check["detail"]
+    assert check["level"] == "info" and "412 GiB / 1.3 TiB" in check["detail"]
 
 
 def test_a_finished_offsite_copy_shows_what_the_bucket_holds(config, tmp_path, now):
@@ -1134,7 +1138,9 @@ def test_a_finished_offsite_copy_shows_what_the_bucket_holds(config, tmp_path, n
     offsite = report["archive"]["offsite"]
 
     assert offsite["state"] == "ok" and offsite["phase"] == "steady"
+    assert offsite["pass"] == "tail" and offsite["progress"] is None
     assert offsite["remote_objects"] == 202000 and offsite["remote_bytes"] == 1_300_000_000_000
+    assert offsite["full_finished_at"] is not None
     assert not any("off-site" in check["title"] for check in report["checks"])
 
 
