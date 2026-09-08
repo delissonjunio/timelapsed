@@ -124,12 +124,12 @@ header { grid-column:1/-1; }
 
 #lanes { position:relative; cursor:grab; user-select:none; touch-action:none; }
 #lanes.dragging { cursor:grabbing; }
-.lane { position:relative; height:22px; margin-bottom:4px; display:flex; align-items:center; }
+.lane { position:relative; height:16px; margin-bottom:3px; display:flex; align-items:center; }
 .lane .label { position:absolute; left:0; width:52px; font-size:.63rem; text-transform:uppercase;
                 letter-spacing:.09em; color:var(--muted); pointer-events:none; z-index:2; }
 .track { position:absolute; left:56px; right:0; top:0; bottom:0; background:var(--panel-2);
          border-radius:4px; overflow:hidden; }
-.clip { position:absolute; top:3px; bottom:3px; border-radius:2px; cursor:pointer; opacity:.75; min-width:2px; }
+.clip { position:absolute; top:2px; bottom:2px; border-radius:2px; cursor:pointer; opacity:.75; min-width:2px; }
 .clip:hover { opacity:1; }
 .clip.sel { opacity:1; outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; cursor:ew-resize; }
 #nowline { position:absolute; top:0; bottom:18px; width:1px; background:#ff6b6b; pointer-events:none; z-index:4; }
@@ -149,22 +149,20 @@ header { grid-column:1/-1; }
 #empty { color:var(--muted); font-size:.8rem; padding:1rem 0 0 56px; }
 
 /* The footage lane: what the NVR itself recorded, merged server-side into runs
-   at the current zoom. Slimmer than the clips above it and not clickable --
-   stage 3 is what makes a run fetchable; this lane only answers whether the
-   device holds the moment at all. */
-.seg { position:absolute; top:6px; bottom:6px; border-radius:2px;
-       background:var(--footage); opacity:.55; min-width:2px; }
-.seg:hover { opacity:.85; }
+   at the current zoom, drawn full height as the base the sightings sit on.
+   Kept translucent so the marks above read as marks, not as holes. */
+.seg { position:absolute; top:0; bottom:0; border-radius:2px;
+       background:var(--footage); opacity:.45; min-width:2px; }
 /* With a replica behind the lane, each run says what became of it there.
    Archived is the solid, playable case; pending stays the plain grey; the
    three ways footage fails to arrive get their own colours so a hole in the
    replica reads as "refused" or "recycled" rather than "not yet". A data
-   attribute, not a class: `.pending` is already the activity lanes' hatching. */
-.seg[data-status="archived"] { background:var(--archived); opacity:.8; }
-.seg[data-status="pending"] { opacity:.4; }
-.seg[data-status="failing"] { background:var(--failing); opacity:.85; }
-.seg[data-status="abandoned"] { background:var(--abandoned); opacity:.85; }
-.seg[data-status="expired"] { background:var(--muted); opacity:.22; }
+   attribute, not a class: `.pending` is the hatching for unanalysed time. */
+.seg[data-status="archived"] { background:var(--archived); opacity:.6; }
+.seg[data-status="pending"] { opacity:.3; }
+.seg[data-status="failing"] { background:var(--failing); opacity:.7; }
+.seg[data-status="abandoned"] { background:var(--abandoned); opacity:.7; }
+.seg[data-status="expired"] { background:var(--muted); opacity:.18; }
 .lane.footage .track.clickable { cursor:pointer; }
 .lane.footage .track.clickable:hover { outline:1px solid var(--line); }
 /* The jump from a sighting to its real footage. Dressed like the cadence tag
@@ -174,17 +172,18 @@ header { grid-column:1/-1; }
   padding:.15rem .45rem; cursor:pointer; }
 #nowplaying .footjump:hover { filter:brightness(1.15); }
 
-/* Activity lanes. Density strips rather than discrete clips: at a 30-day zoom
-   a single sighting is well under a pixel, so what reads is the shading. */
-.lane.activity .track { background:var(--panel-2); }
-/* The shading is painted from bucket counts, so it cannot resolve a click to a
-   sighting by itself. The track above it does that, and owns the cursor. */
-.bucket { position:absolute; top:0; bottom:0; pointer-events:none; }
-.lane.activity .track.clickable { cursor:pointer; }
-.lane.activity .track.clickable:hover { outline:1px solid var(--line); }
-.lane.activity .label { color:var(--muted); }
-.evt { position:absolute; top:2px; bottom:2px; border-radius:2px; cursor:pointer;
-       opacity:.9; min-width:3px; }
+/* The sightings, on the footage lane: density strips rather than discrete
+   clips -- at a 30-day zoom a single sighting is well under a pixel, so what
+   reads is the shading -- with people in the top half and vehicles in the
+   bottom, so the two never mix into a third colour. The shading is painted
+   from bucket counts, so it cannot resolve a click to a sighting by itself;
+   the track above it does that, and owns the cursor. */
+.bucket { position:absolute; pointer-events:none; }
+.bucket.person { top:0; bottom:50%; }
+.bucket.vehicle { top:50%; bottom:0; }
+.evt { position:absolute; border-radius:2px; cursor:pointer; opacity:.95; min-width:3px; }
+.evt.person { top:1px; bottom:50%; }
+.evt.vehicle { top:50%; bottom:1px; }
 .evt:hover { opacity:1; outline:1px solid var(--fg); }
 .evt.sel { outline:1.5px solid var(--fg); outline-offset:1px; z-index:3; }
 /* Lit while the playhead is inside the sighting, so the lane reads as part of
@@ -199,7 +198,7 @@ header { grid-column:1/-1; }
                 white-space:nowrap; }
 
 /* A phone has no spare height to hand out. The camera strip, the transport and
-   seven timeline lanes are most of the viewport between them, and in a layout
+   six timeline lanes are most of the viewport between them, and in a layout
    that must fit exactly the picture is what absorbs the difference -- it came
    out a sixty-pixel band with a postage stamp in the middle. So here the page
    scrolls rather than fits, and the video keeps its own shape. */
@@ -270,7 +269,6 @@ const PLATE_CHANNELS = JSON.parse(document.getElementById("plate-channels-payloa
 const HAS_ARCHIVE = JSON.parse(document.getElementById("archive-payload").textContent);
 const params = new URLSearchParams(location.search);
 const KINDS = ["person", "vehicle"];
-const KIND_LABEL = {person: "people", vehicle: "vehicles"};
 
 const state = {
   channel: params.get("channel") && channels.includes(params.get("channel")) ? params.get("channel") : channels[0] || null,
@@ -630,15 +628,19 @@ function refreshActivity() {
 }
 
 
-// What the NVR itself holds, so it is visible which moments could be pulled.
-// Always drawn, like the activity lanes below it: a lane that pops in and out
-// with the viewport reads as the page glitching, and an empty stretch of a
-// permanent lane correctly reads as "the NVR recorded nothing here".
+// What the NVR recorded, what the replica made of it, and who was seen in it,
+// as one lane: the footage runs are the full-height base, the sightings sit
+// on top -- people in the top half, vehicles in the bottom -- with the density
+// shading under the marks so a sighting stays clickable where the strip is
+// dense. Always drawn: a lane that pops in and out with the viewport reads as
+// the page glitching, and an empty stretch of a permanent lane correctly reads
+// as "the NVR recorded nothing here".
 function drawFootageLane(lanes, pct) {
   if (!HAS_RECOGNITION) return;
   const lane = el("div", "lane footage");
   lane.append(el("span", "label", "footage"));
   const track = el("div", "track");
+
   for (const run of state.footage) {
     if (run.f < state.start || run.s > state.end) continue;
     const mark = el("div", "seg");
@@ -652,18 +654,88 @@ function drawFootageLane(lanes, pct) {
       + (run.status === "archived" ? " — click to play" : "");
     track.appendChild(mark);
   }
-  // With the replica running, the lane is a way in, not just a map: a click
-  // resolves to the archived segment covering that moment and plays it. The
-  // colour key lives on the track's own tooltip -- the lanes are crowded
-  // enough without a legend row, and the marks explain themselves on hover.
-  if (HAS_ARCHIVE) {
-    track.title = "Footage the NVR recorded. Green: archived, click to play. "
-      + "Grey: not fetched yet. Amber: fetch failing. Red: given up. Faint: recycled by the NVR.";
+
+  const fetched = state.activityWindow;
+  for (const kind of KINDS) {
+    const counts = state.activity ? state.activity[kind] : null;
+    if (!(counts && counts.length && fetched)) continue;
+    const peak = Math.max(...counts, 1);
+    // Buckets belong to the window they were fetched for, so they are placed
+    // by timestamp like everything else on the timeline. Mid-pan they then
+    // move with the world instead of clinging to the viewport.
+    const bucketSpan = (fetched.end - fetched.start) / counts.length;
+    counts.forEach((count, index) => {
+      if (!count) return;
+      const from = fetched.start + index * bucketSpan;
+      if (from + bucketSpan < state.start || from > state.end) return;
+      const bar = el("div", "bucket " + kind);
+      bar.style.left = pct(from) + "%";
+      bar.style.width = (pct(from + bucketSpan) - pct(from)) + "%";
+      // Floor the alpha so a single sighting is still visible against the
+      // track, rather than fading to nothing next to a busy bucket.
+      bar.style.background = "var(--" + kind + ")";
+      bar.style.opacity = String(0.25 + 0.75 * (count / peak));
+      track.appendChild(bar);
+    });
+  }
+
+  const focused = state.focusIdentity;
+  for (const event of state.events) {
+    if (!KINDS.includes(event.kind)) continue;  // the colour is a CSS variable; only known names
+    if (event.f < state.start || event.s > state.end) continue;
+    if (focused !== null && event.identity_id !== focused) continue;
+    const mark = el("div", "evt " + event.kind + (state.selectedEvent === event.id ? " sel" : ""));
+    mark.style.left = pct(event.s) + "%";
+    mark.style.width = Math.max(pct(event.f) - pct(event.s), 0.2) + "%";
+    mark.style.background = "var(--" + event.kind + ")";
+    mark.title = event.kind + "  " + fmtFull(event.s) + "  to  " + fmtFull(event.f)
+      + "  (" + event.frame_count + " frames)";
+    mark.onclick = ev => { ev.stopPropagation(); selectEvent(event); };
+    // The player tick lights these as the playhead passes through them. It
+    // only ever touches nodes it was handed here, never the DOM at large.
+    liveMarks.push({node: mark, event});
+    track.appendChild(mark);
+  }
+
+  // An empty stretch and an unanalysed one look identical, and during a
+  // backfill most of them are the latter. Shade what has not been reached yet
+  // and say so, rather than letting it read as "nothing was there".
+  const through = state.analysedThrough;
+  if (through != null && through < state.end) {
+    const pending = el("div", "pending");
+    pending.style.left = Math.max(pct(through), 0) + "%";
+    pending.style.right = "0";
+    if (through <= state.start) {
+      pending.append(el("span", "", "not analysed yet · through " + fmtShort(through)));
+    }
+    track.appendChild(pending);
+  }
+
+  // The whole lane is the target, not just the marks. A click on a sighting
+  // is that sighting; anywhere else, an archived run under the click plays
+  // from that moment; failing that, a sighting within a few pixels is what the
+  // density shading was standing in for; and failing that too, the lane says
+  // why there is nothing to play here. The colour key lives on the track's
+  // own tooltip -- the lanes are crowded enough without a legend row.
+  const canAct = HAS_ARCHIVE || state.events.length > 0;
+  if (canAct) {
+    track.title = "Footage the NVR recorded, and who was seen in it: people above the "
+      + "midline, vehicles below."
+      + (HAS_ARCHIVE ? " Green: archived, click to play. Grey: not fetched yet. "
+                       + "Amber: fetch failing. Red: given up. Faint: recycled by the NVR." : "");
     track.classList.add("clickable");
     track.onclick = ev => {
+      if (ev.target.classList.contains("evt")) return;  // the mark handles itself
       const box = track.getBoundingClientRect();
-      const at = state.start + ((ev.clientX - box.left) / box.width) * (state.end - state.start);
-      playArchived(at);
+      const span = state.end - state.start;
+      const at = state.start + ((ev.clientX - box.left) / box.width) * span;
+      const under = state.footage.find(r => r.s <= at && at <= r.f);
+      if (HAS_ARCHIVE && under && under.status === "archived") { playArchived(at); return; }
+      const distance = e => (e.s <= at && at <= e.f) ? 0 : Math.min(Math.abs(e.s - at), Math.abs(e.f - at));
+      const nearest = state.events.reduce((best, e) => best === null || distance(e) < distance(best) ? e : best, null);
+      const reach = 8 * span / box.width;  // eight pixels, in world time
+      if (nearest && distance(nearest) <= reach) { selectEvent(nearest); return; }
+      if (HAS_ARCHIVE) playArchived(at);
     };
   }
   lane.appendChild(track);
@@ -742,93 +814,6 @@ async function offerFootage(event) {
   box.appendChild(jump);
 }
 
-function drawActivityLanes(lanes, pct) {
-  if (!HAS_RECOGNITION) return;
-
-  for (const kind of KINDS) {
-    const lane = el("div", "lane activity");
-    lane.append(el("span", "label", KIND_LABEL[kind]));
-    const track = el("div", "track");
-
-    const counts = state.activity ? state.activity[kind] : null;
-    const fetched = state.activityWindow;
-    if (counts && counts.length && fetched) {
-      const peak = Math.max(...counts, 1);
-      // Buckets belong to the window they were fetched for, so they are
-      // placed by timestamp like everything else on the timeline. Mid-pan
-      // they then move with the world instead of clinging to the viewport.
-      const bucketSpan = (fetched.end - fetched.start) / counts.length;
-      counts.forEach((count, index) => {
-        if (!count) return;
-        const from = fetched.start + index * bucketSpan;
-        if (from + bucketSpan < state.start || from > state.end) return;
-        const bar = el("div", "bucket");
-        bar.style.left = pct(from) + "%";
-        bar.style.width = (pct(from + bucketSpan) - pct(from)) + "%";
-        // Floor the alpha so a single sighting is still visible against the
-        // track, rather than fading to nothing next to a busy bucket.
-        bar.style.background = "var(--" + kind + ")";
-        bar.style.opacity = String(0.25 + 0.75 * (count / peak));
-        track.appendChild(bar);
-      });
-    }
-
-    // Individual events sit on top of the density, so a sighting stays
-    // clickable even where the strip is dense.
-    const focused = state.focusIdentity;
-    for (const event of state.events) {
-      if (event.kind !== kind) continue;
-      if (event.f < state.start || event.s > state.end) continue;
-      if (focused !== null && event.identity_id !== focused) continue;
-      const mark = el("div", "evt" + (state.selectedEvent === event.id ? " sel" : ""));
-      mark.style.left = pct(event.s) + "%";
-      mark.style.width = Math.max(pct(event.f) - pct(event.s), 0.2) + "%";
-      mark.style.background = "var(--" + kind + ")";
-      mark.title = kind + "  " + fmtFull(event.s) + "  to  " + fmtFull(event.f)
-        + "  (" + event.frame_count + " frames)";
-      mark.onclick = ev => { ev.stopPropagation(); selectEvent(event); };
-      // The player tick lights these as the playhead passes through them. It
-      // only ever touches nodes it was handed here, never the DOM at large.
-      liveMarks.push({node: mark, event});
-      track.appendChild(mark);
-    }
-
-    // An empty lane and an unanalysed one look identical, and during a backfill
-    // most of them are the latter. Shade what has not been reached yet and say
-    // so, rather than letting it read as "nothing was there".
-    const through = state.analysedThrough;
-    if (through != null && through < state.end) {
-      const pending = el("div", "pending");
-      pending.style.left = Math.max(pct(through), 0) + "%";
-      pending.style.right = "0";
-      if (through <= state.start) {
-        pending.append(el("span", "", "not analysed yet · through " + fmtShort(through)));
-      }
-      track.appendChild(pending);
-    }
-
-    // The whole lane is the target, not just the marks. What reads as clickable
-    // is the density shading, and that is drawn from bucket counts rather than
-    // from individual events -- so clicking it has to resolve to the nearest
-    // sighting itself. Without this you get the grab cursor over something that
-    // plainly looks like a button.
-    const inLane = state.events.filter(e => e.kind === kind);
-    if (inLane.length) {
-      track.classList.add("clickable");
-      track.onclick = ev => {
-        if (ev.target.classList.contains("evt")) return;  // the mark handles itself
-        const box = track.getBoundingClientRect();
-        const at = state.start + ((ev.clientX - box.left) / box.width) * (state.end - state.start);
-        const distance = e => (e.s <= at && at <= e.f) ? 0 : Math.min(Math.abs(e.s - at), Math.abs(e.f - at));
-        const nearest = inLane.reduce((best, e) => distance(e) < distance(best) ? e : best);
-        selectEvent(nearest);
-      };
-    }
-
-    lane.appendChild(track);
-    lanes.appendChild(lane);
-  }
-}
 
 function selectEvent(event) {
   state.selectedEvent = event.id;
@@ -909,7 +894,6 @@ function drawTimeline() {
   }
 
   drawFootageLane(lanes, pct);
-  drawActivityLanes(lanes, pct);
 
   const now = Date.now();
   if (now >= state.start && now <= state.end) {

@@ -2,8 +2,9 @@
 
 Finds people and vehicles in the stills the capture daemon already wrote, groups
 them into events, groups people by appearance, and reads number plates where
-they are large enough to read. The viewer gains two activity lanes per camera
-and a panel for naming people and searching plates.
+they are large enough to read. The viewer's footage lane gains the sightings —
+people above its midline, vehicles below — and there is a panel for naming
+people and searching plates.
 
 It is **off by default**. Turn it on with `enabled = true` under `[analysis]`.
 
@@ -15,7 +16,7 @@ and it is why this page does not offer face recognition.
 
 | | |
 |---|---|
-| **People and vehicles on the timeline** | Works well. Two density lanes per camera showing when something was there. |
+| **People and vehicles on the timeline** | Works well. Density shading on the footage lane — people above the midline, vehicles below — showing when something was there. |
 | **Plates** | Works on cameras where plates land at 50 px or more. One channel here qualifies; others produce nothing usable. |
 | **Grouping repeat sightings of a person** | Partial. By clothing and build, within a day. |
 | **Face recognition** | **Not available.** Faces here are ~38 px against the ~80 px an embedding needs. Nothing in software fixes that; it needs a camera at face height. |

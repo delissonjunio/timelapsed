@@ -51,7 +51,7 @@ rendering": the same yes on every tile, every day.)
 
 The page is mobile-first and works in Safari on iOS, which is fussier than most browsers: it needs
 `Accept-Ranges`, correct `Content-Type`, and `playsinline`. All three are handled. On a phone the
-layout stops trying to fit one screen — the camera strip, the transport and seven lanes are most of
+layout stops trying to fit one screen — the camera strip, the transport and six lanes are most of
 a phone viewport between them, and what was left for the picture was a sixty-pixel band. It scrolls
 instead, and the video holds 16:9.
 

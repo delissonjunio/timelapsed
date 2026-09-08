@@ -305,10 +305,13 @@ must survive.
 As built: `/api/footage?channel&start&end` merges segments server-side into runs at about a
 pixel's resolution of the requested window (`AnalysisIndex.segment_runs`), so the payload tracks
 the zoom level rather than the recording's duty cycle — a busy channel is hundreds of segments a
-day, far more than the lane has pixels. The lane sits between the cadence and activity lanes,
-always drawn — an empty stretch reads as "the NVR recorded nothing here" — and became clickable
-when stage 4 gave a run something to do. The lane colour is a fixed CSS variable; nothing from
-the device reaches CSS.
+day, far more than the lane has pixels. The lane sits under the cadence lanes, always drawn — an
+empty stretch reads as "the NVR recorded nothing here" — and became clickable when stage 4 gave a
+run something to do. Since 2026-09-08 it also carries the sightings that used to have two lanes of
+their own, people above its midline and vehicles below, so the timeline is six lanes rather than
+eight; a click resolves to a sighting mark, else to an archived run under it, else to a sighting
+within a few pixels, else to the reason nothing plays there. The lane colour is a fixed CSS
+variable; nothing from the device reaches CSS.
 The viewer tolerates an index from before schema v3 by answering an empty list.
 
 ### Stage 3 — Fetch clips — **built as the replica (2026-08-28)**
