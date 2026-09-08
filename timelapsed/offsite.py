@@ -188,9 +188,12 @@ class OffsiteCopy:
             for day in (today, today - timedelta(days=1)):
                 command += ["--filter", f"+ /*/{day:%Y%m%d}/**"]
             command += ["--filter", "- **"]
+        # Segments are ~8 MB and the path to B2 is long: one upload stream
+        # settles around a megabyte a second, so the cap is only reachable
+        # with a dozen in flight. Measured 3 MiB/s at four transfers.
         command += [
             "--min-age", "2m",
-            "--transfers", "4", "--checkers", "8",
+            "--transfers", "12", "--checkers", "16",
             "--bwlimit", BANDWIDTH_TIMETABLE,
             "--retries", "1", "--low-level-retries", "10",
             "--use-json-log", "--log-level", "NOTICE",
