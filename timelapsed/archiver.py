@@ -125,6 +125,10 @@ class PendingSegment:
     size_bytes: int
     playback_uri: str
 
+    @property
+    def key(self) -> str:
+        return segment_key(self.name, self.started_at)
+
 
 @dataclass
 class FailedFetch:
@@ -143,6 +147,22 @@ def stamp(moment: datetime) -> str:
 
 def parse_stamp(text: str) -> datetime:
     return datetime.strptime(text, STAMP_FORMAT).replace(tzinfo=timezone.utc)
+
+
+def segment_key(name: str, started_at: datetime) -> str:
+    """A segment's identity: its device name *and* when it starts.
+
+    Names are not unique over time. Hikvision numbers segments in a cycle
+    that wraps with the disk, so once the device recycles footage a name comes
+    back on a new recording months later -- seen live on 2026-09-08:
+    `00000000045001913` was a 4 February segment on channel 1 and, seven
+    months on, a 3 September one. Keyed by name alone, "already archived" was
+    true for every reused name and the replica quietly stopped fetching that
+    channel's new footage, while the mirror-minus-files backlog on the status
+    page climbed into the thousands. Every ledger here -- archived, failing,
+    written off -- is keyed by this instead.
+    """
+    return f"{name}@{stamp(started_at)}"
 
 
 def segment_filename(started_at: datetime, ended_at: datetime, name: str) -> str:
@@ -190,19 +210,21 @@ class SegmentArchiver:
         self.channels = channels
         self.retention = retention
         self.minimum_free_bytes = minimum_free_bytes
-        # Device segment names already on disk. Seeded from a full scan, then
-        # maintained incrementally -- fetches add, reclaim removes.
+        # Segment keys (segment_key: name plus start) already on disk. Seeded
+        # from a full scan, then maintained incrementally -- fetches add,
+        # reclaim removes.
         self._archived: set[str] = set()
-        # Failure history by device segment name. A failed fetch waits out a
+        # Failure history by segment key. A failed fetch waits out a
         # per-segment backoff and is then tried again -- forever, until it
         # succeeds or the device recycles the segment. Retrying every pass
         # would starve the fetches that can still succeed; never retrying
         # turned every transient storm into a permanent hole in the replica.
         self._failed: dict[str, FailedFetch] = {}
-        # Segments written off after ABANDON_AFTER_ATTEMPTS failures, by device
-        # name: {"channel", "attempts", "abandoned_at"}. Loaded from and saved
-        # to ABANDONED_FILENAME; pruned when the device recycles the segment,
-        # so the tombstone file cleans itself as retention catches up.
+        # Segments written off after ABANDON_AFTER_ATTEMPTS failures, by
+        # segment key: {"channel", "name", "started_at", "attempts",
+        # "abandoned_at"}. Loaded from and saved to ABANDONED_FILENAME; pruned
+        # when the device recycles the segment, so the tombstone file cleans
+        # itself as retention catches up.
         self._abandoned: dict[str, dict] = {}
         # Per channel, how many mirror rows the last pending() pass skipped as
         # expired on the device. Published in the status file so the status
@@ -232,10 +254,10 @@ class SegmentArchiver:
         self._archived.clear()
         for archived in self.root.glob("*/*/*.mp4"):
             try:
-                _, _, name = parse_segment_filename(archived.stem)
+                started_at, _, name = parse_segment_filename(archived.stem)
             except ValueError:
                 continue
-            self._archived.add(name)
+            self._archived.add(segment_key(name, started_at))
         logger.info("Archive at %s holds %d segment(s)", self.root, len(self._archived))
         self._load_abandoned()
 
@@ -245,7 +267,7 @@ class SegmentArchiver:
             raw = json.loads((self.root / ABANDONED_FILENAME).read_text())
             if isinstance(raw, dict):
                 loaded = {
-                    name: entry for name, entry in raw.items() if isinstance(entry, dict)
+                    key: entry for key, entry in raw.items() if isinstance(entry, dict)
                 }
         except FileNotFoundError:
             pass
@@ -254,7 +276,20 @@ class SegmentArchiver:
                 "Could not read %s; starting with no write-offs",
                 ABANDONED_FILENAME, exc_info=True,
             )
+        # Write-offs from before keys carried the start time are bare device
+        # names, and a bare name is exactly the identity that turned out to be
+        # reused. They cannot be matched to a start, so they are dropped and
+        # their segments get their five attempts again -- cheap, and honest.
+        legacy = [key for key in loaded if "@" not in key]
+        for key in legacy:
+            del loaded[key]
         self._abandoned = loaded
+        if legacy:
+            logger.info(
+                "Dropped %d write-off(s) keyed by name alone; those segments will be retried",
+                len(legacy),
+            )
+            self._save_abandoned()
         if loaded:
             logger.info("%d segment(s) stand written off as unfetchable", len(loaded))
 
@@ -341,20 +376,23 @@ class SegmentArchiver:
                 if cutoff is not None and ended_at < cutoff:
                     continue
                 name = uri_segment_name(row["playback_uri"])
-                if not name or name in self._archived:
+                if not name:
+                    continue
+                key = segment_key(name, started_at)
+                if key in self._archived:
                     continue
                 if self._expired_on_device(channel, ended_at):
                     expired[channel] = expired.get(channel, 0) + 1
                     # Recycled is final: whatever failure history or write-off
                     # it collected while the device still held it no longer
                     # means anything.
-                    self._failed.pop(name, None)
-                    if self._abandoned.pop(name, None) is not None:
+                    self._failed.pop(key, None)
+                    if self._abandoned.pop(key, None) is not None:
                         tombstones_pruned = True
                     continue
-                if name in self._abandoned:
+                if key in self._abandoned:
                     continue
-                failure = self._failed.get(name)
+                failure = self._failed.get(key)
                 if failure is not None and failure.next_attempt_at > now:
                     continue
                 found.append(PendingSegment(
@@ -417,8 +455,8 @@ class SegmentArchiver:
             destination.mkdir(parents=True, exist_ok=True)
             final = destination / segment_filename(segment.started_at, segment.ended_at, segment.name)
             remuxed.replace(final)
-            self._archived.add(segment.name)
-            self._failed.pop(segment.name, None)
+            self._archived.add(segment.key)
+            self._failed.pop(segment.key, None)
 
             elapsed = time.monotonic() - started
             telemetry.record_metric("Custom/archiver/bytes_archived", written)
@@ -445,12 +483,12 @@ class SegmentArchiver:
             cutoff = now - self.retention
             for archived in sorted(self.root.glob("*/*/*.mp4")):
                 try:
-                    _, ended_at, name = parse_segment_filename(archived.stem)
+                    started_at, ended_at, name = parse_segment_filename(archived.stem)
                 except ValueError:
                     continue
                 if ended_at < cutoff:
                     archived.unlink(missing_ok=True)
-                    self._archived.discard(name)
+                    self._archived.discard(segment_key(name, started_at))
                     removed += 1
 
         while self.minimum_free_bytes and self._free_bytes() < self.minimum_free_bytes:
@@ -463,9 +501,10 @@ class SegmentArchiver:
             oldest = days[0]
             for archived in oldest.glob("*.mp4"):
                 try:
-                    self._archived.discard(parse_segment_filename(archived.stem)[2])
+                    started_at, _, name = parse_segment_filename(archived.stem)
                 except ValueError:
-                    pass
+                    continue
+                self._archived.discard(segment_key(name, started_at))
                 removed += 1
             logger.warning(
                 "Archive under its free-space floor; dropping %s/%s",
@@ -504,10 +543,10 @@ class SegmentArchiver:
         long reads as a dead daemon.
         """
         remaining = queue[position:]
-        queued_names = {segment.name for segment in remaining}
+        queued = {segment.key for segment in remaining}
         waiting = [
-            failure for name, failure in self._failed.items()
-            if name not in queued_names
+            failure for key, failure in self._failed.items()
+            if key not in queued
         ]
         oldest_starts = [segment.started_at for segment in remaining[:1]]
         oldest_starts += [failure.started_at for failure in waiting]
@@ -546,14 +585,19 @@ class SegmentArchiver:
                     self._horizons[channel].isoformat()
                     if channel in self._horizons else None
                 ),
+                # The keys sitting out a backoff, so the viewer's footage lane
+                # can paint them as failing rather than merely not yet fetched.
+                "waiting": [],
             }
             for channel in self.channels
         }
         for segment in remaining:
             channels[segment.channel]["pending"] += 1
-        for failure in waiting:
-            if failure.channel in channels:
+        queued = {segment.key for segment in remaining}
+        for key, failure in self._failed.items():
+            if key not in queued and failure.channel in channels:
                 channels[failure.channel]["waiting_retry"] += 1
+                channels[failure.channel]["waiting"].append(key)
         for tombstone in self._abandoned.values():
             channel = tombstone.get("channel")
             if channel in channels:
@@ -606,13 +650,15 @@ class SegmentArchiver:
                     # first-chunk magic check is the backstop), malformed PS --
                     # must not stop the replica behind it. It backs off and is
                     # retried until it succeeds or the device recycles it.
-                    previous = self._failed.get(segment.name)
+                    previous = self._failed.get(segment.key)
                     attempts = previous.attempts + 1 if previous else 1
                     telemetry.notice_error()
                     if attempts >= ABANDON_AFTER_ATTEMPTS:
-                        self._failed.pop(segment.name, None)
-                        self._abandoned[segment.name] = {
+                        self._failed.pop(segment.key, None)
+                        self._abandoned[segment.key] = {
                             "channel": segment.channel,
+                            "name": segment.name,
+                            "started_at": segment.started_at.isoformat(),
                             "attempts": attempts,
                             "abandoned_at": now.isoformat(),
                         }
@@ -624,7 +670,7 @@ class SegmentArchiver:
                         )
                     else:
                         delay = min(RETRY_FIRST_DELAY * 2 ** (attempts - 1), RETRY_CEILING)
-                        self._failed[segment.name] = FailedFetch(
+                        self._failed[segment.key] = FailedFetch(
                             channel=segment.channel,
                             started_at=segment.started_at,
                             attempts=attempts,

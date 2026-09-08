@@ -8,6 +8,7 @@ import pytest
 from tests.conftest import BASE_TIME
 from timelapsed.analysis.index import AnalysisIndex, to_epoch
 from timelapsed.archiver import (
+    segment_key,
     ABANDON_AFTER_ATTEMPTS,
     ABANDONED_FILENAME,
     HORIZON_PROBE_MARGIN,
@@ -251,12 +252,12 @@ def test_an_expired_segment_sheds_its_failure_history(archiver, index):
     archiver.client.failures.add("ch05_doomed")
 
     archiver.run_once(NOW)
-    assert "ch05_doomed" in archiver._failed
+    assert segment_key("ch05_doomed", started) in archiver._failed
     # The device recycles it before any retry succeeds: the history goes too.
     archiver.client.horizons["5"] = NOW - timedelta(days=2)
     archiver.refresh_horizons()
     archiver.run_once(NOW + RETRY_FIRST_DELAY * 2)
-    assert "ch05_doomed" not in archiver._failed
+    assert segment_key("ch05_doomed", started) not in archiver._failed
 
 
 def test_the_backlog_gauges_count_segments_waiting_out_a_backoff(archiver, index, monkeypatch):
@@ -291,8 +292,10 @@ def test_the_status_file_tells_the_page_what_the_tree_cannot(archiver, index):
     assert payload["channels"]["5"]["waiting_retry"] == 1
     assert payload["channels"]["5"]["pending"] == 0
     assert payload["channels"]["5"]["horizon"] == (NOW - timedelta(days=2)).isoformat()
+    assert payload["channels"]["5"]["waiting"] == [segment_key("ch05_refused", NOW - timedelta(hours=3))]
     assert payload["channels"]["6"] == {
         "pending": 0, "waiting_retry": 0, "abandoned": 0, "expired": 0, "horizon": None,
+        "waiting": [],
     }
 
 
@@ -315,10 +318,11 @@ def test_persistent_failures_are_written_off_after_the_limit(archiver, index):
     # Written off: never asked for again, and out of the failure ledger.
     archiver.run_once(at)
     assert archiver.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
-    assert "ch05_dead" not in archiver._failed
+    key = segment_key("ch05_dead", started)
+    assert key not in archiver._failed
     tombstones = json.loads((archiver.root / ABANDONED_FILENAME).read_text())
-    assert tombstones["ch05_dead"]["channel"] == "5"
-    assert tombstones["ch05_dead"]["attempts"] == ABANDON_AFTER_ATTEMPTS
+    assert tombstones[key]["channel"] == "5" and tombstones[key]["name"] == "ch05_dead"
+    assert tombstones[key]["attempts"] == ABANDON_AFTER_ATTEMPTS
 
 
 def test_write_offs_survive_a_restart(index, tmp_path, fake_remux):
@@ -333,6 +337,83 @@ def test_write_offs_survive_a_restart(index, tmp_path, fake_remux):
     assert reborn.client.calls == []  # pyright: ignore[reportAttributeAccessIssue]
 
 
+# --- names come back ---
+
+def test_a_reused_segment_name_is_a_new_segment(archiver, index):
+    """Hikvision's segment numbering wraps with the disk: months after a name
+    was archived, the device records a new segment under it. Seen live on
+    channel 1 -- keyed by name alone, the replica stopped fetching."""
+    february = NOW - timedelta(days=210)
+    seed_segment(index, "5", "00000000045001913", february, february + timedelta(minutes=1))
+    archiver.run_once(NOW)
+    assert len(list(archiver.root.glob("5/*/*.mp4"))) == 1
+
+    september = NOW - timedelta(hours=6)
+    seed_segment(index, "5", "00000000045001913", september, september + timedelta(minutes=1))
+    archiver.run_once(NOW)
+
+    assert archiver.client.calls == ["00000000045001913", "00000000045001913"]  # pyright: ignore[reportAttributeAccessIssue]
+    days = sorted(path.parent.name for path in archiver.root.glob("5/*/*.mp4"))
+    assert days == [february.strftime("%Y%m%d"), september.strftime("%Y%m%d")]
+    # And neither is pending afterwards: both keys are on disk.
+    assert archiver.pending(NOW) == []
+
+
+def test_reclaim_forgets_only_the_file_it_deleted(index, tmp_path, fake_remux):
+    """Retention deleting the February file must not make the September one
+    look unarchived, nor the other way round."""
+    archiver = make_archiver(index, tmp_path / "archive", ["5"])
+    old = NOW - timedelta(days=60)
+    recent = NOW - timedelta(hours=6)
+    seed_segment(index, "5", "reused", old, old + timedelta(minutes=1))
+    seed_segment(index, "5", "reused", recent, recent + timedelta(minutes=1))
+    archiver.run_once(NOW)
+    assert len(list(archiver.root.glob("5/*/*.mp4"))) == 2
+
+    # Retention arrives and takes the old one. (run_once reclaims on the real
+    # clock, which is years past NOW; called directly to hold the test's clock.)
+    archiver.retention = timedelta(days=30)
+    assert archiver.reclaim(NOW) == 1
+    assert [path.parent.name for path in archiver.root.glob("5/*/*.mp4")] == [recent.strftime("%Y%m%d")]
+    assert segment_key("reused", recent) in archiver._archived
+    assert segment_key("reused", old) not in archiver._archived
+    assert archiver.pending(NOW) == []
+    assert archiver.client.calls == ["reused", "reused"]  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_a_write_off_binds_to_one_start_time_not_the_name(archiver, index):
+    dead = NOW - timedelta(days=10)
+    seed_segment(index, "5", "reused", dead, dead + timedelta(minutes=1))
+    at = abandon(archiver, "reused", NOW)
+    archiver.client.failures.clear()
+    archiver.client.calls.clear()
+
+    fresh = at - timedelta(hours=6)
+    seed_segment(index, "5", "reused", fresh, fresh + timedelta(minutes=1))
+    archiver.run_once(at)
+
+    # The written-off February-style segment stays written off; the new one
+    # under the same name is fetched like any other.
+    assert archiver.client.calls == ["reused"]  # pyright: ignore[reportAttributeAccessIssue]
+    assert segment_key("reused", dead) in archiver._abandoned
+    assert segment_key("reused", fresh) in archiver._archived
+
+
+def test_write_offs_keyed_by_name_alone_are_dropped_on_load(index, tmp_path, fake_remux):
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / ABANDONED_FILENAME).write_text(json.dumps({
+        "00000000038001913": {"channel": "1", "attempts": 5, "abandoned_at": NOW.isoformat()},
+        segment_key("kept", NOW): {"channel": "5", "attempts": 5, "abandoned_at": NOW.isoformat()},
+    }))
+
+    archiver = make_archiver(index, root, ["5"])
+    archiver.scan()
+
+    assert list(archiver._abandoned) == [segment_key("kept", NOW)]
+    assert json.loads((root / ABANDONED_FILENAME).read_text()).keys() == {segment_key("kept", NOW)}
+
+
 def test_a_written_off_segment_expiring_clears_its_tombstone(archiver, index):
     started = NOW - timedelta(days=20)
     seed_segment(index, "5", "ch05_dead", started, started + timedelta(minutes=2))
@@ -343,7 +424,7 @@ def test_a_written_off_segment_expiring_clears_its_tombstone(archiver, index):
     archiver.refresh_horizons()
     archiver.run_once(at)
     tombstones = json.loads((archiver.root / ABANDONED_FILENAME).read_text())
-    assert "ch05_dead" not in tombstones
+    assert segment_key("ch05_dead", started) not in tombstones
 
 
 def test_written_off_segments_leave_the_backlog_gauges(archiver, index, monkeypatch):
