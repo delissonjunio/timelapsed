@@ -338,6 +338,39 @@ detection ever needs it. RAM is the constraint on that node, not cores — about
 on 2026-09-08 and a Frigate container wants 2 GB, so check `free -m` before starting it. Storage
 is the 1.6 TB pool the zermatt replica currently occupies, which stage 3 hands back.
 
+### Why not a Raspberry Pi
+
+It is the obvious cheap answer and it is the wrong one here, for a reason that has nothing to do
+with the Pi being slow.
+
+**Proxmox is x86-only.** The node is wanted as a Proxmox node — `pct`, a snapshot before every
+change, the [rescue hatch](Proxmox-Deployment.md#a-rescue-hatch-vms-never-had), the same shape as
+pve1 so one set of habits covers both sites. On ARM that becomes plain Debian with Docker and none
+of [Proxmox Deployment](Proxmox-Deployment.md) applies any more. Pimox exists and is neither
+official nor maintained enough to put a remote site on.
+
+**Storage is the second problem, and the worse one in practice.** A month of untuned event
+recording at zermatt is 1.4 TB written continuously, for years, at a site nobody is standing in.
+A Pi has no SATA. USB enclosures are the known weak point under exactly that load — UAS resets and
+power-delivery dropouts — and NVMe through the Pi 5's M.2 HAT costs more at 2 TB than the entire
+rest of the build. Replacing unreliable hardware with a recorder on a USB disk reintroduces the
+class of failure this plan exists to remove.
+
+**The cost saving does not survive the parts list.** A Pi 5 with 8 GB, a PSU, a case, an M.2 HAT,
+an NVMe and either an AI HAT or a Coral lands at or above an N100 mini PC — which Frigate's own
+hardware page recommends as its current favourite, which needs no separate accelerator because
+OpenVINO runs on the iGPU, which takes SATA, and which runs Proxmox.
+
+The codec question matters less than it looks. **Recording is `-c copy`, so nothing is decoded to
+write it**; decode exists only for the detect streams, and seven of those at 640×360 and 5 fps is
+trivial on anything. For the record: the Pi 5 kept HEVC hardware decode and dropped the H.264
+block, which is the lucky direction here since every zermatt main stream is H.265 — but Frigate
+ships `preset-rpi-64-h264` and `preset-rpi-64-h265` for the Pi 3/4 only, and Pi 5 HEVC decode is a
+community recipe rather than a supported preset.
+
+A Pi is a fine Frigate host for one or two cameras with a small retention window on an NVMe. It is
+not the shape of either of these sites.
+
 ## Stages
 
 Each stage is useful on its own and leaves a working system.
