@@ -342,8 +342,17 @@ one. RAM is the constraint on that node, not cores — a Frigate container servi
 measured **1.1 GB resident**, against about 10 GB free, so check `free -m` before starting it.
 Storage is the 1.6 TB pool the zermatt replica currently occupies, which stage 3 hands back.
 
-This distinction matters for pve2 too: the N100 recommendation above gets OpenVINO **on its iGPU**
-because Intel is what the plugin targets. An AMD mini PC would be a worse buy for the same money.
+The Vega is not unusable for inference, only unusable *by OpenVINO*. Frigate supports AMD GPUs
+through the ONNX detector in the `-rocm` image variant
+(`ghcr.io/blakeblackshear/frigate:stable-rocm`, `detectors: {amd: {type: onnx}}`). Not taken here,
+on purpose: the 5600G's iGPU is Cezanne **gfx90c**, which is not on ROCm's supported list and needs
+`HSA_OVERRIDE_GFX_VERSION` to load at all, the image is several GB larger, and the thing it would
+accelerate already costs 8–12 ms on a host that is 63% idle. It is the right lever only if the home
+site grows well past five cameras, or wants a model bigger than `ssdlite_mobilenet_v2`.
+
+This still shapes the pve2 buy: the N100 above gets OpenVINO **on its iGPU** with no override, no
+alternate image and no unsupported chipset, which is worth more than raw throughput on a box that
+has to run unattended at a site nobody visits.
 
 ### Why not a Raspberry Pi
 
