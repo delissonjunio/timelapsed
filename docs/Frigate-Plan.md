@@ -332,11 +332,18 @@ break-it habit, and the [rescue hatch](Proxmox-Deployment.md#a-rescue-hatch-vms-
 containers give. A UPS matters more at a site nobody is standing in, and out-of-band access
 matters more still: pve2 wants the same NanoKVM treatment pve1 has.
 
-**pve1, at home.** Already suitable: Ryzen 5 5600G with a Vega iGPU, so VAAPI HEVC decode and
-OpenVINO detection are available without a Coral, and the empty chipset M.2 slot takes one if
-detection ever needs it. RAM is the constraint on that node, not cores — about 10 GB was available
-on 2026-09-08 and a Frigate container wants 2 GB, so check `free -m` before starting it. Storage
-is the 1.6 TB pool the zermatt replica currently occupies, which stage 3 hands back.
+**pve1, at home.** Already suitable: a Ryzen 5 5600G with a Vega iGPU, which does VAAPI HEVC
+decode. **Detection runs on the CPU, not that iGPU** — OpenVINO's GPU plugin supports Intel
+hardware only, so on an AMD part it falls back to the CPU device and a Radeon contributes nothing
+to inference. That is cheap enough here to be a non-issue: measured 2026-09-09, OpenVINO on the
+5600G's CPU runs ssdlite_mobilenet_v2 in **8–12 ms**, and five cameras detecting at 5 fps leave the
+host 63% idle. The empty chipset M.2 slot takes a Coral or a Hailo if a future camera count needs
+one. RAM is the constraint on that node, not cores — a Frigate container serving five cameras
+measured **1.1 GB resident**, against about 10 GB free, so check `free -m` before starting it.
+Storage is the 1.6 TB pool the zermatt replica currently occupies, which stage 3 hands back.
+
+This distinction matters for pve2 too: the N100 recommendation above gets OpenVINO **on its iGPU**
+because Intel is what the plugin targets. An AMD mini PC would be a worse buy for the same money.
 
 ### Why not a Raspberry Pi
 
@@ -383,14 +390,41 @@ reasoning about which of the two does what are in
 [Operations](Operations.md#the-intelbras-stops-answering-its-cgi-api). Days, not weeks, and it
 stops the next wedge costing twelve hours.
 
-### Stage 1 — Frigate on pve1, against the MHDX's RTSP
+### Stage 1 — Frigate on pve1, against the MHDX's RTSP — **running (2026-09-09)**
 
-No new hardware, no code, no camera changes. A container on pve1 recording the DVR's eight
-`cam/realmonitor` streams, event-only, beside everything that runs today.
+No new hardware, no code, no camera changes. A container on pve1 recording the DVR's
+`cam/realmonitor` streams beside everything that runs today.
 
 This is the soak test the argument above needs: a week of recordings with no gaps says RTSP
 survives what CGI does not, and the encoder-only plan holds. A week with gaps says the box is
 finished and the analog cameras move to the front of the queue. Either answer is worth a week.
+
+**Recording is continuous here, not event-only**, which is the opposite of what the finished system
+wants. Under event-only a gap is ambiguous — no motion and no stream look identical — and the whole
+point is to detect stream drops. In a continuous timeline a gap *is* a drop. Switch to the
+event-only block above once the soak passes.
+
+As deployed: **CT 306** on pve1, unprivileged, `nesting=1,keyctl=1`, 4 cores, 6 GB, a 250 GB
+rootfs on `local-lvm`, `onboot=1`, `/dev/dri/renderD128` passed through with `dev0`. Docker from
+the upstream repo, Frigate **0.17.2**. Channels 1–5; inputs 6–8 have no cameras and are left out
+deliberately, because a permanently failing stream would drown the one signal the test exists to
+read. Timelapsed stopped capturing from the device the same day — its `[nvr.intelbras]` section
+was **renamed** to `[disabled-nvr.intelbras]` rather than deleted, so credentials and channel list
+survive and re-enabling is a one-word edit. All intelbras history stays visible in the viewer,
+because `TimelapseCatalogue.channels()` scans the library tree rather than the config; only the
+live wall, which reads `config.channels`, loses those tiles.
+
+A `frigate-soak` systemd unit samples `/api/stats` once a minute into `/var/log/frigate-soak.log`
+— per-camera capture fps, segment count, free space, and deltas for stream drops and container
+restarts. A flat file beats a dashboard because the artefact of interest is a gap, and a gap is
+easiest to see in a column of numbers. It survived an unplanned power cut on the first afternoon
+and logged it as one `API-DOWN` line between two healthy samples; every guest, the container, the
+soak unit and Tailscale's serve config came back without intervention.
+
+First measurements, five analog cameras: 10-second segments of **1.31 MB** each, `hevc 960×1080`,
+remuxed not transcoded; **56 GB/day**, which is why `continuous.days` is 3 rather than 4 — four
+days would land on 225 GB against 224 GB free. Ten simultaneous RTSP sessions (record plus detect
+per camera) run without complaint, so the DVR has no session budget worth designing around.
 
 ### Stage 2 — `type = frigate`
 
@@ -486,3 +520,26 @@ between minor releases — pin an exact image tag and re-check these against tha
   `/api/<name>/…`. Check before writing a client.
 * **10-second segments** at `recordings/<YYYY-MM-DD>/<HH>/<camera>/<MM.SS>.mp4`, UTC. 8,640 files
   per camera per day is the number that makes raw-segment offsite a bad idea.
+
+Found the hard way while bringing stage 1 up, all on 0.17.2:
+
+* **The openvino detector needs an explicit `model` block.** Without one `model_path` is `None`,
+  the detector process dies with `TypeError: stat: path should be string... not NoneType` on every
+  boot, and it takes the API down with it. What you see is nginx serving **500s**, with nothing in
+  the visible error mentioning the detector. The bundled model is
+  `/openvino-model/ssdlite_mobilenet_v2.xml` with `labelmap_path`
+  `/openvino-model/coco_91cl_bkgr.txt`, `width`/`height` 300, `input_tensor: nhwc`,
+  `input_pixel_format: bgr`.
+* **`docker compose restart` does not re-read `env_file`.** Compose reads it when the container is
+  *created*, so changing credentials needs `docker compose up -d --force-recreate`. A restart
+  silently keeps the old ones, which reads as "the new password does not work".
+* **Percent-encode the RTSP password.** ffmpeg parses the URL before the device sees it, so a `#`
+  becomes a fragment and fails with `Port missing in uri` — a message that says nothing about
+  passwords. This device's password ends in `#`.
+* **A 401 storm is not evidence about the device.** During stage 1 bring-up every stream returned
+  `401 Unauthorized` while a single `ffprobe` from another container succeeded minutes apart. It
+  was neither the credentials, the `-user_agent` Frigate adds, the `{VAR}` substitution, nor a
+  session limit — all four were tested and eliminated. A new DVR account fixed it. Test one stream
+  by hand before theorising about the recorder.
+* **Frigate has its own auth, on by default.** `auth.enabled: false` is a deliberate choice here,
+  matching the viewer and go2rtc: Tailscale is the front door, and there is no second login.
