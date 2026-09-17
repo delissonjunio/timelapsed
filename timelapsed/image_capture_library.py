@@ -155,6 +155,16 @@ class ImageCaptureLibrary:
         return Path(newest.path) if newest is not None else None
 
     def store_image(self, channel_id: str, file_format_extension: str, content: bytes, taken_at: datetime) -> Path:
+        """Store one captured still. An empty capture is refused, not written.
+
+        A zero-length frame on disk is worse than a missing one: the renders
+        read their input through ffmpeg's image2 demuxer, which stops at the
+        first file it cannot read and lets ffmpeg exit 0, so one empty still
+        silently truncates every video whose window contains it.
+        """
+        if not content:
+            raise ValueError(f"Refusing to store an empty image for channel {channel_id}")
+
         image_path = (
             self._path_for_channel(channel_id, "image")
             / f"{_generate_image_filename(taken_at)}.{file_format_extension}"

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from timelapsed.image_capture_library import parse_timelapse_filename
-from timelapsed.image_processor import generate_timelapse, select_frames
+from timelapsed.image_processor import generate_timelapse, readable_frames, select_frames
 from tests.conftest import BASE_TIME, requires_ffmpeg
 
 
@@ -164,3 +164,34 @@ def test_render_does_not_consume_the_source_images(library, populate_images):
     after = library.retrieve_images_within("1", BASE_TIME - timedelta(hours=1), BASE_TIME)
     assert before == after
     assert all(path.exists() for path in after)
+
+
+def test_readable_frames_drops_empty_and_missing_files(tmp_path):
+    good = tmp_path / "good.jpg"
+    good.write_bytes(b"jpeg")
+    empty = tmp_path / "empty.jpg"
+    empty.touch()
+    gone = tmp_path / "gone.jpg"
+
+    assert readable_frames([good, empty, gone]) == [good]
+
+
+@requires_ffmpeg
+def test_render_covers_the_whole_window_despite_an_empty_frame(library, populate_images):
+    """The regression: a frame the host never finished writing is EOF to ffmpeg.
+
+    The image2 demuxer stops at the first file it cannot read and ffmpeg exits
+    0, so before this was filtered out the render was stored under its full
+    window holding only the frames before the empty one.
+    """
+    populate_images(count=100, interval=timedelta(seconds=5), end=BASE_TIME)
+    frames = library.retrieve_images_within("1", BASE_TIME - timedelta(hours=1), BASE_TIME)
+    frames[50].write_bytes(b"")
+
+    stored = generate_timelapse(
+        library, "1", "hourly", BASE_TIME - timedelta(hours=1), BASE_TIME,
+        timedelta(seconds=10), output_fps=30, min_frames=10,
+    )
+
+    assert stored is not None
+    assert int(probe_video(stored)["nb_frames"]) == 99

@@ -202,22 +202,30 @@ reclaim will never touch. At half a percent of the disk, sacrificing them could 
 
 ## Rendering
 
-`generate_timelapse` does four things:
+`generate_timelapse` does five things:
 
 1. **Select the window.** All frames with a timestamp in `[start, end]`, oldest first, from the
    cadence's own track — the stills, or the keyframes.
-2. **Sample down to the target frame count.** `output_fps × duration_seconds` frames, picked at
+2. **Drop the frames ffmpeg could not read.** A zero-length file — a frame the host was still
+   writing when it went down — is end-of-stream to the image2 demuxer, which makes ffmpeg encode
+   everything before it and exit 0. The render is then stored under the full window it was asked
+   for while holding a fraction of it, and nothing anywhere says so. That is how one empty keyframe
+   from the 30 August 2026 freeze left every channel's progress video stopping on 30 August while
+   its name claimed three more weeks. Filtered before sampling rather than after, so the sample
+   stays even; captures are refused at the door when they are empty, so this is here for crashes,
+   not for bad captures.
+3. **Sample down to the target frame count.** `output_fps × duration_seconds` frames, picked at
    even intervals across the whole list. This is what makes the output length predictable: a
    60-second video at 30 fps is always 1,800 frames whether the window held 720 stills or 120,000.
    If fewer stills exist than the target, all of them are used and the video is simply shorter.
-3. **Stage them** as `input-%015d.<ext>`, which is the sequence pattern ffmpeg's image2 demuxer wants
+4. **Stage them** as `input-%015d.<ext>`, which is the sequence pattern ffmpeg's image2 demuxer wants
    — one extension for all of them, taken from the first frame, because a channel answering PNG
    would otherwise stage names the pattern cannot match —
    in a scratch directory **inside the library** (`{root}/.render`) rather than `/tmp`. Same
    filesystem means `os.link` works, so staging 1,800 frames copies no bytes at all; `/tmp` is a
    different mount even when it is the same disk, and hardlinks do not cross mounts. Leftovers from
    a killed render are cleared at startup.
-4. **Run ffmpeg**: `libx264`, `-preset veryfast`, `-crf 23`, `-pix_fmt yuv420p` for universal
+5. **Run ffmpeg**: `libx264`, `-preset veryfast`, `-crf 23`, `-pix_fmt yuv420p` for universal
    playback, and `-movflags +faststart` so the viewer can begin playing before the file finishes
    downloading. Keyframe-sourced renders also get `-vf deflicker`, and are padded up to 24 fps on
    the way out because a 6 fps container makes some players stutter.

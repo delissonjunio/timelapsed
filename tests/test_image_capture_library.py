@@ -490,3 +490,11 @@ def test_reclaim_spends_the_regenerable_videos_before_the_weekly_archive(
         assert _surviving(stocked_library, channel_id, "timelapse", "monthly") == []
         assert _surviving(stocked_library, channel_id, "timelapse", "progress") == []
         assert len(_surviving(stocked_library, channel_id, "timelapse", "weekly")) < 12
+
+
+def test_store_image_refuses_empty_content(library):
+    """An empty capture must not reach the disk: it is EOF to every later render."""
+    with pytest.raises(ValueError):
+        library.store_image("1", "jpg", b"", BASE_TIME)
+
+    assert library.retrieve_images_within("1", BASE_TIME - timedelta(hours=1), BASE_TIME) == []

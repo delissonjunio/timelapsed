@@ -18,6 +18,29 @@ logger = logging.getLogger(__name__)
 MIN_PLAYBACK_FPS = 24
 
 
+def readable_frames(image_paths: Sequence[Path]) -> list[Path]:
+    """image_paths without the ones ffmpeg's image2 demuxer would stop dead at.
+
+    A frame the host was still writing when it went down is on disk at zero
+    length, and the demuxer treats a file it cannot read as the end of the
+    sequence: ffmpeg encodes everything before it, exits 0, and the render is
+    stored under the full window it was asked for while holding a fraction of
+    it. One empty keyframe from the 30 August freeze cost every channel three
+    weeks of its progress video, silently.
+
+    A stat per frame, paid on the whole window rather than on the sample, so
+    the sampling stays even and the "N of M frames" log tells the truth.
+    """
+    kept = []
+    for path in image_paths:
+        try:
+            if path.stat().st_size > 0:
+                kept.append(path)
+        except OSError:
+            continue  # Pruned or unreadable between the listing and now.
+    return kept
+
+
 def select_frames(image_paths: Sequence[Path], target_frame_count: int) -> Sequence[Path]:
     """Evenly sample image_paths down to at most target_frame_count frames.
 
@@ -87,7 +110,14 @@ def generate_timelapse(
 
     Returns the stored video path, or None when there was nothing worth rendering.
     """
-    image_paths = library.retrieve_images_within(channel_id, start_time, end_time, target_name=source)
+    stored_paths = library.retrieve_images_within(channel_id, start_time, end_time, target_name=source)
+    image_paths = readable_frames(stored_paths)
+    if len(image_paths) < len(stored_paths):
+        logger.warning(
+            "Ignoring %d unreadable %s frame(s) for channel %s between %s and %s",
+            len(stored_paths) - len(image_paths), source, channel_id,
+            start_time.isoformat(), end_time.isoformat(),
+        )
     if not image_paths:
         logger.warning(
             "No %s frames found for channel %s between %s and %s; skipping %s render",
