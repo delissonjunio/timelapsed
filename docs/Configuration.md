@@ -69,7 +69,7 @@ comes back.
 `monthly` and `progress` are a different kind of video from the other three: one frame per day —
 or per `[keyframe] every_minutes` step, when dense promotion is on — rather than one every few
 seconds. `monthly` covers one calendar month; `progress` covers everything captured so far, in one
-file, re-rendered on the 1st.
+file, re-rendered every midnight.
 
 Both read the **keyframe track** rather than the stills — see `[keyframe]` below and
 [Architecture](Architecture.md) — because a month of stills does not fit on the disk. Enabling them
@@ -210,7 +210,7 @@ again. It sacrifices in order of what cannot be recovered:
 2. **Hourly videos** — the most disposable history
 3. **Stills an upcoming render needs** — degrades a future video rather than destroying a finished one
 4. **Daily videos**
-5. **Progress videos** — re-renderable from keyframes, and superseded on the next rollover anyway
+5. **Progress videos** — re-renderable from keyframes, and superseded at the next midnight anyway
 6. **Monthly videos** — also re-renderable from keyframes
 7. **Weekly videos** — taken only when nothing else is left: its stills were pruned months ago, so
    once it is gone no amount of CPU brings it back

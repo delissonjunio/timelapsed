@@ -178,11 +178,14 @@ CADENCES: dict[str, Cadence] = {
         "monthly", timedelta(days=31), _month_rolled_over, _floor_to_month,
         source="keyframe", step_back=_previous_month, step_forward=_next_month,
     ),
-    # Every keyframe ever captured, in one video, refreshed on the 1st. Its end is
-    # floored to a day rather than a month so a project that started on the 10th
-    # has something to watch that week instead of waiting for the rollover.
+    # Every keyframe ever captured, in one video, refreshed every midnight to
+    # reach the day that just closed. It used to turn over on the 1st while its
+    # end was floored to the day, so only a restart ever refreshed it mid-month
+    # and the status page read every camera one progress render behind for the
+    # rest of the month. The nominal window stays a month: it orders the
+    # cadences and says what the video spans, not how often it is redone.
     "progress": Cadence(
-        "progress", timedelta(days=31), _month_rolled_over, _floor_to_day,
+        "progress", timedelta(days=31), _day_rolled_over, _floor_to_day,
         source="keyframe", anchored=True,
     ),
 }

@@ -137,7 +137,7 @@ Then, in order of likelihood:
 | `No keyframe frames found … skipping monthly render` | The keyframe track is empty or does not reach that far back. | See *No keyframes are being promoted*, below. |
 | `Previous weekly render … still running; skipping this one` | Renders take longer than the gap between them. | Harmless on its own: the skipped window is picked up as a missing window later. If it is constant, give the container more cores or reduce `output_fps` / resolution. |
 | `Channel 5 is waiting for a render slot` | `max_concurrent_renders` is doing its job. | Nothing, unless the wait outlasts the cadence. |
-| Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight, weekly on Monday, monthly and progress on the 1st. |
+| Nothing at all | It has not rolled over yet. | Hourly fires on the hour, daily at midnight, weekly on Monday, monthly on the 1st, progress every midnight. |
 
 Rollovers are judged on `[timelapse] timezone`, which defaults to **UTC** — so out of the box a
 "daily" video is rendered at 00:00 UTC, not at local midnight. Set the zone if you want your own

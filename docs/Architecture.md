@@ -122,7 +122,7 @@ cadence and compares calendar fields:
 | `daily` | `date` differs | 24 hours | stills |
 | `weekly` | ISO `(year, week)` differs — so, Monday | 7 days | stills |
 | `monthly` | `(year, month)` differs — so, the 1st | one calendar month | keyframes |
-| `progress` | `(year, month)` differs | everything so far | keyframes |
+| `progress` | `date` differs | everything so far | keyframes |
 
 `window` on the last two is **nominal** — 31 days, the longest a month can be. It is read only to
 order the cadences and to bound backfill; the arithmetic goes through `Cadence.previous_start` and
@@ -166,6 +166,11 @@ covers everything the previous one did and more, which is also why age-based ret
 it — pruning on a start that is day one of the project deletes the current video. `prune_superseded`
 drops the previous file after each successful render instead, so there is exactly one, and it is
 always current.
+
+"The period that just closed" is a day — the end is floored to local midnight — so the trigger is
+every midnight too. It used to be the 1st, which left the end and the trigger disagreeing: after the
+first render of a month nothing refreshed the video until the next 1st or a restart, and the status
+page, judging the same end, read every camera one progress render behind for the rest of the month.
 
 ## The keyframe track
 

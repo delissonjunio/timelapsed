@@ -136,9 +136,10 @@ def test_only_the_calendar_cadences_read_the_keyframe_track():
     assert [name for name, c in CADENCES.items() if c.anchored] == ["progress"]
 
 
-def test_progress_turns_over_monthly_but_covers_whole_days():
-    """The trigger is the 1st; the coverage runs to yesterday, so a project that
-    started on the 10th has a video that week rather than in three weeks."""
-    assert PROGRESS.is_due(utc(2025, 7, 1), utc(2025, 6, 15)) is True
-    assert PROGRESS.is_due(utc(2025, 6, 20), utc(2025, 6, 15)) is False
+def test_progress_turns_over_daily_to_match_the_day_it_covers_to():
+    """The coverage runs to the midnight that just closed, so the trigger has to
+    be that midnight too. On the 1st instead, the video sat up to a month short
+    of what the status page expected of it."""
+    assert PROGRESS.is_due(utc(2025, 6, 16), utc(2025, 6, 15, 23, 59)) is True
+    assert PROGRESS.is_due(utc(2025, 6, 15, 23, 59), utc(2025, 6, 15)) is False
     assert PROGRESS.floor(utc(2025, 6, 15, 18, 30)) == utc(2025, 6, 15)
