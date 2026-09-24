@@ -427,8 +427,12 @@ the `rsync` is the thing actually protecting them. Worth a cron entry rather tha
 The archive volume is the only copy of the NVR footage once the devices recycle it, and it lives on
 whatever disks the archive was given. `timelapsed-offsite` (the `timelapsed.offsite` module)
 copies it to a Backblaze B2 bucket from `timelapsed-offsite.timer`, hourly. It is opt-in: the
-timer is enabled on every install, but the service has `ConditionPathExists=/etc/backblaze.cfg`
-and is skipped without it.
+timer is enabled once, by `install.sh`, but the service has
+`ConditionPathExists=/etc/backblaze.cfg` and is skipped without it.
+
+Stopping it is `sudo systemctl disable --now timelapsed-offsite.timer`, and it stays stopped:
+upgrades deliberately do not touch that timer. On an install older than the unit, enable it by
+hand. Deleting `/etc/backblaze.cfg` stops the copy too, whatever the timer says.
 
 ```ini
 # /etc/backblaze.cfg — root-only, like the New Relic key; deploy/backblaze.cfg.example

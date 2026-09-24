@@ -33,8 +33,13 @@ else
     sudo cp "${INSTALL_DIR}"/deploy/timelapsed*.service "${INSTALL_DIR}"/deploy/tailscale-local-subnet-route.{service,timer} "${INSTALL_DIR}"/deploy/timelapsed*.timer \
         /etc/systemd/system/
     sudo systemctl daemon-reload
-    # Installs that predate the off-site copy; harmless where it is enabled.
-    sudo systemctl enable --now timelapsed-offsite.timer
+    # Nothing here enables timelapsed-offsite.timer. install.sh enables it once,
+    # and an upgrade that enabled it again would override a deliberate
+    # `systemctl disable --now timelapsed-offsite.timer` -- which it did on
+    # 2026-09-17, turning the off-site copy back on hours after it was stopped
+    # on purpose. Whether the copy runs is the operator's call, not the
+    # deploy's; `sudo systemctl enable --now timelapsed-offsite.timer` on an
+    # install that predates the unit.
 
     # The route rule moved from a boot-time oneshot to a minutely timer;
     # migrate installs that still have the service enabled directly.
